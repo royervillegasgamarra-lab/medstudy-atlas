@@ -1,12 +1,12 @@
 # MedStudy Atlas — Project Status
 
 ## Snapshot
-- **Current Phase**: Phase 0A — Governance Bootstrap
-- **Current Checkpoint**: 0A.1 (Governance Complete)
+- **Current Phase**: Phase 0A — Governance Bootstrap (Awaiting external review / review corrections)
+- **Current Checkpoint**: 0A.1 (Governance External Review Corrections)
 - **Current Branch**: `phase/00a-governance`
-- **Current PR**: Pending creation / Ready for external review
+- **Current PR**: `#1` (Awaiting external review / review corrections)
 - **Repository Visibility**: Public (Temporarily public for architectural review)
-- **Last Externally Reviewed Checkpoint**: None (Initial Bootstrap)
+- **Last Externally Reviewed Checkpoint**: None (PR #1 undergoing review)
 - **Next Checkpoint**: Phase 0B — Architecture Foundation
 
 ## Subsystem State
@@ -22,5 +22,6 @@
 ## Risk & Governance Posture
 - **Security Blockers**: None. Zero secrets, credentials, or PHI committed. Public safety policy active.
 - **Licensing Blockers**: None. Strictly proprietary notice declared; zero open-source LICENSE files.
+- **Operational Blockers**: Remote push of local review correction commits to `origin/phase/00a-governance` (PR #1) requires user GitHub authentication in the terminal.
 - **Known Critical Issues**: None.
 - **Pending Decisions**: Architectural foundation and domain model specifications deferred to Phase 0B.

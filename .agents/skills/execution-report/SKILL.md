@@ -24,7 +24,8 @@ The template is located at:
 
 2. **Inspect Git & Working State**:
    - Run `git status` and `git diff` to identify all changed, created, or untracked files.
-   - Verify current branch and commit SHA.
+   - Record the current commit SHA as `Report based on SHA` (or `Implementation SHA before report`).
+   - **SHA Semantics Rule**: Committed reports must NOT claim to contain their own final PR HEAD SHA. Modifying and committing the report changes the commit SHA, creating a self-referential paradox. The FINAL PR HEAD SHA must instead be printed in Antigravity's final chat output after all report/status files are committed and pushed.
 
 3. **Verify Safety & Compliance**:
    - Confirm zero secrets, keys, or credentials were committed.
@@ -42,4 +43,9 @@ The template is located at:
    - Set `READY_FOR_EXTERNAL_REVIEW: NO` if blocking issues, incomplete core requirements, or uncommitted breaking states exist.
 
 6. **Generate Report**:
-   - Populate all sections of the report template faithfully.
+   - Populate all sections of the report template faithfully using `Report based on SHA`.
+
+7. **Final Chat Output & PR HEAD SHA**:
+   - After all report, documentation, and code changes are committed and pushed, print the standardized execution summary in Antigravity's final chat output.
+   - The summary MUST explicitly print `FINAL PR HEAD SHA: <sha>`.
+   - Never edit the committed report file to update it with this final commit SHA, as doing so restarts the self-referential commit cycle.

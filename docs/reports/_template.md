@@ -3,9 +3,11 @@
 - **Phase / Task**: [e.g., Phase 0A — Governance Bootstrap]
 - **Status**: [COMPLETE / PARTIAL / BLOCKED]
 - **Branch**: [e.g., `phase/00a-governance`]
-- **Commit SHA**: [Full or short Git commit SHA]
-- **Pull Request**: [URL or Pending]
+- **Report based on SHA**: [Git commit SHA of implementation prior to report generation]
+- **Pull Request**: [URL, PR #, or Pending]
 - **Objective**: [Brief statement of purpose and goals]
+
+> **Note on SHA Semantics**: Committed reports record the commit SHA of implementation prior to report generation (`Report based on SHA`). Committed reports do not contain their own final PR HEAD SHA to prevent self-referential commit loops. The final PR HEAD SHA is printed in the final agent chat/execution output upon push.
 
 ---
 

@@ -3,9 +3,11 @@
 - **Phase / Task**: Phase 0A — Governance Bootstrap
 - **Status**: COMPLETE
 - **Branch**: `phase/00a-governance`
-- **Commit SHA**: `6d8ed23c23d6fe5cfaa0f05044dff1afd7379f0b`
-- **Pull Request**: Ready to create / Pending external review
+- **Report based on SHA**: `6d8ed23c23d6fe5cfaa0f05044dff1afd7379f0b` (Implementation SHA before report; final PR HEAD SHA reported in chat output upon push)
+- **Pull Request**: #1 (Awaiting external review / review corrections)
 - **Objective**: Establish the institutional governance baseline, workspace invariant rules, agent skills, documentation architecture, and safety policies without introducing product code or incurring costs.
+
+> **Note on SHA Semantics**: Committed reports record the implementation commit SHA prior to report finalization (`Report based on SHA`) rather than their own self-referential final commit SHA. The final PR HEAD SHA is printed in the final chat output after all report and status updates are committed and pushed.
 
 ---
 
@@ -31,6 +33,12 @@
   - `docs/roadmap/not-yet.md`: Explicitly deferred features (auth, DB, billing, 3D anatomy, IRT, etc.).
   - `docs/engineering/antigravity-hooks-plan.md`: Future lifecycle hooks plan (zero executable hooks in 0A).
   - `docs/engineering/ci-policy.md`: SHA-pinned GitHub Actions and minimal permissions policy.
+- **External Review Corrections (PR #1)**:
+  - Clarified Execution Report SHA semantics: reports use `Report based on SHA` (implementation SHA before report) to eliminate self-referential commit loops; the final PR HEAD SHA is printed in the chat output upon push.
+  - Synchronized repository state across `docs/status.md` and this report reflecting PR #1 awaiting external review / review corrections.
+  - Added revenue-first and time-to-market principles to `.agents/rules/medstudy-core.md` and `docs/product/project-charter.md`.
+  - Added OSS / GitHub-first evaluation hierarchy, Total Cost of Ownership (TCO) evaluation, and GitHub Scout candidate vetting (`ADOPT`, `ADAPT`, `WATCH`, `AVOID`) to `.agents/rules/medstudy-core.md` and `.agents/skills/dependency-review/SKILL.md`.
+  - Simplified open-source licensing policy for MVP in `docs/licensing/open-source-policy.md` (permissive default, non-default licenses require explicit review, unknown blocked, avoiding speculative legal conclusions).
 - **README Update**: Added proprietary notice, project status, and documentation navigation without false badges.
 - **Safety & Cost Verification**: Zero secrets committed, zero open-source licenses declared for proprietary code, $0 cost incurred.
 
@@ -58,6 +66,13 @@
 
 ### Important Files Modified
 - `README.md` — Updated with proprietary software notice, status, and documentation links.
+- `.agents/rules/medstudy-core.md` — Added revenue / time-to-market principle, OSS / GitHub-first hierarchy, TCO evaluation, and GitHub Scout candidate categorization.
+- `.agents/skills/dependency-review/SKILL.md` — Added OSS / GitHub-first evaluation hierarchy, TCO evaluation criteria, and GitHub Scout vetting (`ADOPT`, `ADAPT`, `WATCH`, `AVOID`).
+- `.agents/skills/execution-report/SKILL.md` — Documented `Report based on SHA` semantics to eliminate self-referential commit loops and mandated printing `FINAL PR HEAD SHA` in final chat output.
+- `docs/licensing/open-source-policy.md` — Simplified licensing policy for MVP (permissive default, explicit review for copyleft/source-available, unknown blocked, avoiding speculative legal conclusions).
+- `docs/product/project-charter.md` — Added revenue / time-to-market and OSS / GitHub-first engineering principles.
+- `docs/reports/_template.md` — Updated template with `Report based on SHA` field and explicit note on SHA semantics.
+- `docs/status.md` — Updated to reflect PR #1 awaiting external review / review corrections.
 
 ## 3. Architecture & Subsystem Impact
 - **Architecture Decisions**: Established the governance and documentation baseline. Substantive ADRs begin in Phase 0B.
@@ -85,12 +100,12 @@
 - **Cost Impact**: $0.00 (Zero paid resources or accounts created).
 
 ## 6. Deviations, Issues & Debt
-- **Deviations from Specification**: NONE. All requirements from Phase 0A satisfied.
-- **Known Issues**: NONE.
-- **Blockers**: NONE.
+- **Deviations from Specification**: NONE. All requirements from Phase 0A external review satisfied.
+- **Known Issues**: Remote push to `origin/phase/00a-governance` requires GitHub write authentication in the local terminal environment (Git Credential Manager / Personal Access Token).
+- **Blockers**: Push to remote `origin` requires GitHub authentication; local commit is complete and ready.
 - **Technical Debt Knowingly Introduced**: NONE.
 
 ## 7. Next Steps & Readiness
-- **Git Status**: Clean; committed and pushed to `origin/phase/00a-governance`.
-- **Recommended Next Step**: External review and merge of `phase/00a-governance` via Pull Request; proceed to Phase 0B (Architecture Foundation).
+- **Git Status**: External review corrections committed locally on `phase/00a-governance`. Ready to be pushed to `origin/phase/00a-governance` (PR #1) upon credential authentication.
+- **Recommended Next Step**: Push committed corrections to `origin/phase/00a-governance` (PR #1), then proceed with external re-review and merge; proceed to Phase 0B (Architecture Foundation).
 - **READY_FOR_EXTERNAL_REVIEW**: YES

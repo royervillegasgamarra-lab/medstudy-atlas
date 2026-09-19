@@ -42,6 +42,8 @@ MedStudy Atlas is not merely:
 - **Explicit Disclaimers**: All system outputs must be accompanied by explicit notices that content is for educational exam preparation and academic review only.
 
 ## 7. Product Principles
+- **Revenue / Time-to-Market**: Before Product-Market Fit, prefer the simplest reversible solution that gets valuable functionality to paying users quickly. Avoid enterprise architecture for hypothetical scale. Quality, security, privacy, medical provenance, and data integrity remain non-negotiable.
+- **OSS / GitHub-First Engineering**: Prioritize existing stack capabilities, mature permissive open-source solutions, and simple deterministic in-house implementations before introducing paid APIs or custom infrastructure. Evaluate Total Cost of Ownership (TCO).
 - **Educational Efficacy Over Novelty**: Prefer proven cognitive techniques over flashy AI gimmicks.
 - **Strict Content Provenance**: Every medical fact, question, and card must trace back to a verifiable source.
 - **Frugal Architecture**: Keep infrastructure costs negligible per user.

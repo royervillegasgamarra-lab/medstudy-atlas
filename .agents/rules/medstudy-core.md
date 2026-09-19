@@ -14,11 +14,20 @@ These invariant workspace rules govern all agent and human activity within the `
   5. Privacy, data security, and patient safety.
   6. Codebase maintainability, testability, and automation.
   7. Scalability only when empirically justified (no premature scaling).
+- **Revenue / Time-to-Market**: Before Product-Market Fit, prefer the simplest reversible solution that gets valuable functionality to paying users quickly. Avoid enterprise architecture for hypothetical scale. Quality, security, privacy, medical provenance, and data integrity remain non-negotiable.
 
 ## 2. Engineering Standards
 - **Branch Isolation**: Never commit directly to `main`. All work must occur on dedicated feature/phase branches (e.g., `phase/00a-governance`) and merge only via Pull Requests.
 - **Architectural Simplicity**: Always prefer the simplest architecture that satisfies current validated requirements.
 - **Anti-Patterns**: Strictly avoid premature microservices, premature infrastructure, and speculative abstractions with no immediate use case.
+- **OSS / GitHub-First Evaluation Order**: Before building a substantial capability or introducing a paid API/SaaS, evaluate in this order:
+  1. Existing capability in the current stack;
+  2. Mature permissively licensed open-source project;
+  3. Simple deterministic in-house implementation;
+  4. Free/low-cost external API;
+  5. Custom/self-hosted infrastructure only when justified.
+- **Total Cost of Ownership (TCO)**: Do NOT self-host a complex system merely because its source code is free. Evaluate Total Cost of Ownership including implementation time, maintenance, hosting/compute, storage, monitoring, upgrades, security, operational complexity, and paid API/model dependencies. A paid API can be preferable when its total cost is lower than self-hosting.
+- **GitHub Scout**: Before introducing a substantial dependency, SaaS, API, or building a complex capability, perform a lightweight candidate search. Classify serious candidates as `ADOPT`, `ADAPT`, `WATCH`, or `AVOID`. Evaluate: actual problem solved, canonical repository, license, commercial compatibility, recent activity/maintenance, integration effort, external API requirements, infrastructure requirements, hidden operational cost, security impact, and reversibility. Do not install repositories simply because they are popular or viral.
 - **Decision Records**: Document significant architectural decisions in ADRs (`docs/adrs/`). Never silently change previously accepted architecture.
 
 ## 3. Agent Autonomy & Boundaries

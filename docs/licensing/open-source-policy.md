@@ -5,33 +5,30 @@ MedStudy Atlas is a commercial proprietary software platform. The codebase is **
 
 External open-source libraries and tools utilized within MedStudy Atlas retain their respective licenses and must be vetted rigorously to ensure complete compatibility with our proprietary, commercial SaaS model.
 
-## 2. Permitted Dependency Licenses (Generally Safe)
-The following permissive open-source licenses are generally acceptable for runtime and build-time dependencies, provided their attribution and copyright notice requirements are satisfied:
+## 2. Permitted Dependency Licenses (Default for MVP)
+To maintain minimal licensing complexity, the following permissive open-source licenses are the default choices for runtime and build-time dependencies, provided standard attribution requirements are satisfied:
 - **MIT License**
-- **Apache License 2.0** (includes patent grant)
-- **BSD 2-Clause ("Simplified" or "FreeBSD") License**
-- **BSD 3-Clause ("Revised" or "New") License**
+- **Apache License 2.0**
+- **BSD 2-Clause License**
+- **BSD 3-Clause License**
 - **ISC License**
 
-## 3. Licenses Requiring Deeper Review (Flag & Evaluate)
-Dependencies with the following licenses cannot be introduced automatically. They require explicit legal and technical compatibility analysis via the `dependency-review` skill:
-- **GPL (v2, v3)**: Strict copyleft. Prohibited in any client-side bundle or statically linked code that would trigger reciprocal source code disclosure obligations.
-- **LGPL (v2.1, v3)**: Weak copyleft. May be permissible if dynamically linked or used as a standalone runtime service, but requires verification that SaaS distribution does not trigger copyleft.
-- **AGPL (v3)**: Network copyleft. Prohibited unless the component is run as a completely separate, unmodified standalone service that does not link into proprietary application logic.
-- **Source-Available / Non-Commercial**:
-  - Business Source License (BSL / BUSL)
-  - Server Side Public License (SSPL)
-  - Elastic License
-  - CC-BY-NC (Non-Commercial Creative Commons)
-  - Any license with user/revenue restrictions.
+## 3. Non-Default Licenses Requiring Explicit Review
+To avoid unnecessary licensing complexity and speculative legal analysis, dependencies with copyleft, source-available, or non-standard terms are **NOT default MVP choices** and require explicit review before adoption:
+- **GPL / LGPL / AGPL**
+- **SSPL / BSL (Business Source License)**
+- **Source-available or non-commercial licenses** (e.g., CC-BY-NC, Elastic License)
+- **Unclear or customized license terms**
 
-## 4. Absolute Blocker: Unknown or Ambiguous Licenses
-- **Rule**: If a package or asset has no declared license, says "All Rights Reserved", or has ambiguous/conflicting license terms, **ADOPTION IS BLOCKED**.
-- Absence of a license does not mean public domain; under international copyright law, the author retains all rights.
+Rather than making broad legal conclusions, the project policy is simple: these are not default choices for the MVP. If a component with one of these licenses is considered, it must be explicitly evaluated and approved via the `dependency-review` skill before any adoption.
+
+## 4. Absolute Blocker: Unknown Licenses
+- **Rule**: If a package or asset has no declared license, says "All Rights Reserved", or has missing licensing terms, **ADOPTION IS BLOCKED**.
+- An undeclared license cannot be assumed to be public domain.
 
 ## 5. Vetting Procedure
 Before introducing any new dependency:
 1. Identify the exact license file in the upstream repository.
-2. Run the `dependency-review` skill.
-3. Record the evaluation in the PR description and Execution Report.
-4. Ensure dependency notices/attributions are generated for third-party compliance.
+2. Confirm it matches an approved default permissive license (or submit for explicit review).
+3. Run the `dependency-review` skill (including GitHub Scout evaluation).
+4. Record the evaluation in the Execution Report.
