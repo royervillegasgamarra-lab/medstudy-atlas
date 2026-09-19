@@ -5,7 +5,7 @@ Phase 0 establishes the institutional, architectural, and engineering foundation
 ```mermaid
 flowchart LR
     A["Phase 0A: Governance Bootstrap (COMPLETE)"] --> B["Phase 0B: Architecture Foundation (COMPLETE)"]
-    B --> C["Phase 0C: Engineering Baseline (NEXT)"]
+    B --> C["Phase 0C: Engineering Baseline (COMPLETE / PENDING FINAL APPROVAL)"]
 ```
 
 ---
@@ -42,20 +42,20 @@ flowchart LR
 
 ---
 
-## Phase 0C: Engineering Baseline *(Next Checkpoint)*
-- **Status**: Next planned checkpoint.
+## Phase 0C: Engineering Baseline *(Complete / Pending Final Approval)*
+- **Status**: Completed on branch `phase/00c-engineering` (under final external review).
 - **Goal**: Stand up the minimal executable application skeleton, tooling, and local verification pipelines without premature feature code.
-- **Planned Scope**:
-  1. **Package Management**: Deterministic package manager configuration (`pnpm` pinned via Corepack).
-  2. **Application Skeleton**: Clean Next.js App Router structure (using current patched stable release at Phase 0C) in single repository (`src/modules/*`, `src/shared/*`).
-  3. **TypeScript Strict Mode**: Zero implicit any, strict null checks (`tsc --noEmit`).
-  4. **Tailwind CSS & UI Baseline**: Tailwind CSS with shadcn/ui component primitives.
-  5. **Directory & Module Layout**: Clean scaffolding reflecting the 10 domain module boundaries.
-  6. **Environment Variable Schema**: Zod-based type-safe environment schema (`@t3-oss/env-nextjs`) with zero secrets committed.
-  7. **Code Quality Tooling**: ESLint strict configuration and Prettier formatting rules.
-  8. **Unit & Integration Testing**: Vitest test runner setup with sample component and module test.
-  9. **Browser & E2E Testing**: Playwright configuration for headless browser smoke verification.
-  10. **Local CI-Equivalent Scripts**: Standard npm scripts (`pnpm typecheck`, `pnpm lint`, `pnpm test`, `pnpm build`).
-  11. **Secret Scanning & Security Headers**: Automated secret scanning hook and standard HTTP security headers.
-  12. **First Localhost Boot**: Verify that `pnpm dev` boots clean on `localhost:3000` with responsive study shell.
+- **Implemented Scope**:
+  1. **Package Management**: Deterministic package manager configuration (`pnpm@11.19.0` pinned via Corepack / `packageManager`). Supported Node engine range: `^22.22.2 || ^24.15.0 || >=26.0.0` (verified on `v24.21.0`).
+  2. **Application Skeleton**: Clean Next.js 16 App Router structure (Turbopack) in single repository (`src/app/*`, `src/modules/*`, `src/shared/*`).
+  3. **TypeScript Strict Mode**: Zero implicit any, strict null checks (`tsc --noEmit`, TypeScript `5.9.3`, `@types/node@24.13.6`).
+  4. **Tailwind CSS & UI Baseline**: Tailwind CSS v4 with source-owned shadcn/ui component primitives (`@base-ui/react`, `Button`, `Badge`, `Card`).
+  5. **Directory & Module Layout**: Clean scaffolding reflecting the 10 domain module boundaries (`src/modules/*`).
+  6. **Environment Variable Schema**: Direct Zod-based type-safe environment schema (`src/config/env.ts`) with zero secrets committed.
+  7. **Code Quality Tooling**: ESLint 9 strict flat configuration (`eslint.config.mjs`) and Prettier formatting rules (`.prettierrc`).
+  8. **Unit & Integration Testing**: Vitest 5.0.1 test runner with `jsdom@30.1.0` and `@testing-library/react` (16 tests passing).
+  9. **Browser & E2E Testing**: Playwright 1.63.0 headless browser smoke verification (4 tests passing across desktop and mobile viewports).
+  10. **Local CI-Equivalent Scripts**: Standard npm scripts (`pnpm check`, `pnpm verify`, `pnpm typecheck`, `pnpm lint`, `pnpm test`, `pnpm build`, `pnpm test:e2e`).
+  11. **Review-Time Secret Scan & Security Headers**: Automated review-time safety scan in `scripts/create-review-package.ps1` and baseline HTTP security headers in `next.config.ts`.
+  12. **First Localhost Boot**: Verified `pnpm dev` and `next start` boot cleanly on `localhost:3000` with responsive study shell and light/dark theme support.
 

@@ -1,0 +1,11 @@
+.next/
+node_modules/
+dist/
+build/
+review-output/
+pnpm-lock.yaml
+package-lock.json
+next-env.d.ts
+.agents/
+docs/
+*.md
