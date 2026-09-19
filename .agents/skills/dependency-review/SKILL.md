@@ -18,10 +18,11 @@ For every proposed dependency, evaluate and document:
    - Exact version proposed for introduction (pinned).
 
 2. **Licensing & SaaS Compatibility**:
-   - Stated license (e.g., MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC).
+   - Stated license (preferred: MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC).
    - Commercial SaaS compatibility assessment (copyleft, patent grants, attribution obligations).
    - **BLOCKER**: If the license is unknown, ambiguous, or lacks explicit commercial reuse rights, reject or block the dependency immediately.
-   - Flags: GPL, LGPL, AGPL, SSPL, BSL, source-available, or unclear licenses are NOT default MVP choices and require explicit review before adoption.
+   - Flags: GPL, LGPL, AGPL, SSPL, BSL, source-available, or unclear licenses are NOT default MVP choices and require explicit review before adoption. Avoid speculative legal analysis.
+   - **Proprietary Notice**: MedStudy Atlas remains proprietary software; do NOT add an open-source LICENSE to the project repository.
 
 3. **Maintenance & Community Health**:
    - Release frequency, last commit date, open issue count, and maintainer responsiveness.

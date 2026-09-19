@@ -2,12 +2,13 @@
 
 - **Phase / Task**: [e.g., Phase 0A — Governance Bootstrap]
 - **Status**: [COMPLETE / PARTIAL / BLOCKED]
+- **Mode**: LOCAL-FIRST
 - **Branch**: [e.g., `phase/00a-governance`]
-- **Report based on SHA**: [Git commit SHA of implementation prior to report generation]
-- **Pull Request**: [URL, PR #, or Pending]
+- **LOCAL HEAD SHA BEFORE REPORT**: [Git commit SHA of implementation prior to report generation]
+- **Review Package**: [e.g., review-output/phase-00a-review.zip]
 - **Objective**: [Brief statement of purpose and goals]
 
-> **Note on SHA Semantics**: Committed reports record the commit SHA of implementation prior to report generation (`Report based on SHA`). Committed reports do not contain their own final PR HEAD SHA to prevent self-referential commit loops. The final PR HEAD SHA is printed in the final agent chat/execution output upon push.
+> **Note on SHA Semantics**: Committed reports record the commit SHA of implementation prior to report generation (`LOCAL HEAD SHA BEFORE REPORT`). Committed reports do not contain their own final commit SHA to prevent self-referential commit loops. The final local HEAD SHA is printed in the final agent chat output after all report/status files are committed locally.
 
 ---
 

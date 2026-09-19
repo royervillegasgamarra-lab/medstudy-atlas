@@ -5,7 +5,15 @@ These invariant workspace rules govern all agent and human activity within the `
 ## 1. Product Principles
 - **Identity**: MedStudy Atlas is a commercial, adaptive medical-learning SaaS platform.
 - **Audience**: Medical students in Peru and Latin America.
-- **Target Pricing**: Approximately S/10/month (subject to empirical business validation).
+- **Target Pricing**: Approximately S/10/month (subject to empirical business validation). Protect margin and minimize variable cost per active student.
+- **Revenue-First & Time-to-Market**:
+  - Prefer time-to-market over premature sophistication.
+  - Build first the cycle that produces tangible value for students.
+  - Avoid enterprise architecture before Product-Market Fit.
+  - Avoid microservices unless proven necessary.
+  - Avoid unnecessary paid services.
+  - Maintain security, data integrity, and medical quality as non-negotiable requirements.
+  - Every new complexity must justify its cost.
 - **Core Priorities**:
   1. Educational quality and clinical accuracy.
   2. Student retention and demonstrable learning effectiveness.
@@ -14,20 +22,31 @@ These invariant workspace rules govern all agent and human activity within the `
   5. Privacy, data security, and patient safety.
   6. Codebase maintainability, testability, and automation.
   7. Scalability only when empirically justified (no premature scaling).
-- **Revenue / Time-to-Market**: Before Product-Market Fit, prefer the simplest reversible solution that gets valuable functionality to paying users quickly. Avoid enterprise architecture for hypothetical scale. Quality, security, privacy, medical provenance, and data integrity remain non-negotiable.
 
 ## 2. Engineering Standards
-- **Branch Isolation**: Never commit directly to `main`. All work must occur on dedicated feature/phase branches (e.g., `phase/00a-governance`) and merge only via Pull Requests.
+- **Local-First Development**: Local Git is the definitive source of truth during development. Remote repositories (e.g. GitHub origin) are optional and secondary. No phase or task may block waiting for a remote push.
+- **Branch Isolation**: Never commit directly to `main`. All work must occur on dedicated local feature/phase branches (e.g., `phase/00a-governance`). `main` represents local stable code. Merges to `main` occur locally only after external review approval via Review Packages. No remote push or GitHub Pull Request is required to develop, review, or complete a phase.
 - **Architectural Simplicity**: Always prefer the simplest architecture that satisfies current validated requirements.
 - **Anti-Patterns**: Strictly avoid premature microservices, premature infrastructure, and speculative abstractions with no immediate use case.
-- **OSS / GitHub-First Evaluation Order**: Before building a substantial capability or introducing a paid API/SaaS, evaluate in this order:
+- **OSS-First / GitHub Scout Evaluation Order**: Before building a substantial capability or introducing a paid API/SaaS, evaluate in this order:
   1. Existing capability in the current stack;
   2. Mature permissively licensed open-source project;
   3. Simple deterministic in-house implementation;
-  4. Free/low-cost external API;
+  4. Free or low-cost external API;
   5. Custom/self-hosted infrastructure only when justified.
-- **Total Cost of Ownership (TCO)**: Do NOT self-host a complex system merely because its source code is free. Evaluate Total Cost of Ownership including implementation time, maintenance, hosting/compute, storage, monitoring, upgrades, security, operational complexity, and paid API/model dependencies. A paid API can be preferable when its total cost is lower than self-hosting.
-- **GitHub Scout**: Before introducing a substantial dependency, SaaS, API, or building a complex capability, perform a lightweight candidate search. Classify serious candidates as `ADOPT`, `ADAPT`, `WATCH`, or `AVOID`. Evaluate: actual problem solved, canonical repository, license, commercial compatibility, recent activity/maintenance, integration effort, external API requirements, infrastructure requirements, hidden operational cost, security impact, and reversibility. Do not install repositories simply because they are popular or viral.
+- **Total Cost of Ownership (TCO)**: Open source is NOT automatically free. Do NOT self-host a complex system merely because its source code is free. Evaluate Total Cost of Ownership including:
+  - Implementation time and integration effort;
+  - Ongoing maintenance and upgrades;
+  - Hosting, compute (CPU/GPU), and storage;
+  - Monitoring and operational complexity;
+  - Security attack surface and vulnerability patching;
+  - Transitive dependencies and external API requirements.
+  A paid API can be preferable when its total cost is lower than self-hosting.
+- **GitHub Scout**: Before introducing a substantial dependency, SaaS, API, or building a complex capability, perform a lightweight candidate search. Classify serious candidates as `ADOPT`, `ADAPT`, `WATCH`, or `AVOID`.
+  - Prefer permissive licenses: MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC.
+  - GPL, LGPL, AGPL, SSPL, BSL, source-available, or unknown licenses are NOT default MVP choices and require explicit review before adoption. Do not engage in speculative legal analysis.
+  - Evaluate: actual problem solved, canonical repository, license, commercial compatibility, recent activity/maintenance, integration effort, external API requirements, infrastructure requirements, hidden operational cost, security impact, and reversibility.
+  - Do not install repositories simply because they are popular or viral.
 - **Decision Records**: Document significant architectural decisions in ADRs (`docs/adrs/`). Never silently change previously accepted architecture.
 
 ## 3. Agent Autonomy & Boundaries

@@ -8,7 +8,7 @@ MedStudy Atlas is designed to help medical students master high-volume, complex 
 
 - **Target Audience**: Medical students in Peru and Latin America.
 - **Core Architecture**: Medical Knowledge Graph, dynamic Learner Model, and provenance-grounded study tools.
-- **Development Status**: **Phase 0A — Governance Bootstrap** (No product code or live services yet).
+- **Development Status**: **Phase 0A — Governance Bootstrap** (Local-First; no product code or live services yet).
 
 ---
 
@@ -16,7 +16,7 @@ MedStudy Atlas is designed to help medical students master high-volume, complex 
 
 **Copyright © 2026 MedStudy Atlas. All rights reserved.**
 
-This repository contains proprietary software and intellectual property. The repository is temporarily public solely for external architectural review. 
+This repository contains proprietary software and intellectual property.
 
 - **No license is granted**: You may not copy, modify, distribute, publish, sublicense, or sell any portion of this software without prior written authorization.
 - **External dependencies**: Third-party libraries utilized retain their respective open-source licenses.
@@ -26,7 +26,7 @@ This repository contains proprietary software and intellectual property. The rep
 ## Documentation Navigation
 
 - **[Project Charter](docs/product/project-charter.md)**: Product mission, target audience, pricing hypothesis, and core thesis.
-- **[Development Governance](docs/engineering/development-governance.md)**: Branching, PR protocols, and review requirements.
+- **[Development Governance](docs/engineering/development-governance.md)**: Branching, local review protocols, and governance standards.
 - **[Public Repository Safety](docs/security/public-repository-safety.md)**: Secret handling, PHI prohibition, and safety policies.
 - **[Open-Source Policy](docs/licensing/open-source-policy.md)**: Approved third-party licenses and vetting protocols.
 - **[Medical Asset Policy](docs/licensing/medical-asset-policy.md)**: Clinical provenance ledger and content reuse rules.
