@@ -20,3 +20,11 @@ This directory stores Architecture Decision Records (ADRs) for `medstudy-atlas`.
 | Number | Title | Status | Date |
 | :--- | :--- | :--- | :--- |
 | 000 | [Template](./000-template.md) | N/A | 2026-09-19 |
+| 001 | [Next.js Full-Stack Application Architecture](./001-application-architecture.md) | `ACCEPTED` | 2026-09-19 |
+| 002 | [PostgreSQL as Primary System of Record and Concept Graph](./002-postgresql-system-of-record.md) | `ACCEPTED` | 2026-09-19 |
+| 003 | [Document Ingestion Pipeline and Selective OCR](./003-document-pipeline-selective-ocr.md) | `ACCEPTED` | 2026-09-19 |
+| 004 | [Lean RAG Architecture with PostgreSQL FTS and pgvector](./004-lean-rag-postgresql.md) | `ACCEPTED` | 2026-09-19 |
+| 005 | [Spaced Repetition Scheduling via ts-fsrs](./005-spaced-repetition-fsrs.md) | `ACCEPTED` | 2026-09-19 |
+| 006 | [Thin AI Provider Abstraction and Hard Cost Controls](./006-ai-provider-abstraction-cost-controls.md) | `ACCEPTED` | 2026-09-19 |
+| 007 | [Database-Backed Background Processing for MVP](./007-background-jobs-database-queue.md) | `ACCEPTED` | 2026-09-19 |
+| 008 | [Local-First Development and Review Package Governance](./008-local-first-review-governance.md) | `ACCEPTED` | 2026-09-19 |

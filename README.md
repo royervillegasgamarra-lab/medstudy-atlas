@@ -7,8 +7,7 @@ Adaptive medical learning platform engineered with evidence-based cognitive lear
 MedStudy Atlas is designed to help medical students master high-volume, complex curricula efficiently and retain clinical knowledge long-term.
 
 - **Target Audience**: Medical students in Peru and Latin America.
-- **Core Architecture**: Medical Knowledge Graph, dynamic Learner Model, and provenance-grounded study tools.
-- **Development Status**: **Phase 0A — Governance Bootstrap** (Local-First; no product code or live services yet).
+- **Development Status**: **Phase 0B — Architecture Foundation COMPLETE** | **Phase 0C — Engineering Baseline NEXT** (Local-First; no product code or live services yet).
 
 ---
 

@@ -61,13 +61,103 @@ $allRepoFiles = Get-ChildItem -Path $repoRoot -Recurse -File | Where-Object {
 }
 $allRepoFiles | Out-File -FilePath (Join-Path $stagingDir "repository-tree.txt") -Encoding utf8
 
+# Infer PhaseSlug from branch if not provided or default
+if (-not $PhaseSlug -or $PhaseSlug -eq "phase-00a") {
+    $detectedBranch = (git -C $repoRoot branch --show-current).Trim()
+    if ($detectedBranch -match "phase/00b") {
+        $PhaseSlug = "phase-00b"
+    } elseif ($detectedBranch -match "phase/00a") {
+        $PhaseSlug = "phase-00a"
+    } elseif ($detectedBranch -match "phase/00c") {
+        $PhaseSlug = "phase-00c"
+    }
+}
+
 # 3. Create Core Evidence Documents
 Write-Host "Assembling core evidence documents..." -ForegroundColor Yellow
 
-# REVIEW.md
+# Generate dynamic REVIEW.md based on Phase
+$phaseTitle = switch -Regex ($PhaseSlug) {
+    "00?a" { "Phase 0A -- Governance Bootstrap" }
+    "00?b" { "Phase 0B -- Architecture Foundation" }
+    "00?c" { "Phase 0C -- Engineering Baseline" }
+    default { "$PhaseSlug -- Local Review Package" }
+}
+
+$reviewCriteria = switch -Regex ($PhaseSlug) {
+    "00?a" {
+        @(
+            '1. [ ] **Local-First Governance**: Git local is the source of truth; no dependencies on GitHub pushes/PRs.',
+            '2. [ ] **Revenue-First & Time-to-Market**: Principles prioritizing rapid student value and low operating costs (~S/10/mo) are recorded.',
+            '3. [ ] **OSS-First & GitHub Scout**: Evaluation hierarchy (1-5) and candidate classification (`ADOPT`, `ADAPT`, `WATCH`, `AVOID`) are documented.',
+            '4. [ ] **Proprietary Software Integrity**: Strictly proprietary notice declared; zero open-source LICENSE files added for MedStudy.',
+            '5. [ ] **Review Readiness Skill**: Skill operates locally without requiring remote push or PR.',
+            '6. [ ] **Zero Product Code**: Zero application code, zero database instances, zero AI providers, zero paid services.',
+            '7. [ ] **Zero Secrets**: No passwords, tokens, API keys, credentials, or PHI committed.'
+        )
+    }
+    "00?b" {
+        @(
+            '1. [ ] **Monolithic Modular Architecture**: Next.js App Router (current patched stable release at Phase 0C), modular folder structure (`src/modules/*`), single PostgreSQL database.',
+            '2. [ ] **Lean RAG Architecture**: PostgreSQL `pgvector` hybrid search, `tsvector` FTS, reciprocal rank fusion (RRF), strict tenant isolation via `documents.user_id` join, prompt injection defense via serialized/escaped data.',
+            '3. [ ] **Data Model & Strict Tenant Isolation**: Explicit tenant isolation (`documents.user_id`), cascade deletes, strict schema with `qa_status DEFAULT ''PENDING'' CHECK (qa_status IN (''PENDING'', ''PASSED'', ''FAILED''))` on `study_packs` and `questions`.',
+            '4. [ ] **FSRS Spaced Repetition**: Memory-efficient FSRS algorithm via `open-spaced-repetition/ts-fsrs` (exact package version pinned in Phase 1H), zero client-side scheduling drift.',
+            '5. [ ] **Selective OCR Pipeline & Worker Model**: `pdf-inspector` for selective OCR with empirical bypass rate measurement; PostgreSQL queue coordinates jobs, background worker executes processing (local dev in same repo, prod host selected before Slice 1D).',
+            '6. [ ] **Cost & Threat Modeling**: Symbolic Unit Economics Framework with configurable gross margin target; lowest-cost adequate managed backup for MVP; unvalidated numbers labeled as initial configurable assumptions.',
+            '7. [ ] **Zero Implementation Code**: Only architecture, research, ADRs, threat models, and documentation created; zero application packages or cloud resources.',
+            '8. [ ] **Zero Secrets**: No passwords, tokens, API keys, credentials, or PHI committed.'
+        )
+    }
+    default {
+        @(
+            '1. [ ] **Local-First Compliance**: Work matches phase objectives without remote dependencies.',
+            '2. [ ] **Verification**: Applicable automated or manual checks executed.',
+            '3. [ ] **Zero Secrets**: No credentials or private tokens committed.'
+        )
+    }
+}
+
+$nextStep = switch -Regex ($PhaseSlug) {
+    "00?a" {
+        @(
+            '## 4. Next Step Upon Approval',
+            "Upon approval of this review package, merge $currentBranch into $BaseBranch locally via squash merge:",
+            '```powershell',
+            "git checkout $BaseBranch",
+            "git merge --squash $currentBranch",
+            'git commit -m "chore(phase-0a): complete governance bootstrap"',
+            '```',
+            'Then proceed to **Phase 0B -- Architecture Foundation** (`phase/00b-architecture`).'
+        )
+    }
+    "00?b" {
+        @(
+            '## 4. Next Step Upon Approval',
+            "Upon approval of this review package, merge $currentBranch into $BaseBranch locally via squash merge:",
+            '```powershell',
+            "git checkout $BaseBranch",
+            "git merge --squash $currentBranch",
+            'git commit -m "chore(phase-0b): complete architecture foundation"',
+            '```',
+            'Then proceed to **Phase 0C -- Engineering Baseline** (`phase/00c-engineering`).'
+        )
+    }
+    default {
+        @(
+            '## 4. Next Step Upon Approval',
+            "Upon approval of this review package, merge $currentBranch into $BaseBranch locally via squash merge:",
+            '```powershell',
+            "git checkout $BaseBranch",
+            "git merge --squash $currentBranch",
+            "git commit -m `"chore($PhaseSlug): complete phase`"",
+            '```'
+        )
+    }
+}
+
 $reviewLines = @(
     '# MedStudy Atlas -- External Review Package',
-    '**Phase**: Phase 0A -- Governance Bootstrap',
+    "**Phase**: $phaseTitle",
     '**Development Mode**: LOCAL-FIRST',
     "**Target Branch**: $currentBranch",
     "**Baseline Branch**: $BaseBranch",
@@ -77,11 +167,11 @@ $reviewLines = @(
     '---',
     '',
     '## 1. Purpose of this Package',
-    'This self-contained review package provides complete review evidence for **Phase 0A -- Governance Bootstrap** under MedStudy Atlas''s **LOCAL-FIRST** development model. No GitHub access, remote pushes, or cloud services are required to conduct this review.',
+    "This self-contained review package provides complete review evidence for **$phaseTitle** under MedStudy Atlas's **LOCAL-FIRST** development model. No GitHub access, remote pushes, or cloud services are required to conduct this review.",
     '',
     '## 2. Package Contents',
     '- `REVIEW.md` -- This review guide and summary.',
-    '- `execution-report.md` -- The standardized Phase 0A Execution Report.',
+    "- `execution-report.md` -- The standardized $phaseTitle Execution Report.",
     '- `status.md` -- Current project status and subsystem states.',
     '- `test-results.md` -- Verification and test suite execution status.',
     "- `changed-files.txt` -- List of all files changed relative to $BaseBranch.",
@@ -91,33 +181,23 @@ $reviewLines = @(
     '- `repository-tree.txt` -- Full file tree of the repository.',
     '- `governance/` -- Core governance policies, CI policy, and project charter.',
     '- `agents/` -- Workspace invariant rules and agent skills (`.agents/`).',
-    '- `relevant-docs/` -- Additional relevant documentation (licensing, security, ADRs, roadmaps).',
+    '- `relevant-docs/` -- Additional relevant documentation (licensing, security, architecture, product, ADRs, roadmaps).',
     '',
     '## 3. Review Objectives & Checklist',
-    'Please verify the following Phase 0A criteria:',
-    '1. [ ] **Local-First Governance**: Git local is the source of truth; no dependencies on GitHub pushes/PRs.',
-    '2. [ ] **Revenue-First & Time-to-Market**: Principles prioritizing rapid student value and low operating costs (~S/10/mo) are recorded.',
-    '3. [ ] **OSS-First & GitHub Scout**: Evaluation hierarchy (1-5) and candidate classification (`ADOPT`, `ADAPT`, `WATCH`, `AVOID`) are documented.',
-    '4. [ ] **Proprietary Software Integrity**: Strictly proprietary notice declared; zero open-source LICENSE files added for MedStudy.',
-    '5. [ ] **Review Readiness Skill**: Skill operates locally without requiring remote push or PR.',
-    '6. [ ] **Zero Product Code**: Zero application code, zero database instances, zero AI providers, zero paid services.',
-    '7. [ ] **Zero Secrets**: No passwords, tokens, API keys, credentials, or PHI committed.',
-    '',
-    '## 4. Next Step Upon Approval',
-    "Upon approval of this review package, merge $currentBranch into $BaseBranch locally via squash merge:",
-    '```powershell',
-    "git checkout $BaseBranch",
-    "git merge --squash $currentBranch",
-    'git commit -m "chore(phase-0a): complete governance bootstrap"',
-    '```',
-    'Then proceed to **Phase 0B -- Architecture Foundation**.'
+    "Please verify the following $phaseTitle criteria:"
 )
+$reviewLines += $reviewCriteria
+$reviewLines += ''
+$reviewLines += $nextStep
+
 $reviewLines | Out-File -FilePath (Join-Path $stagingDir "REVIEW.md") -Encoding utf8
 
 # execution-report.md
-$reportSource = Join-Path $repoRoot "docs/reports/phase-00a-governance.md"
-if (Test-Path $reportSource) {
-    Copy-Item -Path $reportSource -Destination (Join-Path $stagingDir "execution-report.md")
+$matchedReports = Get-ChildItem -Path (Join-Path $repoRoot "docs/reports") -Filter "$PhaseSlug-*.md" -ErrorAction SilentlyContinue
+if ($matchedReports -and $matchedReports.Count -gt 0) {
+    Copy-Item -Path $matchedReports[0].FullName -Destination (Join-Path $stagingDir "execution-report.md")
+} elseif (Test-Path (Join-Path $repoRoot "docs/reports/phase-00b-architecture.md")) {
+    Copy-Item -Path (Join-Path $repoRoot "docs/reports/phase-00b-architecture.md") -Destination (Join-Path $stagingDir "execution-report.md")
 }
 
 # status.md
@@ -128,12 +208,12 @@ if (Test-Path $statusSource) {
 
 # test-results.md
 $testLines = @(
-    '# Test Results -- Phase 0A',
+    "# Test Results -- $PhaseSlug",
     '',
     '**Status**: NOT APPLICABLE -- APPLICATION TOOLING NOT YET IMPLEMENTED',
     '',
     '### Detail:',
-    '- Phase 0A establishes workspace governance, agent rules, and documentation architecture.',
+    "- $PhaseSlug establishes workspace governance and architecture documentation.",
     '- Zero application code, package managers (pnpm/npm), or test runners (Vitest/Jest/Playwright) are installed.',
     '- Automated tests and verification pipelines will be formally authored and activated in **Phase 0C (Engineering Baseline)**.'
 )
@@ -162,6 +242,12 @@ $docsDir = Join-Path $stagingDir "relevant-docs"
 New-Item -ItemType Directory -Path $docsDir -Force | Out-Null
 Copy-Item -Path (Join-Path $repoRoot "README.md") -Destination $docsDir -ErrorAction SilentlyContinue
 Copy-Item -Path (Join-Path $repoRoot ".gitignore") -Destination $docsDir -ErrorAction SilentlyContinue
+if (Test-Path (Join-Path $repoRoot "docs/architecture")) {
+    Copy-Item -Path (Join-Path $repoRoot "docs/architecture") -Destination $docsDir -Recurse -Force
+}
+if (Test-Path (Join-Path $repoRoot "docs/product")) {
+    Copy-Item -Path (Join-Path $repoRoot "docs/product") -Destination $docsDir -Recurse -Force
+}
 if (Test-Path (Join-Path $repoRoot "docs/security")) {
     Copy-Item -Path (Join-Path $repoRoot "docs/security") -Destination $docsDir -Recurse -Force
 }
