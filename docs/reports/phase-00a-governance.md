@@ -3,7 +3,7 @@
 - **Phase / Task**: Phase 0A — Governance Bootstrap
 - **Status**: COMPLETE
 - **Branch**: `phase/00a-governance`
-- **Commit SHA**: `0da130a21babb639ff429ecfe9f9eb4a821e29fa` (initial commit: `0da130a`)
+- **Commit SHA**: `6d8ed23c23d6fe5cfaa0f05044dff1afd7379f0b`
 - **Pull Request**: Ready to create / Pending external review
 - **Objective**: Establish the institutional governance baseline, workspace invariant rules, agent skills, documentation architecture, and safety policies without introducing product code or incurring costs.
 
@@ -91,6 +91,6 @@
 - **Technical Debt Knowingly Introduced**: NONE.
 
 ## 7. Next Steps & Readiness
-- **Git Status**: Changes ready to be committed and pushed on `phase/00a-governance`.
+- **Git Status**: Clean; committed and pushed to `origin/phase/00a-governance`.
 - **Recommended Next Step**: External review and merge of `phase/00a-governance` via Pull Request; proceed to Phase 0B (Architecture Foundation).
 - **READY_FOR_EXTERNAL_REVIEW**: YES
