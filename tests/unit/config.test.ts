@@ -11,7 +11,7 @@ describe("Application Configuration & Configurable Assumptions", () => {
     expect(APP_CONFIG.name).toBe("MedStudy Atlas");
     expect(APP_CONFIG.tagline).toBe("Adaptive medical learning workspace");
     expect(APP_CONFIG.version).toBe("0.1.0");
-    expect(APP_CONFIG.phase).toContain("Phase 0C");
+    expect(APP_CONFIG.phase).toContain("Phase 1A");
   });
 
   it("maintains verified business assumptions", () => {

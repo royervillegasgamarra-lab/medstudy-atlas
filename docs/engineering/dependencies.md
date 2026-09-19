@@ -19,6 +19,8 @@ This document maintains the official record of all direct dependencies introduce
 | `shadcn` | `4.21.0` | Component CLI and runtime primitives generator. | MIT | Runtime | Code-owned component system; allows styling customization without library overhead. |
 | `tw-animate-css` | `1.4.0` | CSS animation helpers for Tailwind CSS v4. | MIT | Runtime | Smooth theme transitions and UI micro-interactions. |
 | `zod` | `4.6.5` | TypeScript-first schema declaration and validation. | MIT | Runtime | Strongly-typed environment variable parsing and configuration boundaries. |
+| `@supabase/supabase-js` | `2.116.0` | Supabase JavaScript client for database and auth communication. | MIT | Runtime | Official Supabase client for PostgreSQL operations, authentication, and RLS. |
+| `@supabase/ssr` | `0.12.7` | Supabase SSR package providing cookie-based session management. | MIT | Runtime | Manages server-side cookie persistence and token rotation in Next.js 16 App Router. |
 
 ---
 
@@ -42,6 +44,7 @@ This document maintains the official record of all direct dependencies introduce
 | `@testing-library/dom` | `10.4.2` | DOM testing utilities companion. | MIT | Dev | Required peer dependency of `@testing-library/react`. |
 | `vite-tsconfig-paths` | `6.1.1` | Path alias resolution plugin for Vitest. | MIT | Dev | Enables `@/*` alias support in Vitest tests. |
 | `@playwright/test` | `1.63.0` | End-to-end browser automation framework. | Apache-2.0 | Dev | Headless browser smoke verification across desktop and mobile viewports. |
+| `supabase` | `2.117.0` | Supabase CLI for local container management, migrations, and typegen. | MIT | Dev | Enables local-first containerized PostgreSQL stack, migrations, and schema type generation. |
 
 ---
 

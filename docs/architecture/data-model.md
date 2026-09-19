@@ -110,12 +110,15 @@ CREATE TABLE user_profiles (
     full_name TEXT,
     medical_school TEXT,
     year_of_study INT CHECK (year_of_study BETWEEN 1 AND 7),
-    target_exam_id UUID REFERENCES exam_targets(id),
     target_exam_date DATE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 ```
+
+> **Non-Blocking Data Model Debt (Acknowledged)**:
+> - `user_profiles.email` duplicates the canonical `auth.users.email` and can become stale if email change support is added later. Before implementing account-email changes, we must either: (A) remove duplicated profile email and read canonical Auth email, or (B) implement reliable synchronization.
+> - Academic-field business constraints and curriculum normalization (`medical_school`, `year_of_study`) will be formalized in Phase 1B.
 
 ### Documents & Chunks
 ```sql

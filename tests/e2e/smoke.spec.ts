@@ -43,12 +43,12 @@ test.describe("MedStudy Atlas Smoke & Browser Verification", () => {
       page.getByText("Adaptive medical learning workspace")
     ).toBeVisible();
 
-    // Verify Phase 0C badge (exact match)
-    await expect(page.getByText("Phase 0C", { exact: true })).toBeVisible();
+    // Verify Phase 1A badge (exact match)
+    await expect(page.getByText("Phase 1A", { exact: true })).toBeVisible();
 
     // Verify engineering baseline operational text
     await expect(
-      page.getByText("Engineering baseline operational — Phase 0C")
+      page.getByText("Identity, Auth & RLS Baseline operational — Phase 1A")
     ).toBeVisible();
 
     // Desktop screenshot - Light mode
@@ -56,6 +56,7 @@ test.describe("MedStudy Atlas Smoke & Browser Verification", () => {
     await page.screenshot({
       path: path.join(screenshotsDir, "desktop-light.png"),
       fullPage: true,
+      caret: "initial",
     });
 
     // Find and assert theme toggle button is visible
@@ -77,6 +78,7 @@ test.describe("MedStudy Atlas Smoke & Browser Verification", () => {
       await page.screenshot({
         path: path.join(screenshotsDir, "desktop-dark.png"),
         fullPage: true,
+        caret: "initial",
       });
 
       // Toggle back to light
@@ -88,6 +90,7 @@ test.describe("MedStudy Atlas Smoke & Browser Verification", () => {
       await page.screenshot({
         path: path.join(screenshotsDir, "desktop-dark.png"),
         fullPage: true,
+        caret: "initial",
       });
 
       // Toggle to light
@@ -126,6 +129,7 @@ test.describe("MedStudy Atlas Smoke & Browser Verification", () => {
     await page.screenshot({
       path: path.join(screenshotsDir, "mobile-light.png"),
       fullPage: true,
+      caret: "initial",
     });
   });
 
@@ -142,6 +146,7 @@ test.describe("MedStudy Atlas Smoke & Browser Verification", () => {
 
     await page.screenshot({
       path: path.join(screenshotsDir, "not-found.png"),
+      caret: "initial",
     });
   });
 
@@ -150,5 +155,31 @@ test.describe("MedStudy Atlas Smoke & Browser Verification", () => {
     expect(health.status()).toBe(200);
     const body = await health.json();
     expect(body).toEqual({ status: "ok" });
+  });
+
+  test("login page renders cleanly and captures screenshot", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto("/auth/login");
+    await expect(page.locator("h2, .text-2xl")).toContainText("Iniciar Sesión");
+    await page.screenshot({
+      path: path.join(screenshotsDir, "login.png"),
+      fullPage: true,
+      caret: "initial",
+    });
+  });
+
+  test("signup page renders cleanly and captures screenshot", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto("/auth/signup");
+    await expect(page.locator("h2, .text-2xl")).toContainText("Crear Cuenta");
+    await page.screenshot({
+      path: path.join(screenshotsDir, "signup.png"),
+      fullPage: true,
+      caret: "initial",
+    });
   });
 });

@@ -7,8 +7,8 @@ Adaptive medical learning workspace engineered with evidence-based cognitive lea
 MedStudy Atlas is designed to help medical students in Peru and Latin America master high-volume, complex curricula efficiently and retain clinical knowledge long-term.
 
 - **Target Audience**: Medical students in Peru and Latin America.
-- **Current Status**: **Phase 0C — Engineering Baseline COMPLETE** (Local-First; application running locally, zero external cloud dependencies or paid services).
-- **Next Checkpoint**: **Vertical Slice 1A — Identity, Auth & RLS Baseline** (`phase/01a-identity`).
+- **Current Status**: **Phase 1A — Identity, Auth & RLS Baseline COMPLETE** (Local-First; Supabase Auth SSR, RLS, and two-user isolation operational locally, $0.00 cost).
+- **Next Checkpoint**: **Vertical Slice 1B — Onboarding / Curriculum / Exam Target** (`phase/01b-onboarding`).
 
 ---
 
@@ -16,31 +16,57 @@ MedStudy Atlas is designed to help medical students in Peru and Latin America ma
 
 - **Node.js**: `^22.22.2 || ^24.15.0 || >=26.0.0` (verified on `v24.21.0`; required by `jsdom` and `vitest` engine constraints; generic Node 20 is not supported)
 - **Package Manager**: `pnpm` (`11.19.0`, pinned via Corepack / `packageManager`)
+- **Container Runtime**: Docker Desktop or compatible container runtime running (required for local Supabase stack)
 - **Git**: Local Git repository (Local-First development model; remote push optional)
 
 ---
 
-## Quick Start / Developer Flow
+## Quick Start / Reproducing Local Setup
 
-```bash
-# 1. Install dependencies
-pnpm install
+To reproduce the Phase 1A local environment (Identity, Auth, SSR proxy, and RLS):
 
-# 2. Run local development server (http://localhost:3000)
-pnpm dev
+1. **Ensure Docker Desktop / compatible container runtime is running**:
+   Verify Docker is running (`docker info`).
 
-# 3. Run fast local quality checks (format, lint, typecheck, unit tests)
-pnpm check
+2. **Install dependencies**:
+   ```bash
+   pnpm install --frozen-lockfile
+   ```
 
-# 4. Run browser smoke tests (Playwright)
-pnpm test:e2e
+3. **Start local Supabase stack**:
+   ```bash
+   pnpm db:start
+   ```
 
-# 5. Compile production build
-pnpm build
+4. **Inspect current local Supabase status**:
+   ```bash
+   pnpm db:status
+   ```
+   The Supabase CLI outputs the local stack status and connection details, including `API_URL` and `PUBLISHABLE_KEY`.
 
-# 6. Run complete verification gate (format, lint, typecheck, tests, build)
-pnpm verify
-```
+5. **Configure environment variables**:
+   Create `.env.local` from `.env.example`:
+   ```bash
+   cp .env.example .env.local
+   ```
+   Obtain the local Supabase URL and publishable key from the `pnpm db:status` output and populate `.env.local`:
+   - `NEXT_PUBLIC_SUPABASE_URL`: Local API URL (e.g. `http://127.0.0.1:54321`)
+   - `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`: Local publishable key (`sb_publishable_...`)
+
+   *(Note: Never commit `.env.local` or hard-code local keys into source code; `.env.local` is strictly gitignored).*
+
+6. **Reset database and apply migrations**:
+   ```bash
+   pnpm db:reset
+   ```
+
+7. **Start local development server**:
+   ```bash
+   pnpm dev
+   ```
+   Open [http://localhost:3000](http://localhost:3000) in your browser.
+
+> **Note**: `pnpm db:test`, `pnpm db:reset`, and `pnpm db:types` require the local Supabase stack (`pnpm db:start`) to be running.
 
 ---
 
@@ -50,6 +76,12 @@ All verification commands operate locally without remote CI dependencies:
 
 | Command | Description |
 | :--- | :--- |
+| `pnpm db:start` | Starts local Supabase containerized stack via Docker. |
+| `pnpm db:stop` | Stops local Supabase containerized stack. |
+| `pnpm db:status` | Shows status, local URLs, and keys for local Supabase stack. |
+| `pnpm db:reset` | Resets local database and replays all migrations (requires running stack). |
+| `pnpm db:types` | Generates TypeScript database types to `src/types/database.ts` (requires running stack). |
+| `pnpm db:test` | Executes pgTAP in-database RLS and isolation tests (requires running stack). |
 | `pnpm dev` | Starts Next.js development server on `http://localhost:3000`. |
 | `pnpm build` | Compiles optimized production build via Turbopack. |
 | `pnpm start` | Starts production server locally. |
@@ -58,8 +90,9 @@ All verification commands operate locally without remote CI dependencies:
 | `pnpm lint` | Runs ESLint 9 (Flat Config) with Next.js rules. |
 | `pnpm typecheck` | Strict TypeScript check (`tsc --noEmit`). |
 | `pnpm test` | Runs Vitest unit and component tests. |
-| `pnpm test:e2e` | Runs Playwright headless browser smoke tests and captures screenshots. |
-| `pnpm check` | Composite fast check: `format:check` + `lint` + `typecheck` + `test`. |
+| `pnpm test:e2e` | Runs Playwright headless browser smoke and auth isolation tests. |
+| `pnpm audit` | Audits dependency tree against known vulnerability databases. |
+| `pnpm check` | Composite fast check: `format:check` + `lint` + `typecheck` + `test` + `db:test`. |
 | `pnpm verify` | Full verification gate: `pnpm check` + `build`. |
 
 ---

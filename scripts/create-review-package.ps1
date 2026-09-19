@@ -5,7 +5,8 @@
 [CmdletBinding()]
 param (
     [string]$PhaseSlug = "phase-00a",
-    [string]$BaseBranch = "main"
+    [string]$BaseBranch = "main",
+    [switch]$RunChecks = $false
 )
 
 $ErrorActionPreference = "Stop"
@@ -66,7 +67,7 @@ $gitDiff | Out-File -FilePath (Join-Path $stagingDir "git-diff.patch") -Encoding
 
 # repository-tree.txt
 $allRepoFiles = Get-ChildItem -Path $repoRoot -Recurse -File | Where-Object {
-    $_.FullName -notmatch '[\\/](\.git|node_modules|review-output)[\\/]'
+    $_.FullName -notmatch '[\\/](\.git|node_modules|review-output|\.temp|\.branches)[\\/]'
 } | ForEach-Object {
     $_.FullName.Substring($repoRoot.Length + 1).Replace("\", "/")
 }
@@ -81,6 +82,8 @@ if (-not $PhaseSlug -or $PhaseSlug -eq "phase-00a") {
         $PhaseSlug = "phase-00a"
     } elseif ($detectedBranch -match "phase/00c") {
         $PhaseSlug = "phase-00c"
+    } elseif ($detectedBranch -match "phase/01a") {
+        $PhaseSlug = "phase-01a"
     }
 }
 
@@ -92,6 +95,7 @@ $phaseTitle = switch -Regex ($PhaseSlug) {
     "00?a" { "Phase 0A -- Governance Bootstrap" }
     "00?b" { "Phase 0B -- Architecture Foundation" }
     "00?c" { "Phase 0C -- Engineering Baseline" }
+    "01?a" { "Vertical Slice 1A -- Identity, Auth & RLS Baseline" }
     default { "$PhaseSlug -- Local Review Package" }
 }
 
@@ -128,6 +132,22 @@ $reviewCriteria = switch -Regex ($PhaseSlug) {
             '5. [ ] **Architecture Alignment**: Directory structure reflects modular monolith domain boundaries (`src/modules/*`); single application repository.',
             '6. [ ] **Zero Cloud Resources & Paid Services**: No database instances, no auth providers, no AI provider keys, no external cloud spend ($0.00 cost).',
             '7. [ ] **Zero Secrets**: No passwords, tokens, API keys, credentials, or PHI committed.'
+        )
+    }
+    "01?a" {
+        @(
+            '1. [ ] **Hardened Trigger & Security Definer**: `private.handle_new_user()` and `private.handle_updated_at()` are hardened with `SET search_path = ''''` with explicit schema-qualified relations and execution revoked from public/anon/authenticated.',
+            '2. [ ] **Direct Profile INSERT Revoked**: Authenticated and anon direct INSERT capability revoked; profile creation strictly controlled by auth trigger.',
+            '3. [ ] **Explicit Grants & Column Update Control**: Table-wide UPDATE revoked; UPDATE granted strictly on user-editable fields (`full_name`, `medical_school`, `year_of_study`, `target_exam_date`). System columns cannot be updated.',
+            '4. [ ] **Canonical Schema**: Canonical table is `public.user_profiles`; unused `public.profiles` view removed; dead `target_exam_id` field removed.',
+            '5. [ ] **Publishable Key Model**: `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` configured without hardcoded JWT fallback; fails clearly if missing.',
+            '6. [ ] **Proxy Token Verification**: Proxy uses `supabase.auth.getClaims()` for session renewal/verification and preserves refreshed cookies and auth cache headers on redirects.',
+            '7. [ ] **Mandatory RLS Test Matrix**: 57 pgTAP in-database tests verify schema, function privileges, anon denial, user A/B isolation, column-level restrictions, manual insert denial, cascade deletion, and trigger execution (`pnpm db:test`).',
+            '8. [ ] **Generated Database Types**: `src/types/database.ts` generated via `pnpm db:types` and wired to Supabase clients and domain types.',
+            '9. [ ] **Sanitized Backend Errors**: User-visible actions map backend/database errors to safe product messages with zero SQL/stack leaks.',
+            '10. [ ] **Roadmap Consistency**: Next slice aligned as 1B — Onboarding / Curriculum / Exam Target.',
+            '11. [ ] **Password Policy Baseline**: Minimum 8 characters synchronized across config, schemas, UI, and tests.',
+            '12. [ ] **Zero Cloud Resources & Paid Services**: No Supabase Cloud project, no external hosting, zero spend ($0.00).'
         )
     }
     default {
@@ -174,6 +194,18 @@ $nextStep = switch -Regex ($PhaseSlug) {
             'git commit -m "chore(phase-0c): complete engineering baseline"',
             '```',
             'Then proceed to **Vertical Slice 1A -- Identity, Auth & RLS Baseline** (`phase/01a-identity`).'
+        )
+    }
+    "01?a" {
+        @(
+            '## 4. Next Step Upon Approval',
+            "Upon approval of this review package, merge $currentBranch into $BaseBranch locally via squash merge:",
+            '```powershell',
+            "git checkout $BaseBranch",
+            "git merge --squash $currentBranch",
+            'git commit -m "feat(phase-01a): implement identity, auth, and rls baseline"',
+            '```',
+            'Then proceed to **Vertical Slice 1B -- Onboarding / Curriculum / Exam Target** (`phase/01b-onboarding`).'
         )
     }
     default {
@@ -244,23 +276,186 @@ if (Test-Path $statusSource) {
 }
 
 # test-results.md
-if ($PhaseSlug -match "00?c") {
-    $testLines = @(
-        "# Test Results -- Phase 0C Engineering Baseline",
-        '',
-        '**Status**: ALL CHECKS PASSING (GREEN)',
-        '',
-        '### Quality Gate Results:',
-        '- **Format Check (`pnpm format:check`)**: PASS (Prettier 3.9.8, zero formatting errors)',
-        '- **Lint (`pnpm lint`)**: PASS (ESLint 9.39.5 with flat config, zero errors or warnings)',
-        '- **Typecheck (`pnpm typecheck`)**: PASS (TypeScript 5.9.3 `tsc --noEmit`, zero type errors)',
-        '- **Unit Tests (`pnpm test`)**: PASS (Vitest 5.0.1, 4 test files, 16 tests passed)',
-        '- **E2E Smoke Tests (`pnpm test:e2e`)**: PASS (Playwright 1.63.0, 4 tests passed in Chromium; CSP and theme toggle verified)',
-        '- **Production Build (`pnpm build`)**: PASS (Next.js 16.3.5 Turbopack compilation succeeded)',
-        '- **Production Server Test (`next start`)**: PASS (HTTP 200 on `/` with CSP headers, HTTP 200 on `/api/health`)',
-        '- **Dependency Audit (`pnpm audit`)**: PASS (No known vulnerabilities found)',
-        '- **Browser Verification**: Desktop light/dark bidirectional toggle, mobile viewport, and 404 route verified; screenshots captured in `docs/screenshots/`.'
+if (Test-Path (Join-Path $repoRoot "package.json")) {
+    $resultsDir = Join-Path $outputDir "test-evidence"
+
+    # If -RunChecks was requested, execute commands and save logs to test-evidence/
+    if ($RunChecks) {
+        Write-Host "Executing quality checks to capture actual test evidence..." -ForegroundColor Yellow
+        if (-not (Test-Path $resultsDir)) {
+            New-Item -ItemType Directory -Path $resultsDir -Force | Out-Null
+        }
+
+        # Ensure Docker Desktop is in PATH if installed in user or system locations
+        $dockerPaths = @(
+            "C:\Users\DR_ CHAPATIN\AppData\Local\Programs\DockerDesktop\resources\bin",
+            "$env:LOCALAPPDATA\Programs\DockerDesktop\resources\bin",
+            "$env:ProgramFiles\Docker\Docker\resources\bin"
+        )
+        foreach ($dp in $dockerPaths) {
+            if ((Test-Path $dp) -and ($env:PATH -notlike "*$dp*")) {
+                $env:PATH = "$dp;$env:PATH"
+            }
+        }
+
+        $checksToRun = @(
+            @{ Name = "format"; Cmd = "pnpm format:check" },
+            @{ Name = "lint"; Cmd = "pnpm lint" },
+            @{ Name = "typecheck"; Cmd = "pnpm typecheck" },
+            @{ Name = "unit"; Cmd = "pnpm test" }
+        )
+
+        $pkgJson = Get-Content (Join-Path $repoRoot "package.json") -Raw | ConvertFrom-Json
+        if ($pkgJson.scripts.PSObject.Properties['db:reset']) {
+            $checksToRun += @{ Name = "db-reset"; Cmd = "pnpm db:reset" }
+        }
+        if ($pkgJson.scripts.PSObject.Properties['db:types']) {
+            $checksToRun += @{ Name = "db-types"; Cmd = "pnpm db:types" }
+        }
+        if ($pkgJson.scripts.PSObject.Properties['db:test']) {
+            $checksToRun += @{ Name = "database"; Cmd = "pnpm db:test" }
+        }
+        if ($pkgJson.scripts.PSObject.Properties['build']) {
+            $checksToRun += @{ Name = "build"; Cmd = "pnpm build" }
+        }
+        if ($pkgJson.scripts.PSObject.Properties['test:e2e']) {
+            $checksToRun += @{ Name = "e2e"; Cmd = "pnpm test:e2e" }
+        }
+        $checksToRun += @{ Name = "audit"; Cmd = "pnpm audit" }
+
+        $repoTestResultsDir = Join-Path $repoRoot "test-results"
+        if (-not (Test-Path $repoTestResultsDir)) {
+            New-Item -ItemType Directory -Path $repoTestResultsDir -Force | Out-Null
+        }
+
+        foreach ($chk in $checksToRun) {
+            Write-Host "  Running $($chk.Cmd)..." -ForegroundColor Cyan
+            $logFile = Join-Path $resultsDir "$($chk.Name).log"
+            $repoLogFile = Join-Path $repoTestResultsDir "$($chk.Name).log"
+            $out = & cmd.exe /c "$($chk.Cmd) 2>&1"
+            $exitCode = $LASTEXITCODE
+            $header = "COMMAND: $($chk.Cmd)`nEXIT_CODE: $exitCode`nTIMESTAMP: $(Get-Date -Format 'o')`n---`n"
+            $fullLogContent = $header + ($out -join "`n")
+            Set-Content -Path $logFile -Value $fullLogContent -Encoding utf8
+            Set-Content -Path $repoLogFile -Value $fullLogContent -Encoding utf8
+        }
+    }
+
+    $checkDefinitions = @(
+        @{ Label = "Format Check (`pnpm format:check`)"; Key = "format"; Mandatory = $true },
+        @{ Label = "Lint (`pnpm lint`)"; Key = "lint"; Mandatory = $true },
+        @{ Label = "Typecheck (`pnpm typecheck`)"; Key = "typecheck"; Mandatory = $true },
+        @{ Label = "Unit Tests (`pnpm test`)"; Key = "unit"; Mandatory = $true },
+        @{ Label = "Database Reset (`pnpm db:reset`)"; Key = "db-reset"; Mandatory = $true },
+        @{ Label = "Database Types (`pnpm db:types`)"; Key = "db-types"; Mandatory = $true },
+        @{ Label = "Database Tests (`pnpm db:test`)"; Key = "database"; Mandatory = $true },
+        @{ Label = "Production Build (`pnpm build`)"; Key = "build"; Mandatory = $true },
+        @{ Label = "E2E Smoke Tests (`pnpm test:e2e`)"; Key = "e2e"; Mandatory = $true },
+        @{ Label = "Dependency Audit (`pnpm audit`)"; Key = "audit"; Mandatory = $false }
     )
+
+    $stagedResultsDir = Join-Path $stagingDir "test-results"
+    $gateLines = @()
+    $details = @()
+    $anyRan = $false
+    $allPassed = $true
+    $missingMandatory = @()
+    $failedChecks = @()
+
+    foreach ($def in $checkDefinitions) {
+        $logFile = Join-Path (Join-Path $repoRoot "test-results") "$($def.Key).log"
+        if (-not (Test-Path $logFile)) {
+            $fallbackFile = Join-Path $resultsDir "$($def.Key).log"
+            if (Test-Path $fallbackFile) {
+                $logFile = $fallbackFile
+            }
+        }
+        if (Test-Path $logFile) {
+            $anyRan = $true
+            if (-not (Test-Path $stagedResultsDir)) {
+                New-Item -ItemType Directory -Path $stagedResultsDir -Force | Out-Null
+            }
+            Copy-Item -Path $logFile -Destination (Join-Path $stagedResultsDir "$($def.Key).log") -Force
+
+            $rawContent = Get-Content -Path $logFile -Raw -Encoding utf8
+            $isPass = $false
+            $isUnavailable = $false
+
+            if ($def.Key -eq "audit" -and ($rawContent -match 'ENOTFOUND|getaddrinfo|ECONNREFUSED|registry.*unavailable|network.*unavailable|fetch failed|NOT EXECUTED.*UNAVAILABLE')) {
+                $isUnavailable = $true
+            } elseif ($rawContent -match 'EXIT_CODE:\s*0\b') {
+                $isPass = $true
+            } elseif ($rawContent -notmatch 'EXIT_CODE:' -and ($rawContent -match 'passed|success|All matched files use Prettier|No known vulnerabilities found')) {
+                $isPass = $true
+            }
+
+            if ($isUnavailable) {
+                $gateLines += "- **$($def.Label)**: NOT EXECUTED -- REGISTRY/NETWORK UNAVAILABLE (Verified from log: ``test-results/$($def.Key).log``)"
+            } elseif ($isPass) {
+                $gateLines += "- **$($def.Label)**: PASS (Verified from actual execution log: ``test-results/$($def.Key).log``)"
+            } else {
+                $allPassed = $false
+                $failedChecks += $def.Label
+                $gateLines += "- **$($def.Label)**: FAIL (Verified from actual execution log: ``test-results/$($def.Key).log``)"
+            }
+
+            $lines = Get-Content -Path $logFile -Encoding utf8
+            $snippet = if ($lines.Count -gt 25) { ($lines[0..24] -join "`n") + "`n... [truncated, see test-results/$($def.Key).log for full output]" } else { $lines -join "`n" }
+            $details += "#### $($def.Label)"
+            $details += '```'
+            $details += $snippet
+            $details += '```'
+            $details += ''
+        } else {
+            $gateLines += "- **$($def.Label)**: NOT EXECUTED"
+            if ($def.Mandatory) {
+                $allPassed = $false
+                $missingMandatory += $def.Label
+            }
+        }
+    }
+
+    # Reject missing or failed mandatory checks
+    if ($missingMandatory.Count -gt 0) {
+        Write-Host "ERROR: Review package generation ABORTED!" -ForegroundColor Red
+        Write-Host "Missing required evidence for mandatory quality gates:" -ForegroundColor Red
+        $missingMandatory | ForEach-Object { Write-Host "  - $_" -ForegroundColor Red }
+        throw "Review package generation aborted: Missing mandatory test evidence ($($missingMandatory -join ', ')). Run verification checks first or pass -RunChecks."
+    }
+
+    if ($failedChecks.Count -gt 0) {
+        Write-Host "ERROR: Review package generation ABORTED!" -ForegroundColor Red
+        Write-Host "Quality gate failures detected:" -ForegroundColor Red
+        $failedChecks | ForEach-Object { Write-Host "  - $_" -ForegroundColor Red }
+        throw "Review package generation aborted: Quality gate failures detected ($($failedChecks -join ', '))."
+    }
+
+    $overallStatus = if (-not $anyRan) {
+        "NO TESTS EXECUTED FOR THIS REVIEW ARTIFACT"
+    } elseif ($allPassed) {
+        "ALL EXECUTED CHECKS PASSING (GREEN)"
+    } else {
+        "SOME CHECKS FAILED (RED)"
+    }
+
+    $testLines = @(
+        "# Test Results -- $phaseTitle",
+        '',
+        "**Status**: $overallStatus",
+        '**Evidence Source**: Actual command execution logs in `test-results/`',
+        "**Generated**: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')",
+        '',
+        '### Quality Gate Results:'
+    ) + $gateLines
+
+    if ($details.Count -gt 0) {
+        $testLines += ''
+        $testLines += '### Actual Command Execution Evidence:'
+        $testLines += $details
+    } else {
+        $testLines += ''
+        $testLines += '> **Note**: No execution logs were found in `test-results/`. Real verification output or `-RunChecks` execution is required for external review evidence.'
+    }
 } else {
     $testLines = @(
         "# Test Results -- $PhaseSlug",
@@ -324,7 +519,7 @@ if (Test-Path (Join-Path $repoRoot "docs/screenshots")) {
 }
 
 # source/ (for Phase 0C+)
-if ($PhaseSlug -match "00?c") {
+if ($PhaseSlug -match "00?c" -or (Test-Path (Join-Path $repoRoot "src")) -or (Test-Path (Join-Path $repoRoot "package.json"))) {
     $sourceDir = Join-Path $stagingDir "source"
     New-Item -ItemType Directory -Path $sourceDir -Force | Out-Null
     Copy-Item -Path (Join-Path $repoRoot "package.json") -Destination $sourceDir -ErrorAction SilentlyContinue
@@ -346,6 +541,18 @@ if ($PhaseSlug -match "00?c") {
     }
     if (Test-Path (Join-Path $repoRoot "tests")) {
         Copy-Item -Path (Join-Path $repoRoot "tests") -Destination $sourceDir -Recurse -Force
+    }
+    if (Test-Path (Join-Path $repoRoot "supabase")) {
+        Copy-Item -Path (Join-Path $repoRoot "supabase") -Destination $sourceDir -Recurse -Force
+        if (Test-Path (Join-Path $sourceDir "supabase\.temp")) {
+            Remove-Item -Recurse -Force -Path (Join-Path $sourceDir "supabase\.temp")
+        }
+        if (Test-Path (Join-Path $sourceDir "supabase\.branches")) {
+            Remove-Item -Recurse -Force -Path (Join-Path $sourceDir "supabase\.branches")
+        }
+    }
+    if (Test-Path (Join-Path $repoRoot "scripts")) {
+        Copy-Item -Path (Join-Path $repoRoot "scripts") -Destination $sourceDir -Recurse -Force
     }
 }
 

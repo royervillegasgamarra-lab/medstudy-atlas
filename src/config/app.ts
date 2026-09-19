@@ -6,7 +6,7 @@
 export const APP_CONFIG = {
   name: "MedStudy Atlas",
   tagline: "Adaptive medical learning workspace",
-  phase: "Phase 0C — Engineering Baseline",
+  phase: "Phase 1A — Identity, Auth & RLS Baseline",
   version: "0.1.0",
   description:
     "Commercial, adaptive medical-learning SaaS platform for medical students in Peru and Latin America.",

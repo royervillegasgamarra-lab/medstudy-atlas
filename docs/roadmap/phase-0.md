@@ -5,7 +5,7 @@ Phase 0 establishes the institutional, architectural, and engineering foundation
 ```mermaid
 flowchart LR
     A["Phase 0A: Governance Bootstrap (COMPLETE)"] --> B["Phase 0B: Architecture Foundation (COMPLETE)"]
-    B --> C["Phase 0C: Engineering Baseline (COMPLETE / PENDING FINAL APPROVAL)"]
+    B --> C["Phase 0C: Engineering Baseline (COMPLETE)"]
 ```
 
 ---
@@ -23,7 +23,7 @@ flowchart LR
 ---
 
 ## Phase 0B: Architecture Foundation *(Complete)*
-- **Status**: Completed on branch `phase/00b-architecture`.
+- **Status**: Completed and squash-merged into `main`.
 - **Goal**: Formulate the architectural blueprints, domain boundaries, data models, and service boundaries before writing application code.
 - **Key Deliverables**:
   - **System Overview** (`docs/architecture/system-overview.md`): Core loop, system context, anti-patterns.
@@ -42,8 +42,8 @@ flowchart LR
 
 ---
 
-## Phase 0C: Engineering Baseline *(Complete / Pending Final Approval)*
-- **Status**: Completed on branch `phase/00c-engineering` (under final external review).
+## Phase 0C: Engineering Baseline *(Complete)*
+- **Status**: Completed and squash-merged into `main`.
 - **Goal**: Stand up the minimal executable application skeleton, tooling, and local verification pipelines without premature feature code.
 - **Implemented Scope**:
   1. **Package Management**: Deterministic package manager configuration (`pnpm@11.19.0` pinned via Corepack / `packageManager`). Supported Node engine range: `^22.22.2 || ^24.15.0 || >=26.0.0` (verified on `v24.21.0`).

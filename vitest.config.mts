@@ -10,5 +10,8 @@ export default defineConfig({
     environment: "jsdom",
     globals: true,
     include: ["tests/unit/**/*.{test,spec}.{ts,tsx}"],
+    env: {
+      NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: "sb_publishable_test_dummy_key",
+    },
   },
 });

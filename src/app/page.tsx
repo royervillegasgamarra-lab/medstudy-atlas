@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
@@ -15,25 +16,25 @@ import {
   Activity,
   CheckCircle2,
   Cpu,
-  Database,
   ExternalLink,
   FileCode2,
-  Lock,
   Sparkles,
+  ArrowRight,
+  UserCheck,
 } from "lucide-react";
 
 export default function HomePage() {
   return (
-    <div className="flex min-h-screen flex-col bg-background">
+    <div className="flex min-h-screen flex-col bg-background overflow-x-hidden">
       {/* Header Navigation */}
       <header className="sticky top-0 z-50 w-full border-b border-border/40 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
         <div className="container mx-auto flex h-16 max-w-5xl items-center justify-between px-4 sm:px-6">
-          <div className="flex items-center gap-3">
-            <div className="flex size-9 items-center justify-center rounded-lg bg-primary text-primary-foreground font-semibold shadow-sm">
-              <Activity className="size-5" />
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+            <div className="flex size-8 sm:size-9 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground font-semibold shadow-sm">
+              <Activity className="size-4 sm:size-5" />
             </div>
-            <div>
-              <span className="font-semibold tracking-tight text-foreground">
+            <div className="truncate">
+              <span className="font-semibold tracking-tight text-foreground text-sm sm:text-base">
                 {APP_CONFIG.name}
               </span>
               <span className="ml-2 hidden text-xs text-muted-foreground sm:inline-block">
@@ -42,10 +43,28 @@ export default function HomePage() {
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
-            <Badge variant="success" className="gap-1 px-2.5 py-0.5 text-xs">
+          <div className="flex items-center gap-1.5 sm:gap-3 shrink-0">
+            <Link
+              href="/auth/login"
+              className={cn(
+                buttonVariants({ variant: "ghost", size: "sm" }),
+                "text-xs px-2.5 hidden sm:inline-flex"
+              )}
+            >
+              Iniciar Sesión
+            </Link>
+            <Link
+              href="/auth/signup"
+              className={cn(
+                buttonVariants({ variant: "default", size: "sm" }),
+                "text-xs px-2.5 h-8"
+              )}
+            >
+              Registro
+            </Link>
+            <Badge variant="success" className="gap-1 px-2 py-0.5 text-xs">
               <span className="size-1.5 rounded-full bg-emerald-600 dark:bg-emerald-400 animate-pulse" />
-              Phase 0C
+              Phase 1A
             </Badge>
             <ThemeToggle />
           </div>
@@ -68,8 +87,34 @@ export default function HomePage() {
             {APP_CONFIG.tagline}
           </p>
           <p className="text-sm font-medium text-primary">
-            Engineering baseline operational — Phase 0C
+            Identity, Auth & RLS Baseline operational — Phase 1A
           </p>
+          <p className="text-sm font-medium text-emerald-600 dark:text-emerald-400">
+            Vertical Slice 1A: Autenticación SSR y RLS activas localmente
+            ($0.00)
+          </p>
+
+          <div className="flex flex-wrap items-center justify-center gap-3 pt-4">
+            <Link
+              href="/app"
+              className={cn(
+                buttonVariants({ variant: "default", size: "lg" }),
+                "gap-2 font-medium text-sm sm:text-base"
+              )}
+            >
+              Acceder al Panel de Estudio
+              <ArrowRight className="size-4" />
+            </Link>
+            <Link
+              href="/auth/signup"
+              className={cn(
+                buttonVariants({ variant: "outline", size: "lg" }),
+                "font-medium text-sm sm:text-base"
+              )}
+            >
+              Crear Cuenta Estudiante
+            </Link>
+          </div>
         </div>
 
         {/* Architecture Status Cards */}
@@ -94,15 +139,15 @@ export default function HomePage() {
                 </span>
               </div>
               <div className="flex items-center justify-between border-b border-border/50 pb-2">
-                <span className="text-muted-foreground">Language</span>
+                <span className="text-muted-foreground">Auth & Database</span>
                 <span className="font-mono text-xs font-medium">
-                  TypeScript Strict
+                  Supabase SSR + PostgreSQL 17
                 </span>
               </div>
               <div className="flex items-center justify-between border-b border-border/50 pb-2">
-                <span className="text-muted-foreground">Styling</span>
+                <span className="text-muted-foreground">Security</span>
                 <span className="font-mono text-xs font-medium">
-                  Tailwind CSS v4
+                  Row Level Security (RLS)
                 </span>
               </div>
               <div className="flex items-center justify-between border-b border-border/50 pb-2">
@@ -114,7 +159,7 @@ export default function HomePage() {
               <div className="flex items-center justify-between">
                 <span className="text-muted-foreground">Testing</span>
                 <span className="font-mono text-xs font-medium">
-                  Vitest + Playwright
+                  pgTAP + Vitest + Playwright
                 </span>
               </div>
             </CardContent>
@@ -152,27 +197,36 @@ export default function HomePage() {
                   <CheckCircle2 className="size-3.5 text-emerald-600 dark:text-emerald-400" />
                   Local Runtime
                 </span>
-                <Badge variant="outline" className="text-xs">
+                <Badge
+                  variant="outline"
+                  className="text-xs text-emerald-600 dark:text-emerald-400 border-emerald-500/30"
+                >
                   OPERATIONAL
                 </Badge>
               </div>
               <div className="flex items-center justify-between border-b border-border/50 pb-2">
                 <span className="flex items-center gap-1.5 text-muted-foreground">
-                  <Database className="size-3.5 text-muted-foreground" />
-                  Database
+                  <CheckCircle2 className="size-3.5 text-emerald-600 dark:text-emerald-400" />
+                  Database & RLS
                 </span>
-                <span className="font-mono text-xs text-muted-foreground">
-                  UNINITIALIZED ($0.00)
-                </span>
+                <Badge
+                  variant="outline"
+                  className="text-xs text-emerald-600 dark:text-emerald-400 border-emerald-500/30"
+                >
+                  OPERATIONAL ($0.00)
+                </Badge>
               </div>
               <div className="flex items-center justify-between border-b border-border/50 pb-2">
                 <span className="flex items-center gap-1.5 text-muted-foreground">
-                  <Lock className="size-3.5 text-muted-foreground" />
-                  Authentication
+                  <UserCheck className="size-3.5 text-emerald-600 dark:text-emerald-400" />
+                  Authentication (SSR)
                 </span>
-                <span className="font-mono text-xs text-muted-foreground">
-                  UNINITIALIZED ($0.00)
-                </span>
+                <Badge
+                  variant="outline"
+                  className="text-xs text-emerald-600 dark:text-emerald-400 border-emerald-500/30"
+                >
+                  OPERATIONAL ($0.00)
+                </Badge>
               </div>
               <div className="flex items-center justify-between">
                 <span className="flex items-center gap-1.5 text-muted-foreground">
@@ -180,7 +234,7 @@ export default function HomePage() {
                   AI Gateway
                 </span>
                 <span className="font-mono text-xs text-muted-foreground">
-                  UNINITIALIZED ($0.00)
+                  DEFERRED — SLICE 1D ($0.00)
                 </span>
               </div>
             </CardContent>
@@ -198,10 +252,10 @@ export default function HomePage() {
             Development Mode:{" "}
             <strong className="text-foreground">LOCAL-FIRST</strong> • Branch:{" "}
             <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
-              phase/00c-engineering
+              phase/01a-identity
             </code>{" "}
-            • Quality Gates: Format, Lint, Typecheck, Unit Tests, Production
-            Build
+            • Quality Gates: Format, Lint, Typecheck, Unit Tests, Database
+            Tests, E2E Smoke & Isolation
           </p>
         </div>
       </main>
