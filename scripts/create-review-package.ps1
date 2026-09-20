@@ -222,7 +222,7 @@ $reviewCriteria = switch -Regex ($PhaseSlug) {
             '7. [ ] **Short-Lived Signed Download URLs**: Authorized downloads use signed URLs with 300s TTL. Direct public URLs and direct storage SELECT are denied.',
             '8. [ ] **Document Library UI & PHI Warning**: Mobile-first responsive library at `/app/documents`, drag-and-drop uploader with mandatory educational-use PHI warning banner, quota progress bar, and soft-delete archive with confirmation.',
             '9. [ ] **In-Database Security Matrix (pgTAP)**: 62 pgTAP tests in `03_documents_rls.sql` verify table schema, absence of `finalize_token`, anon denials, direct mutation denials, input constraints, quota limits, lease expiration, authenticated archive denial, two-user isolation, storage INSERT RLS policy, and archive idempotency.',
-            '10. [ ] **Authoritative Storage API Integration Tests**: 21 authoritative integration tests in `tests/integration/storage-security.test.ts` verify direct upload denial without reservation, reservation-backed upload success, fake PDF rejection with physical blob cleanup, size mismatch rejection with real object, authenticated archive denial, storage error handling, cross-user download denial, token reuse prevention, abandoned upload recovery, CLEANUP_PENDING recovery, archive idempotency, and concurrent quota serialization.',
+            '10. [ ] **Authoritative Storage API Integration Tests**: 24 authoritative integration tests in `tests/integration/storage-security.test.ts` verify direct upload denial without reservation, reservation-backed upload success, fake PDF rejection with physical blob cleanup, size mismatch rejection with real object, authenticated archive denial, storage error handling, cross-user download denial, token reuse prevention, abandoned upload recovery, CLEANUP_PENDING recovery, archive idempotency, adversarial archive/upload TOCTOU race prevention, real concurrent quota serialization, and real size-mismatch physical cleanup.',
             '11. [ ] **E2E & Browser Verification (Playwright)**: E2E tests verify onboarding-to-upload flow, fake PDF rejection in UI, valid PDF READY, user-content XSS regression, mobile & desktop rendering, and archival.',
             '12. [ ] **Zero AI & Cloud Spend**: No text extraction, OCR, embeddings, vector search, or external paid storage introduced ($0.00 cloud spend).'
         )
@@ -339,7 +339,7 @@ $reviewLines = @(
     '## 2. Package Contents',
     '- `REVIEW.md` -- This review guide and summary.',
     "- `execution-report.md` -- The standardized $phaseTitle Execution Report.",
-    '- `failure-matrix.md` -- The Phase 1C 25-scenario Failure Matrix.',
+    "- `failure-matrix.md` -- The $phaseTitle Failure Matrix.",
     '- `status.md` -- Current project status and subsystem states.',
     '- `test-results.md` -- Verification and test suite execution status.',
     "- `changed-files.txt` -- List of all files changed relative to $BaseBranch.",

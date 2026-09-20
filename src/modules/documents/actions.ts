@@ -6,8 +6,13 @@ import {
   finalizeDocumentUpload,
   getAuthorizedDocumentUrl,
   archiveDocument as archiveDocumentService,
+  getDocumentQuotaUsage,
 } from "./service";
-import type { RequestUploadInput, RequestUploadResult } from "./types";
+import type {
+  RequestUploadInput,
+  RequestUploadResult,
+  DocumentQuotaUsage,
+} from "./types";
 
 export interface ActionResult<T = unknown> {
   success: boolean;
@@ -83,5 +88,20 @@ export async function archiveDocumentAction(
 
   revalidatePath("/app/documents");
   revalidatePath("/app");
+  return { success: true, data: result.data };
+}
+
+/**
+ * Server action to retrieve authoritative current document quota usage.
+ */
+export async function getDocumentQuotaAction(): Promise<
+  ActionResult<DocumentQuotaUsage>
+> {
+  const result = await getDocumentQuotaUsage();
+
+  if (result.error || !result.data) {
+    return { success: false, error: result.error || "Error al obtener cuota." };
+  }
+
   return { success: true, data: result.data };
 }

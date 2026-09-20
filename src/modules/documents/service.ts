@@ -663,7 +663,7 @@ export async function archiveDocument(
     // Retrieve document to get storage key and verify ownership (including already archived)
     const { data: doc, error: docError } = await supabase
       .from("documents")
-      .select("id, storage_bucket, storage_key, user_id, archived_at")
+      .select("id, storage_bucket, storage_key, user_id, status, archived_at")
       .eq("id", parsed.data.documentId)
       .eq("user_id", user.id)
       .single();
@@ -706,6 +706,24 @@ export async function archiveDocument(
       }
 
       return { data: true };
+    }
+
+    // P0: Close archive / upload TOCTOU race.
+    // If document status is UPLOADING, close browser upload authority BEFORE physical deletion:
+    // 1. invoke start_document_cleanup_privileged()
+    // 2. verify RPC success -> status is now CLEANUP_PENDING
+    // 3. Storage INSERT RLS now denies any further upload
+    if (doc.status === "UPLOADING") {
+      const { error: startErr } = await supabaseAdmin.rpc(
+        "start_document_cleanup_privileged",
+        {
+          p_document_id: doc.id,
+          p_user_id: user.id,
+        }
+      );
+      if (startErr) {
+        return { error: "Error al preparar la eliminación del documento." };
+      }
     }
 
     // P0: Physically remove storage object through official Storage API with explicit error check

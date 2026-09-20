@@ -1011,7 +1011,8 @@ describe("Authoritative Supabase Storage API Integration & Security Boundary (Ph
       .single();
 
     expect(docInDb?.archived_at).toBeNull();
-    expect(docInDb?.status).toBe("UPLOADING");
+    // Invariant: Status transitioned to CLEANUP_PENDING to close upload authority, and remains CLEANUP_PENDING because removal failed
+    expect(docInDb?.status).toBe("CLEANUP_PENDING");
 
     // Cleanup doc
     await adminClient
@@ -1046,7 +1047,20 @@ describe("Authoritative Supabase Storage API Integration & Security Boundary (Ph
       p_actual_size: content.length,
     });
 
-    // Bob attempts to get authorized download URL for Alice's document
+    // Owner (Alice) downloads successfully through application boundary
+    currentClient = aliceClient;
+    const aliceDownloadRes = await getAuthorizedDocumentUrl(
+      docRecord.document_id
+    );
+    expect(aliceDownloadRes.error).toBeUndefined();
+    expect(aliceDownloadRes.data?.signedUrl).toBeDefined();
+
+    const aliceFetchRes = await fetch(aliceDownloadRes.data!.signedUrl);
+    expect(aliceFetchRes.ok).toBe(true);
+    const aliceDownloaded = Buffer.from(await aliceFetchRes.arrayBuffer());
+    expect(aliceDownloaded.toString()).toBe(content.toString());
+
+    // Bob attempts to get authorized download URL for Alice's document (cross-user DENIED)
     currentClient = bobClient;
     const bobDownloadRes = await getAuthorizedDocumentUrl(
       docRecord.document_id
@@ -1207,5 +1221,268 @@ describe("Authoritative Supabase Storage API Integration & Security Boundary (Ph
       .from("documents")
       .delete()
       .in("id", [docRecord.document_id, newDocRes.data!.documentId]);
+  });
+
+  it("22. Adversarial archive/upload TOCTOU race: upload authority is closed (status=CLEANUP_PENDING) BEFORE physical deletion (P0)", async () => {
+    const validContent = Buffer.from(
+      "%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF"
+    );
+    const declaredSize = validContent.length;
+
+    // 1. Create an UPLOADING reservation and upload initial file
+    const { data: rpcData, error: rpcError } = await aliceClient.rpc(
+      "request_document_upload",
+      {
+        p_original_filename: "archive_race_test.pdf",
+        p_size_bytes: declaredSize,
+        p_mime_type: "application/pdf",
+        p_subject_id: aliceSubjectId,
+      }
+    );
+    expect(rpcError).toBeNull();
+    const docRecord = Array.isArray(rpcData) ? rpcData[0] : rpcData;
+    if (!docRecord) throw new Error("Expected docRecord");
+
+    const { error: uploadError } = await aliceClient.storage
+      .from(docRecord.storage_bucket)
+      .upload(docRecord.storage_key, validContent, {
+        contentType: "application/pdf",
+        upsert: false,
+      });
+    expect(uploadError).toBeNull();
+
+    // Verify blob exists
+    const { data: infoBefore } = await adminClient.storage
+      .from(docRecord.storage_bucket)
+      .info(docRecord.storage_key);
+    expect(infoBefore).not.toBeNull();
+
+    // 3. Intercept Storage.remove() so archive is held during deletion
+    let capturedStatusDuringRemove: string | null = null;
+    let raceUploadError: unknown = null;
+
+    const realFrom22 = supabaseAdmin.storage.from.bind(supabaseAdmin.storage);
+    const fromSpy22 = vi
+      .spyOn(supabaseAdmin.storage, "from")
+      .mockImplementation((bucket: string) => {
+        const fileApi = realFrom22(bucket);
+        const originalRemove = fileApi.remove.bind(fileApi);
+        vi.spyOn(fileApi, "remove").mockImplementation(
+          async (paths: Parameters<typeof fileApi.remove>[0]) => {
+            // 4. While remove is executing, inspect DB state: it must already be CLEANUP_PENDING!
+            const { data: docInDb } = await adminClient
+              .from("documents")
+              .select("status")
+              .eq("id", docRecord.document_id)
+              .single();
+            capturedStatusDuringRemove = docInDb?.status || null;
+
+            // 5. Attempt aliceClient.storage.upload() to the exact reserved key
+            const { error: raceErr } = await aliceClient.storage
+              .from(bucket)
+              .upload(docRecord.storage_key, validContent, {
+                contentType: "application/pdf",
+                upsert: false,
+              });
+            raceUploadError = raceErr;
+
+            // 7. Perform real physical remove
+            return originalRemove(paths);
+          }
+        );
+        return fileApi;
+      });
+
+    // 2. Start archiveDocument()
+    currentClient = aliceClient;
+    const archiveRes = await archiveDocument(docRecord.document_id);
+    fromSpy22.mockRestore();
+
+    // 8. Archive completes
+    expect(archiveRes.error).toBeUndefined();
+    expect(archiveRes.data).toBe(true);
+
+    // 4. Invariant: Status during remove was CLEANUP_PENDING
+    expect(capturedStatusDuringRemove).toBe("CLEANUP_PENDING");
+
+    // 6. Invariant: Upload during remove was DENIED by Storage RLS!
+    expect(raceUploadError).not.toBeNull();
+    expect((raceUploadError as { message: string })?.message).toMatch(
+      /violates row-level security|AccessDenied/i
+    );
+
+    // 9. archived_at is set in DB
+    const { data: archivedDoc } = await adminClient
+      .from("documents")
+      .select("archived_at")
+      .eq("id", docRecord.document_id)
+      .single();
+    expect(archivedDoc?.archived_at).not.toBeNull();
+
+    // 10. physical blob is absent
+    const { data: infoAfter } = await adminClient.storage
+      .from(docRecord.storage_bucket)
+      .info(docRecord.storage_key);
+    expect(infoAfter).toBeNull();
+
+    // Cleanup
+    await adminClient
+      .from("documents")
+      .delete()
+      .eq("id", docRecord.document_id);
+  });
+
+  it("23. Real concurrent quota reservation: pg_advisory_xact_lock serializes parallel requests, exactly one succeeds, one fails (P1)", async () => {
+    // Setup: Create 3 active UPLOADING documents for Alice (3 * 25 MB = 75 MB reserved)
+    const docIds: string[] = [];
+    for (let i = 1; i <= 3; i++) {
+      const id = `33333333-0000-0000-0000-00000000000${i}`;
+      await adminClient.from("documents").insert({
+        id,
+        user_id: aliceUserId,
+        subject_id: aliceSubjectId,
+        original_filename: `concurrent_base_${i}.pdf`,
+        storage_key: `${aliceUserId}/${id}/source.pdf`,
+        mime_type: "application/pdf",
+        size_bytes: 1024,
+        status: "UPLOADING",
+      });
+      docIds.push(id);
+    }
+
+    // Now Alice issues TWO concurrent requests.
+    // Each request needs 25 MB worst-case.
+    // Since 75 MB is already reserved:
+    // First one to obtain advisory lock will succeed (75 MB + 25 MB = 100 MB <= 100 MB limit).
+    // Second one to obtain advisory lock will fail (100 MB + 25 MB = 125 MB > 100 MB limit, error 23514).
+    const results = await Promise.allSettled([
+      aliceClient.rpc("request_document_upload", {
+        p_original_filename: "concurrent_req_A.pdf",
+        p_size_bytes: 1024,
+        p_mime_type: "application/pdf",
+        p_subject_id: aliceSubjectId,
+      }),
+      aliceClient.rpc("request_document_upload", {
+        p_original_filename: "concurrent_req_B.pdf",
+        p_size_bytes: 1024,
+        p_mime_type: "application/pdf",
+        p_subject_id: aliceSubjectId,
+      }),
+    ]);
+
+    const successes = results.filter(
+      (r) => r.status === "fulfilled" && !r.value.error && r.value.data
+    );
+    const failures = results.filter(
+      (r) =>
+        r.status === "fulfilled" &&
+        r.value.error &&
+        r.value.error.code === "23514"
+    );
+
+    expect(successes).toHaveLength(1);
+    expect(failures).toHaveLength(1);
+
+    // Track the successful doc for cleanup
+    const successData =
+      successes[0].status === "fulfilled" ? successes[0].value.data : null;
+    const successDoc = Array.isArray(successData)
+      ? successData[0]
+      : successData;
+    if (
+      successDoc &&
+      typeof successDoc === "object" &&
+      "document_id" in successDoc
+    ) {
+      docIds.push((successDoc as { document_id: string }).document_id);
+    }
+
+    // Verify total active worst-case reservation in DB is exactly 4 * 25 MB = 100 MB
+    const { data: activeDocs } = await adminClient
+      .from("documents")
+      .select("id, status")
+      .eq("user_id", aliceUserId)
+      .eq("status", "UPLOADING")
+      .is("archived_at", null);
+
+    expect(activeDocs).toHaveLength(4);
+
+    // Cleanup
+    await adminClient.from("documents").delete().in("id", docIds);
+  });
+
+  it("24. Real size-mismatch storage integration: physical blob is removed, DB marked REJECTED, quota released (P1)", async () => {
+    const declaredSize = 1024;
+    const actualContent = Buffer.from(
+      "%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF"
+    );
+    expect(actualContent.length).not.toBe(declaredSize);
+
+    // 1. Reserve 1024 bytes
+    const { data: rpcData, error: rpcError } = await aliceClient.rpc(
+      "request_document_upload",
+      {
+        p_original_filename: "size_mismatch_real.pdf",
+        p_size_bytes: declaredSize,
+        p_mime_type: "application/pdf",
+        p_subject_id: aliceSubjectId,
+      }
+    );
+    expect(rpcError).toBeNull();
+    const docRecord = Array.isArray(rpcData) ? rpcData[0] : rpcData;
+    if (!docRecord) throw new Error("Expected docRecord");
+
+    // 2. Physically upload different-size PDF object to exact key
+    const { error: uploadError } = await aliceClient.storage
+      .from(docRecord.storage_bucket)
+      .upload(docRecord.storage_key, actualContent, {
+        contentType: "application/pdf",
+        upsert: false,
+      });
+    expect(uploadError).toBeNull();
+
+    // Verify physical object exists before finalization
+    const { data: infoBefore } = await adminClient.storage
+      .from(docRecord.storage_bucket)
+      .info(docRecord.storage_key);
+    expect(infoBefore).not.toBeNull();
+    expect(infoBefore?.size).toBe(actualContent.length);
+
+    // 3. Invoke normal finalizeDocumentUpload()
+    currentClient = aliceClient;
+    const finalizeRes = await finalizeDocumentUpload({
+      documentId: docRecord.document_id,
+    });
+
+    // 4. Verify SIZE_MISMATCH result
+    expect(finalizeRes.error).toContain(
+      "El tamaño del archivo no coincide con la reserva declarada"
+    );
+
+    // 5. Verify physical object is absent from storage
+    const { data: infoAfter } = await adminClient.storage
+      .from(docRecord.storage_bucket)
+      .info(docRecord.storage_key);
+    expect(infoAfter).toBeNull();
+
+    // 6. Verify DB terminal state is REJECTED
+    const { data: docInDb } = await adminClient
+      .from("documents")
+      .select("status, validation_error_code")
+      .eq("id", docRecord.document_id)
+      .single();
+    expect(docInDb?.status).toBe("REJECTED");
+    expect(docInDb?.validation_error_code).toBe("SIZE_MISMATCH");
+
+    // 7. Verify quota is released (0 active documents, 0 bytes)
+    const quotaRes = await getDocumentQuotaUsage();
+    expect(quotaRes.data?.activeDocumentsCount).toBe(0);
+    expect(quotaRes.data?.totalSizeBytes).toBe(0);
+
+    // Cleanup
+    await adminClient
+      .from("documents")
+      .delete()
+      .eq("id", docRecord.document_id);
   });
 });

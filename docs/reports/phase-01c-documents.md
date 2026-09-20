@@ -7,10 +7,7 @@
 - **Review Package**: `review-output/phase-01c-review.zip`
 - **Review Target**: Phase 1C committed checkpoint on `phase/01c-documents`
 - **Canonical Commit SHA**: Exact commit SHA is captured in `review-output/phase-01c-review.zip` (`REVIEW.md` and `test-results/*.log`).
-- **LOCAL HEAD SHA BEFORE REPORT**: `7e47c70`
 - **Objective**: Implement secure document library, private Supabase Storage bucket, reservation-backed Storage INSERT RLS policy, direct authenticated upload, privileged server-only finalization and safe cleanup lifecycle, concurrency-safe quota serialization, 5-byte range container validation, physical storage deletion on archive, and mobile-first document library UI with local-first isolation and $0.00 cloud spend.
-
-> **Note on SHA Semantics**: Committed reports record the commit SHA of implementation prior to report generation (`LOCAL HEAD SHA BEFORE REPORT`). Committed reports do not contain their own final commit SHA to prevent self-referential commit loops. The final local HEAD SHA is printed in the final agent chat output after all report/status files are committed locally.
 
 ---
 
@@ -56,6 +53,7 @@
      - `public.complete_document_cleanup_privileged(UUID, UUID, TEXT, TEXT)`: transitions `CLEANUP_PENDING` to target status (`REJECTED`/`FAILED`).
      - Both granted strictly to `service_role` and revoked from `PUBLIC`, `anon`, and `authenticated`.
    - Lazy cleanup recovery: `requestDocumentUpload` retries physical `remove()` for any existing `CLEANUP_PENDING` rows for that user, completing them to `FAILED` (`CLEANUP_RECOVERED`) or `REJECTED` once physical absence is confirmed.
+   - Archive TOCTOU race closure: `archiveDocument` transitions `UPLOADING` documents to `CLEANUP_PENDING` before physical `remove()`, closing upload authority before blob deletion.
 
 4. **Physical Cleanup of Abandoned Uploads (`P0`)**:
    - Stale rows are never marked `FAILED` based on elapsed time alone in SQL.
@@ -74,7 +72,7 @@
 
 7. **Bounded Range Read for PDF Validation (`P1`)**:
    - PDF magic bytes validation reads the first 5 bytes via HTTP Range request (`Range: bytes=0-4`).
-   - Requires HTTP 206 Partial Content, buffer `byteLength <= 5`, and a 5000ms timeout (`AbortSignal.timeout(5000)`).
+   - Requires HTTP 206 Partial Content, buffer `byteLength <= 5`, and a 5000ms timeout via `AbortController` and `setTimeout(() => controller.abort(), 5000)`.
    - If the server returns HTTP 200 (attempting full 25 MB download) or times out, fails safely as a transient validation error.
 
 8. **Privileged Server-Only Finalization and Archive (`P0`, `P1`)**:
@@ -84,7 +82,7 @@
 
 9. **Authoritative In-Database & Integration Test Suites (`P0`, `P1`)**:
    - `supabase/tests/database/03_documents_rls.sql`: 62 pgTAP assertions covering Storage RLS, `CLEANUP_PENDING`, worst-case in-flight accounting, and privileged cleanup RPC denials. Total 190 database tests pass.
-   - `tests/integration/storage-security.test.ts`: 21 comprehensive integration tests covering all required scenarios:
+   - `tests/integration/storage-security.test.ts`: 24 comprehensive integration tests covering all required scenarios:
      1. Direct unauthorized Storage upload is strictly denied (P0-3).
      2. Arbitrary unreserved path upload is denied (P0-3).
      3. Exact reserved upload succeeds, creates physical object, transitions to READY, authorized download works (P0).
@@ -104,8 +102,11 @@
      17. Bounded range read enforces HTTP 206, byteLength <= 5, and timeout; HTTP 200 fails safely (P1).
      18. Authenticated user cannot call any privileged RPC directly (finalize, archive, start_cleanup, complete_cleanup) (P0).
      19. Storage deletion failure on archive does NOT free quota or mark archived (P0).
-     20. Cross-user download authorization denied via application boundary (P0).
+     20. Application download authorization boundary: Alice (owner) is ALLOWED, Bob (cross-user) is DENIED (P0/P1).
      21. CLEANUP_PENDING recovery: transient remove failure leaves quota reserved, subsequent lazy retry succeeds, removes blob, transitions to FAILED, and frees quota for new upload (P0).
+     22. Adversarial archive/upload TOCTOU race: upload authority is closed (status=CLEANUP_PENDING) BEFORE physical deletion (P0).
+     23. Real concurrent quota reservation: pg_advisory_xact_lock serializes parallel requests, exactly one succeeds, one fails (P1).
+     24. Real size-mismatch storage integration: physical blob is removed, DB marked REJECTED, quota released (P1).
 
 ---
 
@@ -114,22 +115,23 @@
 ### Important Files Created
 - `src/config/server-env.ts` — Server-only environment configuration for `SUPABASE_SECRET_KEY`.
 - `src/lib/supabase/admin.ts` — Server-only privileged Supabase admin client.
-- `tests/integration/storage-security.test.ts` — Authoritative Supabase Storage API integration test suite (21 tests).
-- `docs/reports/phase-01c-failure-matrix.md` — 30-scenario security and failure matrix.
+- `tests/integration/storage-security.test.ts` — Authoritative Supabase Storage API integration test suite (24 tests).
+- `docs/reports/phase-01c-failure-matrix.md` — 31-scenario security and failure matrix.
 
 ### Important Files Modified
 - `supabase/migrations/20260920000000_documents_and_storage.sql` — Hardened storage policies, removed `finalize_token`, added `CLEANUP_PENDING` status, reservation-backed Storage INSERT RLS, input check constraints, concurrency-safe advisory lock, worst-case quota counting, and privileged finalization/cleanup/archive RPCs.
 - `supabase/tests/database/03_documents_rls.sql` — Updated pgTAP tests to verify new security boundaries (62 tests).
 - `src/modules/documents/types.ts` — Updated domain types: removed `finalize_token`, added `CLEANUP_PENDING` status, updated `RequestUploadResult`.
-- `src/modules/documents/service.ts` — Updated service: direct authenticated upload, 5-byte range validation, server-only privileged finalization, two-step cleanup lifecycle with `CLEANUP_PENDING` recovery, and physical storage deletion on archive.
-- `src/modules/documents/actions.ts` — Updated server actions to pass reservation parameters for direct authenticated upload.
+- `src/modules/documents/service.ts` — Updated service: direct authenticated upload, 5-byte range validation, server-only privileged finalization, two-step cleanup lifecycle with `CLEANUP_PENDING` recovery, archive/upload TOCTOU race closure via `start_document_cleanup_privileged`, and physical storage deletion on archive.
+- `src/modules/documents/actions.ts` — Updated server actions: pass reservation parameters for direct authenticated upload, and added `getDocumentQuotaAction` for authoritative server quota checks.
+- `src/components/documents/document-library.tsx` — Authoritative server quota refresh on archive via `getDocumentQuotaAction`, and removed unreachable `case "VALIDATING":`.
 - `src/components/documents/document-uploader.tsx` — Added PHI warning banner and direct authenticated upload integration.
 - `vitest.config.mts` — Added `tests/integration` to test runner.
 - `tests/e2e/document-management.spec.ts` — Added fake PDF rejection, PHI warning check, and full E2E flow.
 - `.env.example` — Added `SUPABASE_SECRET_KEY` placeholder.
 - `docs/architecture/data-model.md` — Synchronized `documents` DDL with migration.
 - `docs/security/threat-model.md` — Updated threat matrix rows for P0/P1 security architecture.
-- `scripts/create-review-package.ps1` — Updated review checklist and verification pipeline.
+- `scripts/create-review-package.ps1` — Updated review checklist and dynamic failure matrix naming.
 
 ---
 
@@ -142,7 +144,9 @@
   - Total storage quota counts all active reservations (`UPLOADING`, `CLEANUP_PENDING`, `READY`) using worst-case 25 MB for unverified rows.
   - 5-byte range validation via HTTP Range request on internal signed URL avoids downloading 25 MB into server memory.
   - Physical blob removal on archive via official Storage API before stamping `archived_at`.
+  - Archive TOCTOU race closure: For `UPLOADING` documents, `archiveDocument` calls `start_document_cleanup_privileged` to transition status to `CLEANUP_PENDING` before calling `Storage.remove()`, instantly revoking Storage INSERT RLS upload permissions. Only after physical deletion succeeds is `archive_document_privileged` invoked. If deletion fails, status remains `CLEANUP_PENDING` and quota remains reserved.
   - Two-step cleanup lifecycle (`UPLOADING` -> `CLEANUP_PENDING` -> physical `remove()` -> `REJECTED`/`FAILED`) with lazy recovery in `requestDocumentUpload`.
+  - Authoritative UI quota: Quota display refreshes via server-side `getDocumentQuotaAction()` rather than local client math.
 - **Database Impact**:
   - Migration `20260920000000_documents_and_storage.sql` applied cleanly.
   - `public.documents` table updated: check constraints added, `finalize_token` removed, `CLEANUP_PENDING` status added.
@@ -151,6 +155,7 @@
 - **API Impact**:
   - `requestDocumentUploadAction` returns `documentId`, `storageBucket`, and `storageKey` for direct authenticated upload.
   - `finalizeDocumentUploadAction` executes server-side validation and privileged finalization.
+  - `getDocumentQuotaAction` provides authoritative quota usage.
 - **AI Impact**: NONE (strictly deferred to Slice 1E and 1F).
 - **Background-Job Impact**: NONE (worker pipeline deferred to Slice 1D).
 - **Dependencies Introduced**: NONE (zero new dependencies added).
@@ -166,7 +171,9 @@
   - User A / User B isolation verified across database queries, storage access, signed URLs, and archival.
   - Container validation inspects `%PDF-` magic bytes; non-PDFs are rejected and physically deleted.
   - Quota bypass via parallel reservations prevented by transaction advisory locks and worst-case accounting of `UPLOADING` and `CLEANUP_PENDING` rows.
+  - Archive/upload TOCTOU race closed: status set to `CLEANUP_PENDING` prior to physical deletion, shutting down upload capability during blob removal.
   - Real Storage API deletion on archive prevents unbounded storage accumulation.
+  - Application download authorization boundary strictly checked: owner receives signed URL and fetches valid PDF bytes (HTTP 200); cross-user is denied.
   - Automated security scan in `create-review-package.ps1`: Zero secrets, keys, or credentials detected.
 - **Medical & Content Safety**:
   - Upload UI displays prominent educational-use banner warning against patient records and PHI.
@@ -185,16 +192,17 @@
   - `pnpm format:check` -> Exit Code 0 (PASS)
   - `pnpm lint` -> Exit Code 0 (PASS)
   - `pnpm typecheck` -> Exit Code 0 (PASS)
-  - `pnpm test` -> Exit Code 0 (PASS, 108 tests across 10 suites including 21 real Storage API integration tests)
+  - `pnpm test` -> Exit Code 0 (PASS, 111 tests across 10 suites including 24 real Storage API integration tests)
   - `pnpm db:reset` -> Exit Code 0 (PASS, migrations applied)
   - `pnpm db:types` -> Exit Code 0 (PASS, database types regenerated)
   - `pnpm db:test` -> Exit Code 0 (PASS, 190 pgTAP assertions across 3 suites including 62 in 03_documents_rls.sql)
   - `pnpm build` -> Exit Code 0 (PASS, Turbopack production build)
   - `pnpm test:e2e` -> Exit Code 0 (PASS, 17 Playwright tests across 5 suites)
   - `pnpm audit` -> Exit Code 0 (PASS, 0 vulnerabilities)
-- **Browser Verification**:
+- **Application & Browser Verification**:
+  - Integration test 20 verifies the application authorization boundary: owner Alice calls `getAuthorizedDocumentUrl()`, receives signed URL, and fetches document bytes over HTTP with status 200; cross-user Bob is denied.
   - Playwright automated browser tests executed against local Chromium.
-  - Verified drag-and-drop dropzone, PHI warning banner, fake PDF rejection, valid upload, XSS filename safety, signed URL download, and archival.
+  - Verified drag-and-drop dropzone, PHI warning banner, fake PDF rejection, valid upload, XSS filename safety, and archival.
   - Screenshots updated in `docs/screenshots/`.
 - **Performance Impact**:
   - 5-byte range read avoids 25 MB memory allocation per document upload.

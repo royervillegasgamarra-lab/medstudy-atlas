@@ -4,6 +4,7 @@ import { useState, useTransition } from "react";
 import {
   getAuthorizedDocumentUrlAction,
   archiveDocumentAction,
+  getDocumentQuotaAction,
 } from "@/modules/documents/actions";
 import type {
   DocumentWithSubject,
@@ -102,13 +103,14 @@ export function DocumentLibrary({
         return;
       }
 
-      // Remove from local list and update quota state
+      // Remove from local list
       setDocuments((prev) => prev.filter((d) => d.id !== doc.id));
-      setQuotas((prev) => ({
-        ...prev,
-        activeDocumentsCount: Math.max(0, prev.activeDocumentsCount - 1),
-        totalSizeBytes: Math.max(0, prev.totalSizeBytes - doc.size_bytes),
-      }));
+
+      // Authoritative quota refresh: fetch exact server quota rather than estimating in UI
+      const quotaRes = await getDocumentQuotaAction();
+      if (quotaRes.success && quotaRes.data) {
+        setQuotas(quotaRes.data);
+      }
 
       setFeedback({
         type: "success",
@@ -161,15 +163,6 @@ export function DocumentLibrary({
             className="bg-emerald-600/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30 text-xs"
           >
             Listo
-          </Badge>
-        );
-      case "VALIDATING":
-        return (
-          <Badge
-            variant="secondary"
-            className="bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30 text-xs"
-          >
-            Validando
           </Badge>
         );
       case "UPLOADING":
