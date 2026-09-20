@@ -234,19 +234,19 @@ export function DocumentLibrary({
 
     // doc.status === "READY" -> check processing_run
     const runStatus = doc.processing_run?.status;
-    if (runStatus === "COMPLETED") {
+    if (runStatus === "SUCCEEDED" || runStatus === "COMPLETED") {
       return (
         <Badge
           variant="default"
           className="bg-emerald-600/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30 text-xs"
         >
           Procesado
-          {doc.processing_run?.total_pages != null &&
-            ` (${doc.processing_run.total_pages} págs)`}
+          {doc.processing_run?.page_count != null &&
+            ` (${doc.processing_run.page_count} págs)`}
         </Badge>
       );
     }
-    if (runStatus === "PROCESSING") {
+    if (runStatus === "PROCESSING" || runStatus === "RUNNING") {
       return (
         <Badge
           variant="secondary"
@@ -257,13 +257,17 @@ export function DocumentLibrary({
         </Badge>
       );
     }
-    if (runStatus === "FAILED") {
+    if (
+      runStatus === "FAILED" ||
+      runStatus === "FAILED_RETRYABLE" ||
+      runStatus === "FAILED_FINAL"
+    ) {
       return (
         <Badge
           variant="destructive"
           className="text-xs"
           title={
-            doc.processing_run?.error_message ||
+            (doc.processing_run as any)?.error_message ||
             doc.processing_run?.error_code ||
             "Error al procesar"
           }
@@ -520,7 +524,9 @@ export function DocumentLibrary({
 
                   {/* Actions */}
                   <div className="flex items-center gap-2 self-end sm:self-center shrink-0">
-                    {doc.processing_run?.status === "FAILED" && (
+                    {(doc.processing_run?.status === "FAILED" ||
+                      doc.processing_run?.status === "FAILED_RETRYABLE" ||
+                      doc.processing_run?.status === "FAILED_FINAL") && (
                       <Button
                         size="sm"
                         variant="outline"

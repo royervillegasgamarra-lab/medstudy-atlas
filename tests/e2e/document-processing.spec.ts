@@ -4,6 +4,15 @@ import fs from "fs";
 import { execSync } from "child_process";
 import { createClient } from "@supabase/supabase-js";
 
+// Load local environment variables for Playwright runner
+if (typeof (process as any).loadEnvFile === "function") {
+  try {
+    (process as any).loadEnvFile(".env.local");
+  } catch {
+    // Ignore if not present
+  }
+}
+
 test.describe("Phase 1D: Secure Document Processing & Provenance UI", () => {
   const screenshotsDir = path.resolve(process.cwd(), "docs/screenshots");
   const timestamp = Date.now();

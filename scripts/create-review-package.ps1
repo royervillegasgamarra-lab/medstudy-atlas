@@ -88,6 +88,8 @@ if (-not $PhaseSlug -or $PhaseSlug -eq "phase-00a") {
         $PhaseSlug = "phase-01b"
     } elseif ($detectedBranch -match "phase/01c") {
         $PhaseSlug = "phase-01c"
+    } elseif ($detectedBranch -match "phase/01d") {
+        $PhaseSlug = "phase-01d"
     }
 }
 
@@ -100,6 +102,7 @@ $branchMatches = switch -Regex ($PhaseSlug) {
     "01?a" { $currentBranch -match "phase/01a" }
     "01?b" { $currentBranch -match "phase/01b" }
     "01?c" { $currentBranch -match "phase/01c" }
+    "01?d" { $currentBranch -match "phase/01d" }
     default { $true }
 }
 if (-not $branchMatches) {
@@ -119,6 +122,7 @@ $phaseIdentifier = switch -Regex ($PhaseSlug) {
     "01?a" { "1A" }
     "01?b" { "1B" }
     "01?c" { "1C" }
+    "01?d" { "1D" }
     default { $PhaseSlug }
 }
 if ($statusContent -notmatch $phaseIdentifier) {
@@ -141,6 +145,7 @@ $phaseTitle = switch -Regex ($PhaseSlug) {
     "01?a" { "Vertical Slice 1A -- Identity, Auth & RLS Baseline" }
     "01?b" { "Vertical Slice 1B -- Onboarding, Curriculum & Exam Targets" }
     "01?c" { "Vertical Slice 1C -- Document Library & Secure Upload" }
+    "01?d" { "Vertical Slice 1D -- Secure Document Processing / Ingestion & Page Provenance" }
     default { "$PhaseSlug -- Local Review Package" }
 }
 
@@ -227,6 +232,22 @@ $reviewCriteria = switch -Regex ($PhaseSlug) {
             '12. [ ] **Zero AI & Cloud Spend**: No text extraction, OCR, embeddings, vector search, or external paid storage introduced ($0.00 cloud spend).'
         )
     }
+    "01?d" {
+        @(
+            '1. [ ] **Subprocess Security Boundary & Stripped Environment**: The Python parser child process runs with a strictly stripped environment (`createSafeParserEnvironment`); zero Supabase secret keys, service-role keys, database URLs, AI keys, or auth tokens are accessible to the parser.',
+            '2. [ ] **Structural Preflight (`qpdf` 12.4.1)**: `qpdf --is-encrypted`, `qpdf --check`, and `qpdf --show-npages` detect encrypted PDFs (`PDF_ENCRYPTED`), corrupt PDFs (`PDF_CORRUPT`), zero-page PDFs (`PDF_ZERO_PAGES`), and oversized page counts (`PAGE_LIMIT_EXCEEDED` > 300 pages) before text parsing.',
+            '3. [ ] **Native Text Extraction & Provenance (`pypdfium2` 5.13.0)**: Native digital text extracted via PDFium; page dimensions, character counts, and SHA-256 hashes recorded. Pages with >= 50 native characters bypass OCR entirely.',
+            '4. [ ] **Selective Local OCR (`tesseract` 5.5.3)**: Pages with < 50 native characters undergo local Tesseract OCR using strictly `spa+eng` language packs. Render scale capped with pixel limit validation (12M max pixels/page). Max 60 OCR pages enforced per document (`OCR_PAGE_LIMIT`).',
+            '5. [ ] **Prompt Injection Defense**: Content classified as `USER_DOCUMENT_UNTRUSTED`; prompt injection payloads are preserved verbatim as inert text data without executing or corrupting the pipeline.',
+            '6. [ ] **Database Schema & Composite Foreign Keys**: `public.document_processing_runs` and `public.document_pages` implemented with composite foreign key `(document_id, user_id) REFERENCES public.documents(id, user_id)` preventing cross-tenant references.',
+            '7. [ ] **Worker Concurrency & Lease Recovery**: `claim_next_processing_run` uses PostgreSQL `FOR UPDATE SKIP LOCKED` for single-worker ownership and automatic lease recovery on expired worker leases.',
+            '8. [ ] **Retry Idempotency**: Re-processing replaces old page records in a single transaction; page counts never duplicate.',
+            '9. [ ] **Guaranteed Cleanup**: Ephemeral job directories in `os.tmpdir()/medstudy-atlas-proc/` deleted on success and failure.',
+            '10. [ ] **Document Library Processing UI**: Responsive badges for "Pendiente de procesar", "Procesando", and "Procesado" with page count; "Reintentar" button displayed on failed runs.',
+            '11. [ ] **Automated Test Suites**: 33 pgTAP tests (`04_processing_runs_rls.sql`), 13 unit tests (`parser.test.ts`), 4 integration tests (`processing-worker.test.ts`), and Playwright E2E test (`document-processing.spec.ts`) pass cleanly.',
+            '12. [ ] **Zero Cloud Resources & Paid Services**: Local-First execution; $0.00 cost.'
+        )
+    }
     default {
         @(
             '1. [ ] **Local-First Compliance**: Work matches phase objectives without remote dependencies.',
@@ -306,7 +327,19 @@ $nextStep = switch -Regex ($PhaseSlug) {
             "git merge --squash $currentBranch",
             'git commit -m "feat(phase-01c): implement document library and secure upload boundary"',
             '```',
-            'Then proceed to **Vertical Slice 1D -- Document Ingestion & Text Processing** (`phase/01d-processing`).'
+            'Then proceed to **Vertical Slice 1D -- Secure Document Processing / Ingestion & Page Provenance** (`phase/01d-processing`).'
+        )
+    }
+    "01?d" {
+        @(
+            '## 4. Next Step Upon Approval',
+            "Upon approval of this review package, merge $currentBranch into $BaseBranch locally via squash merge:",
+            '```powershell',
+            "git checkout $BaseBranch",
+            "git merge --squash $currentBranch",
+            'git commit -m "feat(phase-01d): implement secure document processing and page provenance"',
+            '```',
+            'Then proceed to **Vertical Slice 1E -- Deterministic Chunking & Study Pack Generation** (`phase/01e-study-packs`).'
         )
     }
     default {
