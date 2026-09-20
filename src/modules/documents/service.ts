@@ -1,6 +1,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { UPLOAD_LIMITS } from "@/config/app";
+import { PROCESSING_LIMITS } from "@/config/processing-limits";
 import {
   requestUploadSchema,
   finalizeUploadSchema,
@@ -676,12 +677,25 @@ export async function finalizeDocumentUpload(input: {
 
     // Phase 1D: Automatically enqueue document processing asynchronously
     try {
-      await supabaseAdmin.rpc("enqueue_document_processing_privileged", {
-        p_document_id: doc.id,
-        p_user_id: user.id,
-        p_pipeline_version: "1.0.0",
-      });
-    } catch {
+      const { error: enqueueErr } = await supabaseAdmin.rpc(
+        "enqueue_document_processing_privileged",
+        {
+          p_document_id: doc.id,
+          p_user_id: user.id,
+          p_pipeline_version: PROCESSING_LIMITS.pipelineVersion,
+        }
+      );
+      if (enqueueErr) {
+        console.error(
+          "[DocumentsService] Failed to auto-enqueue processing run:",
+          enqueueErr
+        );
+      }
+    } catch (err) {
+      console.error(
+        "[DocumentsService] Unexpected exception during auto-enqueue:",
+        err
+      );
       // Non-blocking: failure to enqueue processing MUST NOT invalidate or delete READY upload
     }
 
@@ -692,7 +706,7 @@ export async function finalizeDocumentUpload(input: {
 }
 
 /**
- * Allows an authenticated user to request retry of a failed processing run for their document.
+ * Allows an authenticated user to request retry or processing of their READY document.
  */
 export async function retryDocumentProcessing(
   documentId: string
@@ -731,12 +745,15 @@ export async function retryDocumentProcessing(
       {
         p_document_id: doc.id,
         p_user_id: user.id,
-        p_pipeline_version: "1.0.0",
+        p_pipeline_version: PROCESSING_LIMITS.pipelineVersion,
       }
     );
 
     if (enqueueError) {
-      return { error: "No se pudo encolar el reintento de procesamiento." };
+      return {
+        error:
+          "No se pudo encolar el procesamiento: se ha alcanzado el límite de intentos o el estado no permite reintento.",
+      };
     }
 
     return { data: true };

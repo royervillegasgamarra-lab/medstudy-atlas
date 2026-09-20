@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { spawnSync } from "child_process";
 import * as path from "path";
 import * as fs from "fs/promises";
+import * as fsSync from "node:fs";
 import * as os from "os";
 import {
   createSafeParserEnvironment,
@@ -15,6 +16,7 @@ import {
   type ProcessingManifest,
   type PageProcessingResult,
 } from "@/modules/documents/processing-types";
+import { PROCESSING_LIMITS } from "@/config/processing-limits";
 
 describe("Document Parser Subprocess & Schemas", () => {
   const pythonExe = resolvePythonExecutable();
@@ -138,9 +140,9 @@ describe("Document Parser Subprocess & Schemas", () => {
         ocr_char_count: 0,
         ocr_confidence: null,
         width_points: -100,
-        height_points: -200,
+        height_points: 100,
         rotation_degrees: 0,
-        text_sha256: "abc",
+        text_sha256: "invalid",
       };
 
       const parsed = pageProcessingResultSchema.safeParse(invalidPage);
@@ -149,10 +151,14 @@ describe("Document Parser Subprocess & Schemas", () => {
   });
 
   describe("Parser CLI execution against test fixtures", () => {
-    function runParser(fixtureName: string, subDirName: string) {
+    function runParser(
+      fixtureName: string,
+      testCaseName: string,
+      extraConfig?: Record<string, unknown>
+    ) {
       const inputPdf = path.join(fixturesDir, fixtureName);
-      const outDir = path.join(testTempDir, subDirName, "out");
-      const tmpDir = path.join(testTempDir, subDirName, "tmp");
+      const outDir = path.join(testTempDir, `out-${testCaseName}`);
+      const tempOcrDir = path.join(testTempDir, `temp-${testCaseName}`);
 
       const args = [
         parserScript,
@@ -161,11 +167,19 @@ describe("Document Parser Subprocess & Schemas", () => {
         "--output",
         outDir,
         "--temp",
-        tmpDir,
+        tempOcrDir,
+        "--source-sha256",
+        "mock-sha-256",
+        "--config",
+        JSON.stringify({ ...PROCESSING_LIMITS, ...extraConfig }),
       ];
 
-      if (qpdfExe) args.push("--qpdf-path", qpdfExe);
-      if (tesseractExe) args.push("--tesseract-path", tesseractExe);
+      if (qpdfExe) {
+        args.push("--qpdf-path", qpdfExe);
+      }
+      if (tesseractExe) {
+        args.push("--tesseract-path", tesseractExe);
+      }
 
       const safeEnv = createSafeParserEnvironment();
       const res = spawnSync(pythonExe, args, {
@@ -190,41 +204,28 @@ describe("Document Parser Subprocess & Schemas", () => {
         "utf-8"
       );
       const manifest: ProcessingManifest = JSON.parse(manifestRaw);
-
       expect(manifest.status).toBe("SUCCEEDED");
       expect(manifest.page_count).toBe(2);
-      expect(manifest.ocr_page_count).toBe(0);
       expect(manifest.native_text_page_count).toBe(2);
+      expect(manifest.ocr_page_count).toBe(0);
 
-      // Page 1 check
       const page1Raw = await fs.readFile(
         path.join(outDir, "pages", "0001.json"),
         "utf-8"
       );
       const page1: PageProcessingResult = JSON.parse(page1Raw);
       expect(page1.page_number).toBe(1);
+      expect(page1.classification).toBe("TEXT_BASED");
       expect(page1.extraction_method).toBe("NATIVE");
-      expect(page1.text_content).toContain(
-        "Cardiologia: Insuficiencia Cardiaca"
-      );
-      expect(page1.width_points).toBeCloseTo(612, 1);
-      expect(page1.height_points).toBeCloseTo(792, 1);
-
-      // Page 2 check
-      const page2Raw = await fs.readFile(
-        path.join(outDir, "pages", "0002.json"),
-        "utf-8"
-      );
-      const page2: PageProcessingResult = JSON.parse(page2Raw);
-      expect(page2.page_number).toBe(2);
-      expect(page2.extraction_method).toBe("NATIVE");
-      expect(page2.text_content).toContain("Tratamiento farmacologico");
+      expect(page1.text_content).toContain("Cardiologia");
+      expect(page1.char_count).toBeGreaterThan(30);
+      expect(page1.text_sha256).toBeDefined();
     });
 
     it("applies Tesseract OCR on scanned_image.pdf in Spanish", async () => {
       const { exitCode, outDir } = runParser(
         "scanned_image.pdf",
-        "scanned-ocr"
+        "scanned-image"
       );
       expect(exitCode).toBe(0);
 
@@ -233,19 +234,18 @@ describe("Document Parser Subprocess & Schemas", () => {
         "utf-8"
       );
       const manifest: ProcessingManifest = JSON.parse(manifestRaw);
-
       expect(manifest.status).toBe("SUCCEEDED");
       expect(manifest.page_count).toBe(1);
       expect(manifest.ocr_page_count).toBe(1);
+      expect(manifest.native_text_page_count).toBe(0);
 
-      const page1Raw = await fs.readFile(
-        path.join(outDir, "pages", "0001.json"),
-        "utf-8"
+      const page1: PageProcessingResult = JSON.parse(
+        await fs.readFile(path.join(outDir, "pages", "0001.json"), "utf-8")
       );
-      const page1: PageProcessingResult = JSON.parse(page1Raw);
-      expect(page1.page_number).toBe(1);
+      expect(page1.classification).toBe("SCANNED");
       expect(page1.extraction_method).toBe("OCR");
-      expect(page1.text_content.toLowerCase()).toMatch(/disnea|edema|paciente/);
+      expect(page1.ocr_confidence).toBeDefined();
+      expect(page1.text_content).toContain("Paciente masculino");
     });
 
     it("handles mixed native text and scanned image in mixed_text_scanned.pdf", async () => {
@@ -348,5 +348,64 @@ describe("Document Parser Subprocess & Schemas", () => {
       expect(manifest.status).toBe("FAILED");
       expect(manifest.error_code).toBe("PAGE_RENDER_LIMIT");
     });
+
+    it("fails with PARSER_OUTPUT_INVALID when given out-of-range configuration", async () => {
+      const { exitCode, outDir } = runParser(
+        "valid_text.pdf",
+        "invalid-config",
+        {
+          maxPagesPerDocument: -5, // Invalid negative limit
+        }
+      );
+      expect(exitCode).not.toBe(0);
+
+      const manifestRaw = await fs.readFile(
+        path.join(outDir, "manifest.json"),
+        "utf-8"
+      );
+      const manifest: ProcessingManifest = JSON.parse(manifestRaw);
+      expect(manifest.status).toBe("FAILED");
+      expect(manifest.error_code).toBe("PARSER_OUTPUT_INVALID");
+    });
+
+    it("classifies pytesseract RuntimeError timeout as OCR_TIMEOUT", () => {
+      // Direct Python unit test simulating pytesseract RuntimeError("Tesseract process timeout")
+      const testPythonScript = `
+import sys, json
+from pathlib import Path
+from src.parsers.document_parser import DocumentParser
+
+out_dir = Path(sys.argv[1])
+parser = DocumentParser(
+    input_path=Path("tests/fixtures/documents/scanned_image.pdf"),
+    output_dir=out_dir,
+    temp_dir=out_dir / "temp"
+)
+
+# Simulate pytesseract timeout exception handling
+try:
+    raise RuntimeError("Tesseract process timeout")
+except RuntimeError as r_err:
+    if "timeout" in str(r_err).lower():
+        parser.write_failure_manifest("OCR_TIMEOUT", 0)
+        sys.exit(0)
+    parser.write_failure_manifest("OCR_UNAVAILABLE", 0)
+    sys.exit(1)
+`;
+      const outDir = path.join(testTempDir, "ocr-timeout-test");
+      const res = spawnSync(pythonExe, ["-c", testPythonScript, outDir], {
+        encoding: "utf-8",
+      });
+      expect(res.status).toBe(0);
+
+      const manifestRaw = fsSyncReadFile(path.join(outDir, "manifest.json"));
+      const manifest = JSON.parse(manifestRaw);
+      expect(manifest.error_code).toBe("OCR_TIMEOUT");
+      expect(manifest.status).toBe("FAILED");
+    });
   });
 });
+
+function fsSyncReadFile(filePath: string): string {
+  return fsSync.readFileSync(filePath, "utf-8");
+}

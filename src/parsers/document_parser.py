@@ -33,17 +33,16 @@ import pypdfium2 as pdfium
 import pytesseract
 from PIL import Image
 
-# Centralized default limits (mirrors src/config/processing-limits.ts)
-MAX_PAGES_PER_DOCUMENT = 300
-MAX_OCR_PAGES_PER_DOCUMENT = 60
-MAX_EXTRACTED_CHARS_PER_PAGE = 100_000
-MAX_EXTRACTED_CHARS_PER_DOCUMENT = 3_000_000
-MAX_RENDER_PIXELS_PER_PAGE = 12_000_000
-PREFLIGHT_TIMEOUT_SECONDS = 10
-NATIVE_PAGE_EXTRACTION_TIMEOUT_SECONDS = 5
-OCR_PAGE_TIMEOUT_SECONDS = 20
-MIN_NATIVE_CHARS_FOR_TEXT = 50
-PIPELINE_VERSION = "1.0.0"
+# Default fallback limits (overridden by --config from trusted orchestrator)
+DEFAULT_MAX_PAGES_PER_DOCUMENT = 300
+DEFAULT_MAX_OCR_PAGES_PER_DOCUMENT = 60
+DEFAULT_MAX_EXTRACTED_CHARS_PER_PAGE = 100_000
+DEFAULT_MAX_EXTRACTED_CHARS_PER_DOCUMENT = 3_000_000
+DEFAULT_MAX_RENDER_PIXELS_PER_PAGE = 12_000_000
+DEFAULT_PREFLIGHT_TIMEOUT_SECONDS = 10
+DEFAULT_OCR_PAGE_TIMEOUT_SECONDS = 20
+DEFAULT_MIN_NATIVE_CHARS_FOR_TEXT = 50
+DEFAULT_PIPELINE_VERSION = "1.0.0"
 
 
 def normalize_text(text: str) -> str:
@@ -56,33 +55,25 @@ def normalize_text(text: str) -> str:
     """
     if not text:
         return ""
-    # Standardize newlines
     text = text.replace("\r\n", "\n").replace("\r", "\n")
-    # Filter non-printable control characters (allow \n (10) and \t (9))
-    filtered_chars = []
-    for c in text:
-        code = ord(c)
+    # Filter non-printable ASCII control characters except tab and newline
+    clean_chars = []
+    for ch in text:
+        code = ord(ch)
         if code == 0:
             continue
         if code < 32 and code not in (9, 10):
             continue
-        filtered_chars.append(c)
-    normalized = "".join(filtered_chars)
-    # Strip trailing whitespace on each line
-    lines = [line.rstrip() for line in normalized.split("\n")]
+        clean_chars.append(ch)
+    cleaned = "".join(clean_chars)
+
+    # Clean whitespace per line
+    lines = [line.rstrip() for line in cleaned.split("\n")]
     return "\n".join(lines).strip()
 
 
 def compute_sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
-
-
-def compute_file_sha256(file_path: Path) -> str:
-    hasher = hashlib.sha256()
-    with open(file_path, "rb") as f:
-        while chunk := f.read(65536):
-            hasher.update(chunk)
-    return hasher.hexdigest()
 
 
 class DocumentParser:
@@ -94,24 +85,83 @@ class DocumentParser:
         qpdf_path: Optional[str] = None,
         tesseract_path: Optional[str] = None,
         source_sha256: Optional[str] = None,
+        config_json: Optional[str] = None,
     ):
         self.input_path = input_path
         self.output_dir = output_dir
         self.temp_dir = temp_dir
         self.pages_dir = output_dir / "pages"
-        self.qpdf_path = qpdf_path or shutil.which("qpdf") or "qpdf"
-        self.tesseract_path = tesseract_path or shutil.which("tesseract") or "tesseract"
-        self.source_sha256 = source_sha256 or compute_file_sha256(input_path)
+        self.qpdf_path = qpdf_path or "qpdf"
+        self.tesseract_path = tesseract_path
+        self.source_sha256 = source_sha256
 
-        if tesseract_path and os.path.exists(tesseract_path):
-            pytesseract.pytesseract.tesseract_cmd = tesseract_path
-
+        self.output_dir.mkdir(parents=True, exist_ok=True)
         self.pages_dir.mkdir(parents=True, exist_ok=True)
         self.temp_dir.mkdir(parents=True, exist_ok=True)
 
+        if self.tesseract_path:
+            pytesseract.pytesseract.tesseract_cmd = self.tesseract_path
+
+        # Parse and validate configuration from orchestrator
+        self.load_and_validate_config(config_json)
+
+    def load_and_validate_config(self, config_json: Optional[str]) -> None:
+        self.max_pages_per_document = DEFAULT_MAX_PAGES_PER_DOCUMENT
+        self.max_ocr_pages_per_document = DEFAULT_MAX_OCR_PAGES_PER_DOCUMENT
+        self.max_extracted_chars_per_page = DEFAULT_MAX_EXTRACTED_CHARS_PER_PAGE
+        self.max_extracted_chars_per_document = DEFAULT_MAX_EXTRACTED_CHARS_PER_DOCUMENT
+        self.max_render_pixels_per_page = DEFAULT_MAX_RENDER_PIXELS_PER_PAGE
+        self.preflight_timeout_seconds = DEFAULT_PREFLIGHT_TIMEOUT_SECONDS
+        self.ocr_page_timeout_seconds = DEFAULT_OCR_PAGE_TIMEOUT_SECONDS
+        self.min_native_chars_for_text = DEFAULT_MIN_NATIVE_CHARS_FOR_TEXT
+        self.pipeline_version = DEFAULT_PIPELINE_VERSION
+
+        if not config_json:
+            return
+
+        try:
+            cfg = json.loads(config_json)
+            if not isinstance(cfg, dict):
+                raise ValueError("Config must be a JSON object")
+
+            self.max_pages_per_document = int(cfg.get("maxPagesPerDocument", self.max_pages_per_document))
+            self.max_ocr_pages_per_document = int(cfg.get("maxOcrPagesPerDocument", self.max_ocr_pages_per_document))
+            self.max_extracted_chars_per_page = int(cfg.get("maxExtractedCharsPerPage", self.max_extracted_chars_per_page))
+            self.max_extracted_chars_per_document = int(cfg.get("maxExtractedCharsPerDocument", self.max_extracted_chars_per_document))
+            self.max_render_pixels_per_page = int(cfg.get("maxRenderPixelsPerPage", self.max_render_pixels_per_page))
+            self.preflight_timeout_seconds = int(cfg.get("preflightTimeoutSeconds", self.preflight_timeout_seconds))
+            self.ocr_page_timeout_seconds = int(cfg.get("ocrPageTimeoutSeconds", self.ocr_page_timeout_seconds))
+            self.min_native_chars_for_text = int(cfg.get("minNativeCharsForText", self.min_native_chars_for_text))
+            self.pipeline_version = str(cfg.get("pipelineVersion", self.pipeline_version))
+
+            # Validate parameter ranges
+            if not (1 <= self.max_pages_per_document <= 1000):
+                raise ValueError("maxPagesPerDocument out of range [1, 1000]")
+            if not (1 <= self.max_ocr_pages_per_document <= 500):
+                raise ValueError("maxOcrPagesPerDocument out of range [1, 500]")
+            if not (1000 <= self.max_extracted_chars_per_page <= 1_000_000):
+                raise ValueError("maxExtractedCharsPerPage out of range [1000, 1000000]")
+            if not (10_000 <= self.max_extracted_chars_per_document <= 50_000_000):
+                raise ValueError("maxExtractedCharsPerDocument out of range [10000, 50000000]")
+            if not (1_000_000 <= self.max_render_pixels_per_page <= 50_000_000):
+                raise ValueError("maxRenderPixelsPerPage out of range [1000000, 50000000]")
+            if not (1 <= self.preflight_timeout_seconds <= 120):
+                raise ValueError("preflightTimeoutSeconds out of range [1, 120]")
+            if not (1 <= self.ocr_page_timeout_seconds <= 120):
+                raise ValueError("ocrPageTimeoutSeconds out of range [1, 120]")
+            if not (1 <= self.min_native_chars_for_text <= 500):
+                raise ValueError("minNativeCharsForText out of range [1, 500]")
+            if not self.pipeline_version.strip():
+                raise ValueError("pipelineVersion cannot be empty")
+
+        except Exception as err:
+            sys.stderr.write(f"Invalid parser config: {err}\n")
+            self.write_failure_manifest("PARSER_OUTPUT_INVALID", 0)
+            sys.exit(1)
+
     def write_failure_manifest(self, error_code: str, warning_count: int = 0) -> None:
         manifest = {
-            "pipeline_version": PIPELINE_VERSION,
+            "pipeline_version": self.pipeline_version,
             "source_sha256": self.source_sha256,
             "page_count": 0,
             "structural_warning_count": warning_count,
@@ -126,32 +176,23 @@ class DocumentParser:
             json.dump(manifest, f, indent=2)
 
     def run_preflight(self) -> Tuple[int, int]:
-        """
-        Runs qpdf checks:
-        1. Encryption detection: qpdf --is-encrypted
-        2. Structural corruption: qpdf --check
-        3. Page count: qpdf --show-npages
-
-        Returns: (page_count, warning_count)
-        """
-        # 1. Check Encryption
+        # 1. Encryption Check
         try:
             res_enc = subprocess.run(
                 [self.qpdf_path, "--is-encrypted", str(self.input_path)],
                 capture_output=True,
                 text=True,
-                timeout=PREFLIGHT_TIMEOUT_SECONDS,
+                timeout=self.preflight_timeout_seconds,
                 shell=False,
             )
-            # Exit code 0 means encrypted
+            # qpdf --is-encrypted returns 0 if encrypted, 2 if not encrypted
             if res_enc.returncode == 0:
                 self.write_failure_manifest("PDF_ENCRYPTED")
                 sys.exit(1)
         except subprocess.TimeoutExpired:
             self.write_failure_manifest("PREFLIGHT_TIMEOUT")
             sys.exit(1)
-        except Exception as e:
-            # If qpdf is unavailable or fails to spawn
+        except Exception:
             self.write_failure_manifest("PARSER_CRASH")
             sys.exit(1)
 
@@ -162,7 +203,7 @@ class DocumentParser:
                 [self.qpdf_path, "--check", str(self.input_path)],
                 capture_output=True,
                 text=True,
-                timeout=PREFLIGHT_TIMEOUT_SECONDS,
+                timeout=self.preflight_timeout_seconds,
                 shell=False,
             )
             # qpdf exit codes: 0 = clean, 3 = warnings, 2 = errors
@@ -183,7 +224,7 @@ class DocumentParser:
                 [self.qpdf_path, "--show-npages", str(self.input_path)],
                 capture_output=True,
                 text=True,
-                timeout=PREFLIGHT_TIMEOUT_SECONDS,
+                timeout=self.preflight_timeout_seconds,
                 shell=False,
             )
             if res_pages.returncode not in (0, 3):
@@ -204,7 +245,7 @@ class DocumentParser:
                 self.write_failure_manifest("PDF_ZERO_PAGES", warning_count)
                 sys.exit(1)
 
-            if page_count > MAX_PAGES_PER_DOCUMENT:
+            if page_count > self.max_pages_per_document:
                 self.write_failure_manifest("PAGE_LIMIT_EXCEEDED", warning_count)
                 sys.exit(1)
 
@@ -246,57 +287,43 @@ class DocumentParser:
             rotation = int(page.get_rotation())
 
             # Protect against extreme dimension page bombs
-            if (width_pts * height_pts) > MAX_RENDER_PIXELS_PER_PAGE:
+            if (width_pts * height_pts) > self.max_render_pixels_per_page:
                 self.write_failure_manifest("PAGE_RENDER_LIMIT", warning_count)
                 sys.exit(1)
 
-            # 2. Extract native text
+            # 2. Extract Native Text
             textpage = page.get_textpage()
             raw_native_text = textpage.get_text_range()
             normalized_native_text = normalize_text(raw_native_text)
             native_char_count = len(normalized_native_text)
 
-            # Check single page text limit
-            if native_char_count > MAX_EXTRACTED_CHARS_PER_PAGE:
-                self.write_failure_manifest("TEXT_PAGE_LIMIT", warning_count)
-                sys.exit(1)
-
+            classification = "TEXT_BASED"
+            extraction_method = "NATIVE"
             final_text = normalized_native_text
             final_char_count = native_char_count
             ocr_char_count = 0
-            ocr_confidence: Optional[float] = None
-            classification = "TEXT_BASED"
-            extraction_method = "NATIVE"
+            ocr_confidence = None
 
-            # 3. Decide whether OCR is required
-            if native_char_count >= MIN_NATIVE_CHARS_FOR_TEXT:
-                classification = "TEXT_BASED"
-                extraction_method = "NATIVE"
+            # 3. Decision Boundary: Bypass OCR if sufficient native text exists
+            if native_char_count >= self.min_native_chars_for_text:
                 native_text_pages += 1
             else:
-                # Page requires OCR
-                ocr_pages += 1
-                if ocr_pages > MAX_OCR_PAGES_PER_DOCUMENT:
+                # Scanned or image-heavy page requires selective OCR
+                if ocr_pages >= self.max_ocr_pages_per_document:
                     self.write_failure_manifest("OCR_PAGE_LIMIT", warning_count)
                     sys.exit(1)
 
-                # 4. Render safety calculation
-                scale = 2.0  # 144 DPI
-                rendered_width = width_pts * scale
-                rendered_height = height_pts * scale
-                total_pixels = rendered_width * rendered_height
+                ocr_pages += 1
+                temp_image_path = self.temp_dir / f"page_{page_number}_{int(time.time()*1000)}.png"
 
-                if total_pixels > MAX_RENDER_PIXELS_PER_PAGE:
-                    # Scale down if possible
-                    max_scale = (MAX_RENDER_PIXELS_PER_PAGE / (width_pts * height_pts)) ** 0.5
-                    if max_scale < 1.0:
+                try:
+                    # Controlled rasterization at 144 DPI (scale=2.0)
+                    scale = 2.0
+                    render_pixels = (width_pts * scale) * (height_pts * scale)
+                    if render_pixels > self.max_render_pixels_per_page:
                         self.write_failure_manifest("PAGE_RENDER_LIMIT", warning_count)
                         sys.exit(1)
-                    scale = max_scale
 
-                # Render page to temporary image
-                temp_image_path = self.temp_dir / f"page_{page_number:04d}.png"
-                try:
                     bitmap = page.render(scale=scale)
                     pil_image = bitmap.to_pil()
                     pil_image.save(temp_image_path, format="PNG")
@@ -306,7 +333,7 @@ class DocumentParser:
                         pil_image,
                         lang="spa+eng",
                         output_type=pytesseract.Output.DICT,
-                        timeout=OCR_PAGE_TIMEOUT_SECONDS,
+                        timeout=self.ocr_page_timeout_seconds,
                     )
 
                     ocr_words = []
@@ -338,7 +365,6 @@ class DocumentParser:
                     elif ocr_char_count >= 20 and native_char_count > 0:
                         classification = "MIXED"
                         extraction_method = "HYBRID"
-                        # Use the richer text source
                         if ocr_char_count > native_char_count:
                             final_text = normalized_ocr_text
                             final_char_count = ocr_char_count
@@ -360,21 +386,30 @@ class DocumentParser:
                 except subprocess.TimeoutExpired:
                     self.write_failure_manifest("OCR_TIMEOUT", warning_count)
                     sys.exit(1)
-                except Exception as ocr_err:
+                except RuntimeError as r_err:
+                    if "timeout" in str(r_err).lower():
+                        self.write_failure_manifest("OCR_TIMEOUT", warning_count)
+                        sys.exit(1)
+                    self.write_failure_manifest("OCR_UNAVAILABLE", warning_count)
+                    sys.exit(1)
+                except Exception:
                     self.write_failure_manifest("OCR_UNAVAILABLE", warning_count)
                     sys.exit(1)
                 finally:
-                    # Guaranteed immediate cleanup of temporary page image
                     if temp_image_path.exists():
                         try:
                             temp_image_path.unlink()
                         except Exception:
                             pass
 
-            # Update document character total
+            # Validate per-page character bounds
+            if final_char_count > self.max_extracted_chars_per_page:
+                self.write_failure_manifest("PAGE_LIMIT_EXCEEDED", warning_count)
+                sys.exit(1)
+
             total_extracted_chars += final_char_count
-            if total_extracted_chars > MAX_EXTRACTED_CHARS_PER_DOCUMENT:
-                self.write_failure_manifest("TEXT_DOCUMENT_LIMIT", warning_count)
+            if total_extracted_chars > self.max_extracted_chars_per_document:
+                self.write_failure_manifest("PAGE_LIMIT_EXCEEDED", warning_count)
                 sys.exit(1)
 
             # Page provenance output
@@ -401,7 +436,7 @@ class DocumentParser:
         # Successful completion manifest
         duration_ms = int((time.time() - start_time) * 1000)
         manifest = {
-            "pipeline_version": PIPELINE_VERSION,
+            "pipeline_version": self.pipeline_version,
             "source_sha256": self.source_sha256,
             "page_count": actual_page_count,
             "structural_warning_count": warning_count,
@@ -425,6 +460,7 @@ def main():
     parser.add_argument("--qpdf-path", default=None, help="Path to qpdf binary")
     parser.add_argument("--tesseract-path", default=None, help="Path to tesseract binary")
     parser.add_argument("--source-sha256", default=None, help="Pre-computed SHA-256 of the source PDF")
+    parser.add_argument("--config", default=None, help="JSON string containing processing limits configuration")
 
     args = parser.parse_args()
 
@@ -443,6 +479,7 @@ def main():
         qpdf_path=args.qpdf_path,
         tesseract_path=args.tesseract_path,
         source_sha256=args.source_sha256,
+        config_json=args.config,
     )
 
     doc_parser.process()

@@ -257,7 +257,7 @@ export function DocumentLibrary({
         </Badge>
       );
     }
-    if (runStatus === "FAILED_RETRYABLE" || runStatus === "FAILED_FINAL") {
+    if (runStatus === "FAILED_RETRYABLE") {
       return (
         <Badge
           variant="destructive"
@@ -265,6 +265,17 @@ export function DocumentLibrary({
           title={doc.processing_run?.error_code || "Error al procesar"}
         >
           Error al procesar
+        </Badge>
+      );
+    }
+    if (runStatus === "FAILED_FINAL") {
+      return (
+        <Badge
+          variant="destructive"
+          className="text-xs opacity-80"
+          title={doc.processing_run?.error_code || "Error no recuperable"}
+        >
+          Error no recuperable
         </Badge>
       );
     }
@@ -515,9 +526,27 @@ export function DocumentLibrary({
                   </div>
 
                   {/* Actions */}
-                  <div className="flex items-center gap-2 self-end sm:self-center shrink-0">
-                    {(doc.processing_run?.status === "FAILED_RETRYABLE" ||
-                      doc.processing_run?.status === "FAILED_FINAL") && (
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    {/* Action to manually enqueue processing if READY document has no run yet */}
+                    {!doc.processing_run && isReady && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleRetryProcessing(doc.id)}
+                        disabled={retryingId === doc.id || isPending}
+                        className="gap-1.5 text-xs h-8 text-primary border-primary/30 hover:bg-primary/10"
+                      >
+                        {retryingId === doc.id ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <RotateCcw className="w-3.5 h-3.5" />
+                        )}
+                        Procesar
+                      </Button>
+                    )}
+
+                    {/* Retry button strictly for FAILED_RETRYABLE */}
+                    {doc.processing_run?.status === "FAILED_RETRYABLE" && (
                       <Button
                         size="sm"
                         variant="outline"

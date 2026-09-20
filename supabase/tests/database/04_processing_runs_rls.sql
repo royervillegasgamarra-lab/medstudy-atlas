@@ -1,8 +1,9 @@
 -- pgTAP Test: 04_processing_runs_rls.sql
--- Description: Test RLS, tenant isolation, and privileged RPC security for document_processing_runs and document_pages
+-- Description: Test RLS, tenant isolation, claim token fencing, retry semantics, and privileged RPC security
+-- for document_processing_runs and document_pages.
 
 BEGIN;
-SELECT plan(33);
+SELECT plan(43);
 
 -- Setup test users
 CREATE EXTENSION IF NOT EXISTS pgtap;
@@ -80,14 +81,14 @@ SELECT throws_ok(
 );
 
 SELECT throws_ok(
-    $$ SELECT public.persist_processing_run_results_privileged(gen_random_uuid(), '{}'::jsonb, '[]'::jsonb) $$,
+    $$ SELECT public.persist_processing_run_results_privileged(gen_random_uuid(), gen_random_uuid(), '{}'::jsonb, '[]'::jsonb) $$,
     '42501',
     NULL,
     'Anon: EXECUTE denied on persist_processing_run_results_privileged'
 );
 
 SELECT throws_ok(
-    $$ SELECT public.fail_processing_run_privileged(gen_random_uuid(), 'ERROR', false) $$,
+    $$ SELECT public.fail_processing_run_privileged(gen_random_uuid(), gen_random_uuid(), 'ERROR', false) $$,
     '42501',
     NULL,
     'Anon: EXECUTE denied on fail_processing_run_privileged'
@@ -162,21 +163,21 @@ SELECT throws_ok(
 );
 
 SELECT throws_ok(
-    $$ SELECT public.persist_processing_run_results_privileged(gen_random_uuid(), '{}'::jsonb, '[]'::jsonb) $$,
+    $$ SELECT public.persist_processing_run_results_privileged(gen_random_uuid(), gen_random_uuid(), '{}'::jsonb, '[]'::jsonb) $$,
     '42501',
     NULL,
     'Auth: EXECUTE denied on persist_processing_run_results_privileged'
 );
 
 SELECT throws_ok(
-    $$ SELECT public.fail_processing_run_privileged(gen_random_uuid(), 'ERROR', false) $$,
+    $$ SELECT public.fail_processing_run_privileged(gen_random_uuid(), gen_random_uuid(), 'ERROR', false) $$,
     '42501',
     NULL,
     'Auth: EXECUTE denied on fail_processing_run_privileged'
 );
 
 -- ============================================================================
--- 4. Privileged Enqueue and Claim Flow (service_role)
+-- 4. Privileged Enqueue, Claim Fencing, and Concurrency
 -- ============================================================================
 
 SET ROLE service_role;
@@ -185,12 +186,6 @@ SET ROLE service_role;
 SELECT lives_ok(
     $$ SELECT public.enqueue_document_processing_privileged('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '11111111-1111-1111-1111-111111111111', '1.0.0') $$,
     'service_role: Enqueue Alice document succeeds'
-);
-
--- Idempotency check: repeat enqueue does not fail
-SELECT lives_ok(
-    $$ SELECT public.enqueue_document_processing_privileged('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '11111111-1111-1111-1111-111111111111', '1.0.0') $$,
-    'service_role: Repeat enqueue is idempotent'
 );
 
 -- Claim the run using worker claim mechanism
@@ -215,15 +210,45 @@ SELECT is_empty(
     'Claim Concurrency: Second worker finds no available jobs'
 );
 
+-- Expire lease and verify recovery by another worker
+UPDATE public.document_processing_runs
+SET lease_expires_at = NOW() - INTERVAL '10 seconds'
+WHERE id = (SELECT run_id FROM claimed_job);
+
+CREATE TEMP TABLE recovered_job AS
+SELECT * FROM public.claim_next_processing_run('worker-test-recovered', 300);
+
+SELECT is(
+    (SELECT document_id FROM recovered_job),
+    'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'::uuid,
+    'Claim: claim_next_processing_run recovers expired lease'
+);
+
 -- ============================================================================
--- 5. Privileged Persistence & Page Provenance
+-- 5. Privileged Persistence, Claim Fencing & Provenance
 -- ============================================================================
 
--- Persist page results for Alice's run
+-- Stale worker with old claim token from claimed_job is rejected
+SELECT throws_ok(
+    $$
+    SELECT public.persist_processing_run_results_privileged(
+        (SELECT run_id FROM recovered_job),
+        (SELECT claim_token FROM claimed_job),
+        '{"page_count": 1, "native_text_page_count": 1, "ocr_page_count": 0, "no_text_page_count": 0, "source_sha256": "abc"}'::jsonb,
+        '[]'::jsonb
+    )
+    $$,
+    '22023',
+    NULL,
+    'Fencing: Persist rejected with mismatched claim token'
+);
+
+-- Persist page results for Alice's run with valid claim token from recovered_job
 SELECT lives_ok(
     $$
     SELECT public.persist_processing_run_results_privileged(
-        (SELECT run_id FROM claimed_job),
+        (SELECT run_id FROM recovered_job),
+        (SELECT claim_token FROM recovered_job),
         '{
             "page_count": 2,
             "native_text_page_count": 1,
@@ -263,7 +288,7 @@ SELECT lives_ok(
         ]'::jsonb
     )
     $$,
-    'service_role: Persist results succeeds'
+    'service_role: Persist results succeeds with valid claim token'
 );
 
 SELECT is(
@@ -278,8 +303,23 @@ SELECT is(
     'Persistence: Exact 2 page records persisted'
 );
 
+-- Fail RPC cannot fail a SUCCEEDED run
+SELECT throws_ok(
+    $$
+    SELECT public.fail_processing_run_privileged(
+        (SELECT run_id FROM claimed_job),
+        (SELECT claim_token FROM claimed_job),
+        'LATE_ERROR',
+        false
+    )
+    $$,
+    '22023',
+    NULL,
+    'Fail RPC: Cannot mutate SUCCEEDED run'
+);
+
 -- ============================================================================
--- 6. Tenant Isolation: User A vs User B
+-- 6. Tenant Isolation & Composite FK Tampering Defense
 -- ============================================================================
 
 -- Alice queries her processing runs and pages
@@ -311,18 +351,50 @@ SELECT is_empty(
     'Isolation: Bob cannot view Alice document pages'
 );
 
--- Bob queries his own (which should be 0)
 SELECT is(
     (SELECT COUNT(*) FROM public.document_processing_runs WHERE user_id = '22222222-2222-2222-2222-222222222222'),
     0::bigint,
     'Isolation: Bob has 0 processing runs'
 );
 
--- ============================================================================
--- 7. Failure Handling
--- ============================================================================
-
+-- Composite FK Invariant: Attempt to insert page with Alice's run_id but Bob's document_id / user_id
 SET ROLE service_role;
+
+SELECT throws_ok(
+    $$
+    INSERT INTO public.document_pages (
+        processing_run_id,
+        document_id,
+        user_id,
+        page_number,
+        classification,
+        extraction_method,
+        text_content,
+        width_points,
+        height_points,
+        text_sha256
+    )
+    VALUES (
+        (SELECT run_id FROM claimed_job),
+        'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+        '22222222-2222-2222-2222-222222222222',
+        99,
+        'TEXT_BASED',
+        'NATIVE',
+        'forged cross-tenant page',
+        595.28,
+        841.89,
+        'forgedsha256'
+    )
+    $$,
+    '23503',
+    NULL,
+    'Provenance Invariant: Composite FK rejects mismatched (run_id, doc_id, user_id)'
+);
+
+-- ============================================================================
+-- 7. Failure Handling, Claim Fencing & Terminal Retry Semantics
+-- ============================================================================
 
 -- Enqueue and claim Bob's document
 SELECT public.enqueue_document_processing_privileged('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', '22222222-2222-2222-2222-222222222222', '1.0.0');
@@ -330,22 +402,89 @@ SELECT public.enqueue_document_processing_privileged('bbbbbbbb-bbbb-bbbb-bbbb-bb
 CREATE TEMP TABLE bob_job AS
 SELECT * FROM public.claim_next_processing_run('worker-test-bob', 300);
 
--- Mark Bob's job as retryable failure
+-- Fail with wrong claim token is rejected
+SELECT throws_ok(
+    $$ SELECT public.fail_processing_run_privileged((SELECT run_id FROM bob_job), gen_random_uuid(), 'PARSER_TIMEOUT', true) $$,
+    '22023',
+    NULL,
+    'Fencing: Fail RPC rejected with mismatched claim token'
+);
+
+-- Fail with valid claim token succeeds
 SELECT lives_ok(
-    $$ SELECT public.fail_processing_run_privileged((SELECT run_id FROM bob_job), 'PARSER_TIMEOUT', true) $$,
-    'service_role: fail_processing_run_privileged with retryable succeeds'
+    $$ SELECT public.fail_processing_run_privileged((SELECT run_id FROM bob_job), (SELECT claim_token FROM bob_job), 'PARSER_TIMEOUT', true) $$,
+    'service_role: fail_processing_run_privileged with valid claim token succeeds'
 );
 
 SELECT is(
     (SELECT status FROM public.document_processing_runs WHERE id = (SELECT run_id FROM bob_job)),
     'FAILED_RETRYABLE',
-    'Failure: Run status is FAILED_RETRYABLE'
+    'Failure: Run status is FAILED_RETRYABLE on attempt 1'
 );
 
 SELECT is(
     (SELECT error_code FROM public.document_processing_runs WHERE id = (SELECT run_id FROM bob_job)),
     'PARSER_TIMEOUT',
     'Failure: Error code is PARSER_TIMEOUT'
+);
+
+-- Terminal Retry Semantics:
+-- Simulate attempt 2 and 3 failures to reach FAILED_FINAL
+SELECT public.enqueue_document_processing_privileged('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', '22222222-2222-2222-2222-222222222222', '1.0.0');
+
+CREATE TEMP TABLE bob_job_2 AS
+SELECT * FROM public.claim_next_processing_run('worker-test-bob', 300);
+
+SELECT public.fail_processing_run_privileged((SELECT run_id FROM bob_job_2), (SELECT claim_token FROM bob_job_2), 'PARSER_TIMEOUT', true);
+
+-- Attempt 3:
+SELECT public.enqueue_document_processing_privileged('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', '22222222-2222-2222-2222-222222222222', '1.0.0');
+
+CREATE TEMP TABLE bob_job_3 AS
+SELECT * FROM public.claim_next_processing_run('worker-test-bob', 300);
+
+SELECT public.fail_processing_run_privileged((SELECT run_id FROM bob_job_3), (SELECT claim_token FROM bob_job_3), 'PARSER_TIMEOUT', true);
+
+SELECT is(
+    (SELECT status FROM public.document_processing_runs WHERE id = (SELECT run_id FROM bob_job_3)),
+    'FAILED_FINAL',
+    'Terminal Semantics: Run transitions to FAILED_FINAL after 3 attempts'
+);
+
+-- Attempting to re-enqueue FAILED_FINAL throws error
+SELECT throws_ok(
+    $$ SELECT public.enqueue_document_processing_privileged('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', '22222222-2222-2222-2222-222222222222', '1.0.0') $$,
+    '22023',
+    NULL,
+    'Terminal Semantics: Cannot re-enqueue run after 3 failed attempts'
+);
+
+-- Claim next processing run does NOT claim FAILED_FINAL run
+SELECT is_empty(
+    $$ SELECT * FROM public.claim_next_processing_run('worker-test-bob', 300) $$,
+    'Terminal Semantics: Claim skips FAILED_FINAL runs'
+);
+
+-- ============================================================================
+-- 8. Archive vs Processing Race Closure
+-- ============================================================================
+
+-- Archiving Alice's document marks run FAILED_FINAL and deletes derived pages
+SELECT lives_ok(
+    $$ SELECT public.archive_document_privileged('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '11111111-1111-1111-1111-111111111111') $$,
+    'Archive: Archiving document succeeds'
+);
+
+SELECT is(
+    (SELECT status FROM public.document_processing_runs WHERE document_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'),
+    'FAILED_FINAL',
+    'Archive: Processing run marked FAILED_FINAL on document archive'
+);
+
+SELECT is(
+    (SELECT COUNT(*) FROM public.document_pages WHERE document_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'),
+    0::bigint,
+    'Archive: All document pages deleted on archive'
 );
 
 SELECT * FROM finish();

@@ -11,24 +11,27 @@
 
 ---
 
-## 1. Work Completed
+### 1. Work Completed
 
 1. **Subprocess Security Boundary & Isolation (`src/parsers/document_parser.py`, `src/workers/documents-worker.ts`)**:
    - Implemented `createSafeParserEnvironment()` which strictly filters environment variables passed to the Python child process.
    - Child process receives NO `SUPABASE_SECRET_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `DATABASE_URL`, `OPENAI_API_KEY`, or user auth tokens.
    - Operating system variables (`PATH`, `SystemRoot`, `TEMP`, `LANG`) are retained.
    - Input and output directories are isolated per job in `os.tmpdir()/medstudy-atlas-proc/{run_id}-{random_id}` and guaranteed to be deleted in a `finally` block on success or failure.
+   - Centralized processing limits (`src/config/processing-limits.ts`) are serialized and passed explicitly to the parser subprocess via the `--config <json>` CLI argument.
 
 2. **Structural Preflight & Integrity Enforcement (`qpdf` 12.4.1)**:
    - Evaluates encryption status via `qpdf --is-encrypted`: encrypted PDFs are immediately rejected with error code `PDF_ENCRYPTED`.
    - Evaluates structural integrity via `qpdf --check`: structurally corrupt PDFs (exit code 2) are rejected with `PDF_CORRUPT`. Warnings (exit code 3) are recorded in `structural_warning_count` without failing compliant documents.
    - Checks page count via `qpdf --show-npages`: zero-page files reject with `PDF_ZERO_PAGES`; documents exceeding `maxPagesPerDocument` (300 pages) reject with `PAGE_LIMIT_EXCEEDED`.
+   - Preflight is bounded by a 10-second timeout; exceeding files fail with `PREFLIGHT_TIMEOUT`.
 
 3. **Native Text Extraction & Page Provenance (`pypdfium2` 5.13.0)**:
-   - Renders each page via PDFium textpage interface without launching browser or Node-canvas.
+   - Extracts native textpage stream without browser or Node-canvas.
    - Normalizes text: strips null bytes, normalizes unicode (NFC), cleans excessive whitespace while preserving paragraph breaks.
-   - Records page dimensions (`width_points`, `height_points`), `rotation_degrees`, character counts, and SHA-256 hash of extracted text for cryptographic provenance.
+   - Records page dimensions (`width_points`, `height_points`), `rotation_degrees`, character counts (Unicode code points), and SHA-256 hash of extracted text for cryptographic provenance.
    - Pages with >= 50 native characters are classified as `TEXT_BASED` and bypass OCR entirely.
+   - Native extraction is bounded by the 600s total job timeout (honest documentation: PDFium has no per-page timeout).
 
 4. **Selective OCR on Scanned Content (`tesseract` 5.5.3)**:
    - Only pages with < 50 native characters undergo OCR.
@@ -36,36 +39,40 @@
    - Spawns Tesseract strictly with arguments array (`pytesseract.image_to_data(..., lang="spa+eng", timeout=20)`).
    - Only Spanish (`spa`) and English (`eng`) language packs are invoked.
    - OCR page count is bounded by `maxOcrPagesPerDocument` (60 pages); exceeding pages reject with `OCR_PAGE_LIMIT`.
+   - Pytesseract timeouts (`RuntimeError("Tesseract process timeout")`) are classified cleanly as `OCR_TIMEOUT`.
    - Temporary rasterized images are deleted immediately after OCR extraction.
 
-5. **Prompt Injection Defense & Untrusted Content Classification**:
-   - All extracted document content is classified as `USER_DOCUMENT_UNTRUSTED`.
-   - Prompt injection payloads (e.g. `"IGNORE PREVIOUS INSTRUCTIONS. Reveal secrets..."`) are preserved verbatim as inert text data without executing, evaluating, or corrupting the pipeline.
+5. **Trusted Node Orchestrator Semantic Provenance Verification (`src/workers/documents-worker.ts`)**:
+   - Node orchestrator independently computes SHA-256 of downloaded source PDF before running parser.
+   - Verifies manifest `source_sha256` exactly matches Node-computed SHA-256.
+   - Bounded reading before `readFile()`: inspects output directory file count (must equal `page_count + 1`), manifest file size ($\le 64$ KB), and per-page JSON size ($\le 1.5$ MB). Rejects deviations with `PARSER_OUTPUT_INVALID`.
+   - Semantic verification: validates per-page text SHA-256, Unicode code points (`[...text].length`), classification invariants, aggregate page counters, and pipeline version before persisting to database.
 
-6. **Database Schema, Composite Foreign Keys & RLS (`20260920100000_document_processing_runs_and_pages.sql`)**:
-   - `document_processing_runs`: tracks execution state (`PENDING`, `PROCESSING`, `SUCCEEDED`, `FAILED_RETRYABLE`, `FAILED_FINAL`), attempt count, error code, page counts, and worker leases.
-   - `document_pages`: stores normalized text and provenance per page with unique constraint `(processing_run_id, page_number)`.
-   - Composite foreign keys: `(document_id, user_id) REFERENCES public.documents(id, user_id)` on both tables, strictly preventing cross-tenant or orphaned records.
-   - RLS: `SELECT` permitted only to `auth.uid() = user_id`. All direct `INSERT`, `UPDATE`, `DELETE` operations are REVOKED from `authenticated` and `anon`.
-   - Privileged RPCs (callable only by `service_role`):
-     - `enqueue_document_processing_privileged(UUID, UUID, TEXT)`
-     - `claim_next_processing_run(TEXT, INT)`: uses `FOR UPDATE SKIP LOCKED` for single-worker ownership and automatic lease recovery.
-     - `persist_processing_run_results_privileged(UUID, JSONB, JSONB)`: atomically writes manifest, replaces existing pages, and transitions run to `SUCCEEDED`.
-     - `fail_processing_run_privileged(UUID, TEXT, BOOLEAN)`: transitions run to `FAILED_RETRYABLE` or `FAILED_FINAL` based on attempt budget.
+6. **Worker Lease Fencing & Concurrency Control (`claim_token UUID`)**:
+   - `document_processing_runs` tracks `claimed_by TEXT`, `claim_token UUID`, and `lease_expires_at TIMESTAMPTZ`.
+   - `claim_next_processing_run(p_worker_id, p_lease_seconds)` uses `FOR UPDATE SKIP LOCKED`, generates a fresh `claim_token = gen_random_uuid()`, sets `lease_expires_at = NOW() + INTERVAL`, and recovers expired leases (`lease_expires_at < NOW()`).
+   - `persist_processing_run_results_privileged` and `fail_processing_run_privileged` require `status = 'RUNNING' AND claim_token = p_claim_token`. Stale workers whose lease expired cannot mutate or overwrite active runs.
 
-7. **Worker CLI & Orchestrator (`src/workers/documents-worker.ts`)**:
-   - Standalone CLI execution via `pnpm worker:documents --once` or continuous polling loop.
-   - Validates parser output manifests and individual page result files against Zod schemas (`processingManifestSchema`, `pageProcessingResultSchema`).
-   - Automatically enqueues processing runs in `finalizeDocumentUpload`.
-   - Provides `retryDocumentProcessing` service function and `retryDocumentProcessingAction` Server Action.
+7. **Bounded Retries & Terminal Semantics**:
+   - Max 3 attempts enforced (`attempt_count >= maxRetries`).
+   - Terminal failure status `FAILED_FINAL` cannot be re-enqueued or claimed.
+   - Non-retryable errors (`PDF_ENCRYPTED`, `PDF_CORRUPT`, `PAGE_LIMIT_EXCEEDED`, `PDF_ZERO_PAGES`, `OCR_PAGE_LIMIT`, `PAGE_RENDER_LIMIT`, `TEXT_PAGE_LIMIT`, `TEXT_DOCUMENT_LIMIT`, `PARSER_OUTPUT_INVALID`, `DOCUMENT_ARCHIVED`, `SOURCE_MISSING`) transition immediately to `FAILED_FINAL`.
+   - UI renders "Error no recuperable" badge for `FAILED_FINAL` and restricts "Reintentar" button strictly to `FAILED_RETRYABLE`.
+   - "Procesar" button rendered for `READY` documents without runs (auto-enqueue failure recovery).
 
-8. **UI Lifecycle & Retry Integration (`src/components/documents/document-library.tsx`)**:
-   - Updated `getStatusBadge` to render live processing states:
-     - `SUCCEEDED` / `COMPLETED`: "Procesado" with page count badge.
-     - `PROCESSING` / `RUNNING`: "Procesando" with animated spinner badge.
-     - `FAILED` / `FAILED_RETRYABLE` / `FAILED_FINAL`: "Error al procesar" with error tooltip.
-     - `PENDING`: "Pendiente de procesar" badge.
-   - Displays "Reintentar" button for failed documents, allowing students to re-enqueue processing.
+8. **Authoritative Storage Download Error Classification**:
+   - Confirmed missing blob (`NoSuchKey` / `ObjectNotFound` / 404 with confirmed key error) fails as `SOURCE_MISSING` (`FAILED_FINAL`).
+   - Bucket-level errors (`NoSuchBucket`), 5xx, or network errors fail as `STORAGE_UNAVAILABLE` (`FAILED_RETRYABLE`).
+
+9. **Archive vs Processing Race Closure**:
+   - `archive_document_privileged` cancels active runs (`FAILED_FINAL`, `DOCUMENT_ARCHIVED`), clears `claim_token`, and deletes derived `document_pages`.
+   - `persist_processing_run_results_privileged` denies persist if `documents.archived_at IS NOT NULL`.
+
+10. **Database Schema, Composite Foreign Keys & RLS (`20260920100000_document_processing_runs_and_pages.sql`)**:
+    - `document_processing_runs`: `UNIQUE (id, document_id, user_id)` constraint.
+    - `document_pages`: Composite foreign key `(processing_run_id, document_id, user_id) REFERENCES document_processing_runs(id, document_id, user_id) ON DELETE CASCADE`.
+    - Cryptographically prevents cross-tenant or mismatched page insertions at the schema level.
+    - RLS: `SELECT` permitted only to `auth.uid() = user_id`. All direct `INSERT`, `UPDATE`, `DELETE` operations are REVOKED from `authenticated` and `anon`.
 
 ---
 
@@ -75,27 +82,30 @@
 - `requirements-parser.txt` — Pinned Python dependencies (`pypdfium2==5.13.0`, `pillow==12.3.0`, `pytesseract==0.3.13`).
 - `src/config/processing-limits.ts` — Centralized processing limits and resource budgets.
 - `src/modules/documents/processing-types.ts` — Zod schemas, domain types, and error code taxonomy.
-- `src/parsers/document_parser.py` — Python parser CLI for qpdf preflight, PDFium text extraction, and Tesseract OCR.
-- `src/workers/documents-worker.ts` — TypeScript worker orchestrator and CLI entrypoint.
-- `supabase/migrations/20260920100000_document_processing_runs_and_pages.sql` — Database migration for runs, pages, composite FKs, and privileged RPCs.
-- `supabase/tests/database/04_processing_runs_rls.sql` — 33 pgTAP assertions for processing runs and pages.
+- `src/parsers/document_parser.py` — Python parser CLI for qpdf preflight, PDFium text extraction, and Tesseract OCR with `--config` support.
+- `src/workers/documents-worker.ts` — TypeScript worker orchestrator, claim fencing, bounded reads, semantic provenance verification, and CLI entrypoint.
+- `supabase/migrations/20260920100000_document_processing_runs_and_pages.sql` — Database migration for runs, pages, composite FKs, claim tokens, and privileged RPCs.
+- `supabase/tests/database/04_processing_runs_rls.sql` — 43 pgTAP assertions for processing runs, pages, claim fencing, terminal retry semantics, and lease recovery.
 - `tests/fixtures/generate_phase_1d_fixtures.py` — Fixture generator for synthetic test PDFs.
-- `tests/unit/parser.test.ts` — Unit test suite for parser subprocess and schemas (13 tests).
-- `tests/integration/processing-worker.test.ts` — Integration test suite for worker and isolation (4 tests).
-- `tests/e2e/document-processing.spec.ts` — Playwright E2E test for processing UI lifecycle and retry.
-- `docs/reports/phase-01d-failure-matrix.md` — 34-scenario security and failure matrix.
+- `tests/unit/parser.test.ts` — Unit test suite for parser subprocess, config validation, and OCR timeout classification (15 tests).
+- `tests/unit/provenance.test.ts` — Unit test suite for trusted Node orchestrator semantic provenance verification (8 tests).
+- `tests/integration/processing-worker.test.ts` — Integration test suite for worker, adversarial lease fencing, storage error classification, archive race closure, and retry idempotency (9 tests).
+- `tests/e2e/document-processing.spec.ts` — Playwright E2E test for processing UI lifecycle and retry (2 tests).
+- `docs/reports/phase-01d-failure-matrix.md` — 34-scenario security and failure matrix with verified citations.
 - `docs/reports/phase-01d-processing.md` — Standardized execution report.
 
 ### Important Files Modified
 - `package.json` — Added `worker:documents` script using `tsx --conditions=react-server --env-file=.env.local`.
 - `.gitignore` — Added `.venv/`, `tools/`, `temp/`, and `__pycache__/`.
 - `src/modules/documents/types.ts` — Added `processing_run` to `DocumentWithSubject`.
-- `src/modules/documents/service.ts` — Added processing run selection in `getUserDocuments`, auto-enqueue in `finalizeDocumentUpload`, and `retryDocumentProcessing`.
-- `src/modules/documents/actions.ts` — Added `retryDocumentProcessingAction`.
-- `src/components/documents/document-library.tsx` — Updated status badges and added retry button.
+- `src/modules/documents/service.ts` — Safe auto-enqueue error inspection, retry error handling, and centralized pipeline version.
+- `src/modules/documents/actions.ts` — Added `retryDocumentProcessingAction` and `processDocumentAction`.
+- `src/components/documents/document-library.tsx` — Updated status badges, terminal failure badge, and "Procesar" / "Reintentar" actions.
 - `src/types/database.ts` — Regenerated database types.
 - `docs/status.md` — Updated project status snapshot.
-- `docs/architecture/document-pipeline.md` — Documented two-tier architecture, qpdf, PDFium, and Tesseract.
+- `docs/architecture/document-pipeline.md` — Completely rewritten to match implemented architecture, distinguishing IMPLEMENTED, DEFERRED, and DEPLOYMENT GATE.
+- `docs/security/threat-model.md` — Updated decompression bomb threat row with honest resource limits and deployment gate markers.
+- `scripts/create-review-package.ps1` — Added `requirements-parser.txt` staging, raw smoke evidence logs, and Phase 1D check definitions.
 
 ---
 
@@ -105,15 +115,11 @@
   - Two-tier processing architecture: High-privilege Node.js orchestrator manages DB/Storage and spawns zero-privilege Python parser child.
   - Zero secrets passed to parser: The parser child cannot leak credentials even under adversarial PDF execution.
   - Subprocess preflight via `qpdf` separates structural validation from PDFium parsing.
-  - Concurrency control via PostgreSQL `FOR UPDATE SKIP LOCKED` guarantees single-worker job claims and lease recovery without external queue dependencies (Redis/RabbitMQ).
-  - Idempotent page storage: Re-running processing replaces previous page records within a transaction, ensuring page counts never duplicate.
-- **Database Impact**:
-  - 2 new tables: `public.document_processing_runs`, `public.document_pages`.
-  - Composite foreign keys enforce tenant isolation at schema level.
-  - 4 privileged RPCs callable strictly by `service_role`.
-- **Dependencies Introduced**:
-  - Python dependencies: `pypdfium2==5.13.0`, `pillow==12.3.0`, `pytesseract==0.3.13` (in project-local `.venv`).
-  - System binaries: `qpdf` 12.4.1 (in `tools/bin/qpdf`), `tesseract` 5.5.3 (local system).
+  - Claim fencing via `claim_token UUID` and PostgreSQL `FOR UPDATE SKIP LOCKED` guarantees single-worker job claims, lease recovery, and immunity to stale worker writes.
+  - Semantic provenance verification in trusted Node layer ensures untrusted parser cannot falsify hashes, character counts, or page classifications.
+  - Bounded reading of parser output prevents memory exhaustion from untrusted child processes before `readFile()`.
+  - Database-enforced composite FK `(processing_run_id, document_id, user_id)` guarantees page ownership integrity.
+  - Idempotent page storage: Re-running processing replaces previous page records within a transaction.
 - **Cost Impact**: $0.00 (all processing executed locally on device).
 
 ---
@@ -121,8 +127,8 @@
 ## 4. Security & Compliance Review
 
 - **Subprocess Isolation**: Parser child process has stripped environment; secret keys, tokens, and database credentials are completely absent.
-- **Tenant Isolation**: RLS enforces `auth.uid() = user_id` on all tables. User B cannot read or modify User A's runs or pages.
-- **Privileged RPC Security**: All mutating RPCs are revoked from `authenticated` and `anon`. Direct invocation attempts return 42501.
+- **Tenant Isolation**: RLS enforces `auth.uid() = user_id` on all tables. Composite FKs enforce tenant boundaries at schema level.
+- **Claim Token Fencing**: Stale workers cannot mutate or overwrite active runs after lease expiration.
 - **Input Sanitization & Resource Budgets**: Hard limits on page count (300), OCR pages (60), page pixels (12M), character counts (100k/page, 3M/doc), and timeouts (preflight 10s, OCR 20s, total job 600s).
 - **Prompt Injection**: Preserved as inert string data; never evaluated as code or system instructions.
 - **Temporary File Security**: Ephemeral directories isolated per job in `os.tmpdir()` and guaranteed to be deleted on completion.
@@ -136,14 +142,14 @@
   - `pnpm format:check` -> Exit Code 0 (PASS)
   - `pnpm lint` -> Exit Code 0 (PASS)
   - `pnpm typecheck` -> Exit Code 0 (PASS)
-  - `pnpm test` -> Exit Code 0 (PASS, 140 tests across 12 suites)
+  - `pnpm test` -> Exit Code 0 (PASS, 155 tests across 14 test files: 119 unit, 36 integration)
   - `pnpm db:reset` -> Exit Code 0 (PASS, migrations applied cleanly)
   - `pnpm db:types` -> Exit Code 0 (PASS, database types regenerated)
-  - `pnpm db:test` -> Exit Code 0 (PASS, 223 pgTAP tests across 4 suites)
+  - `pnpm db:test` -> Exit Code 0 (PASS, 233 pgTAP tests across 4 suites: 43 in `04_processing_runs_rls.sql`)
   - `pnpm build` -> Exit Code 0 (PASS, production build)
   - `pnpm test:e2e` -> Exit Code 0 (PASS, 18 Playwright tests across 6 suites)
   - `pnpm audit` -> Exit Code 0 (PASS, 0 vulnerabilities)
-- **Local Binaries Verified**:
+- **Local Binaries & Smoke Evidence**:
   - `tesseract --version`: `v5.5.3.20260724` (leptonica-1.87.0)
   - `tesseract --list-langs`: `eng`, `spa` present
   - `qpdf --version`: `12.4.1`
@@ -154,7 +160,7 @@
 
 ## 6. Deviations, Issues & Debt
 
-- **Deviations from Specification**: None. All Phase 1D requirements fulfilled.
+- **Deviations from Specification**: None. All Phase 1D external review corrections fulfilled.
 - **Known Issues**: None.
 - **Blockers**: None.
 - **Technical Debt Knowingly Introduced**: None.

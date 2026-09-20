@@ -22,13 +22,13 @@ export const PROCESSING_LIMITS = {
   /** Maximum seconds allowed for qpdf structural preflight */
   preflightTimeoutSeconds: 10,
 
-  /** Maximum seconds allowed for native page extraction */
-  nativePageExtractionTimeoutSeconds: 5,
-
   /** Maximum seconds allowed for a single page OCR execution */
   ocrPageTimeoutSeconds: 20,
 
-  /** Maximum total seconds allowed for the complete document processing job */
+  /**
+   * Maximum total seconds allowed for the complete document processing job.
+   * Operative deadline for native page extraction and overall subprocess execution.
+   */
   totalJobTimeoutSeconds: 600,
 
   /** Maximum processing retries before moving to FAILED_FINAL */
@@ -43,3 +43,5 @@ export const PROCESSING_LIMITS = {
   /** Worker claim lease duration in seconds */
   workerLeaseSeconds: 300,
 } as const;
+
+export type ProcessingLimits = typeof PROCESSING_LIMITS;

@@ -94,29 +94,32 @@ export type Database = {
         };
         Relationships: [
           {
-            foreignKeyName: "document_pages_processing_run_id_fkey";
-            columns: ["processing_run_id"];
-            isOneToOne: false;
-            referencedRelation: "document_processing_runs";
-            referencedColumns: ["id"];
-          },
-          {
             foreignKeyName: "fk_document_pages_doc_owner";
             columns: ["document_id", "user_id"];
             isOneToOne: false;
             referencedRelation: "documents";
             referencedColumns: ["id", "user_id"];
           },
+          {
+            foreignKeyName: "fk_document_pages_run_doc_user";
+            columns: ["processing_run_id", "document_id", "user_id"];
+            isOneToOne: false;
+            referencedRelation: "document_processing_runs";
+            referencedColumns: ["id", "document_id", "user_id"];
+          },
         ];
       };
       document_processing_runs: {
         Row: {
           attempt_count: number;
+          claim_token: string | null;
+          claimed_by: string | null;
           created_at: string;
           document_id: string;
           error_code: string | null;
           finished_at: string | null;
           id: string;
+          lease_expires_at: string | null;
           native_text_page_count: number;
           no_text_page_count: number;
           ocr_page_count: number;
@@ -130,11 +133,14 @@ export type Database = {
         };
         Insert: {
           attempt_count?: number;
+          claim_token?: string | null;
+          claimed_by?: string | null;
           created_at?: string;
           document_id: string;
           error_code?: string | null;
           finished_at?: string | null;
           id?: string;
+          lease_expires_at?: string | null;
           native_text_page_count?: number;
           no_text_page_count?: number;
           ocr_page_count?: number;
@@ -148,11 +154,14 @@ export type Database = {
         };
         Update: {
           attempt_count?: number;
+          claim_token?: string | null;
+          claimed_by?: string | null;
           created_at?: string;
           document_id?: string;
           error_code?: string | null;
           finished_at?: string | null;
           id?: string;
+          lease_expires_at?: string | null;
           native_text_page_count?: number;
           no_text_page_count?: number;
           ocr_page_count?: number;
@@ -350,6 +359,7 @@ export type Database = {
         Args: { p_lease_seconds?: number; p_worker_id: string };
         Returns: {
           attempt_count: number;
+          claim_token: string;
           document_id: string;
           original_filename: string;
           pipeline_version: string;
@@ -408,7 +418,12 @@ export type Database = {
         }[];
       };
       fail_processing_run_privileged: {
-        Args: { p_error_code: string; p_retryable?: boolean; p_run_id: string };
+        Args: {
+          p_claim_token: string;
+          p_error_code: string;
+          p_retryable?: boolean;
+          p_run_id: string;
+        };
         Returns: boolean;
       };
       finalize_document_upload_privileged: {
@@ -443,7 +458,12 @@ export type Database = {
         };
       };
       persist_processing_run_results_privileged: {
-        Args: { p_manifest: Json; p_pages: Json; p_run_id: string };
+        Args: {
+          p_claim_token: string;
+          p_manifest: Json;
+          p_pages: Json;
+          p_run_id: string;
+        };
         Returns: boolean;
       };
       request_document_upload: {

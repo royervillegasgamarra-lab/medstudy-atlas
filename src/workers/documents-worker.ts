@@ -18,6 +18,7 @@ import * as os from "os";
 import * as crypto from "crypto";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { PROCESSING_LIMITS } from "@/config/processing-limits";
+import { isConfirmedObjectNotFoundError } from "@/modules/documents/service";
 import {
   processingManifestSchema,
   pageProcessingResultSchema,
@@ -32,6 +33,7 @@ export interface WorkerJobClaim {
   user_id: string;
   pipeline_version: string;
   attempt_count: number;
+  claim_token: string;
   storage_bucket: string;
   storage_key: string;
   size_bytes: number;
@@ -46,6 +48,129 @@ export interface WorkerRunResult {
   errorCode?: ProcessingErrorCode;
   pageCount?: number;
   error?: string;
+}
+
+export interface ProvenanceValidationInput {
+  job: WorkerJobClaim;
+  sourceSha256: string;
+  manifest: ProcessingManifest;
+  pages: PageProcessingResult[];
+}
+
+/**
+ * Trusted Node Orchestrator Semantic Provenance Verification.
+ * Validates cryptographic hashes, Unicode character counts, aggregate counters,
+ * and classification invariants before allowing persistence.
+ */
+export function verifyParserProvenance(input: ProvenanceValidationInput): {
+  valid: boolean;
+  error?: string;
+} {
+  const { job, sourceSha256, manifest, pages } = input;
+
+  if (manifest.pipeline_version !== job.pipeline_version) {
+    return { valid: false, error: "Pipeline version mismatch" };
+  }
+  if (manifest.source_sha256 !== sourceSha256) {
+    return { valid: false, error: "Source SHA-256 mismatch" };
+  }
+  if (manifest.page_count !== pages.length) {
+    return { valid: false, error: "Page count mismatch" };
+  }
+
+  const validCombos: Record<string, string[]> = {
+    TEXT_BASED: ["NATIVE"],
+    SCANNED: ["OCR"],
+    MIXED: ["HYBRID"],
+    NO_TEXT: ["NONE"],
+    IMAGE_ONLY: ["NONE"],
+  };
+
+  for (let i = 0; i < pages.length; i++) {
+    const page = pages[i];
+    if (page.page_number !== i + 1) {
+      return {
+        valid: false,
+        error: `Page number mismatch: expected ${i + 1}, got ${page.page_number}`,
+      };
+    }
+
+    // Invariant: exact text SHA-256
+    const computedTextSha = crypto
+      .createHash("sha256")
+      .update(page.text_content, "utf8")
+      .digest("hex");
+    if (page.text_sha256 !== computedTextSha) {
+      return {
+        valid: false,
+        error: `Text SHA-256 mismatch on page ${page.page_number}`,
+      };
+    }
+
+    // Invariant: deterministic Unicode code point character count matching Python len()
+    const computedCharCount = [...page.text_content].length;
+    if (page.char_count !== computedCharCount) {
+      return {
+        valid: false,
+        error: `Character count mismatch on page ${page.page_number}: expected ${computedCharCount}, got ${page.char_count}`,
+      };
+    }
+
+    if (page.native_char_count < 0 || page.ocr_char_count < 0) {
+      return {
+        valid: false,
+        error: `Negative character count on page ${page.page_number}`,
+      };
+    }
+
+    const allowed = validCombos[page.classification];
+    if (!allowed || !allowed.includes(page.extraction_method)) {
+      return {
+        valid: false,
+        error: `Impossible classification/method combo on page ${page.page_number}: ${page.classification} with ${page.extraction_method}`,
+      };
+    }
+
+    if (page.classification === "TEXT_BASED" && page.native_char_count === 0) {
+      return {
+        valid: false,
+        error: `TEXT_BASED with zero native chars on page ${page.page_number}`,
+      };
+    }
+    if (
+      ["NO_TEXT", "IMAGE_ONLY"].includes(page.classification) &&
+      (page.char_count > 0 || page.text_content !== "")
+    ) {
+      return {
+        valid: false,
+        error: `NO_TEXT with non-empty content on page ${page.page_number}`,
+      };
+    }
+  }
+
+  const expectedNative = pages.filter(
+    (p) => p.classification === "TEXT_BASED"
+  ).length;
+  const expectedOcr = pages.filter((p) =>
+    ["SCANNED", "MIXED"].includes(p.classification)
+  ).length;
+  const expectedNoText = pages.filter((p) =>
+    ["NO_TEXT", "IMAGE_ONLY"].includes(p.classification)
+  ).length;
+
+  if (
+    manifest.native_text_page_count !== expectedNative ||
+    manifest.ocr_page_count !== expectedOcr ||
+    manifest.no_text_page_count !== expectedNoText ||
+    manifest.native_text_page_count +
+      manifest.ocr_page_count +
+      manifest.no_text_page_count !==
+      manifest.page_count
+  ) {
+    return { valid: false, error: "Aggregate page counters mismatch" };
+  }
+
+  return { valid: true };
 }
 
 /**
@@ -143,12 +268,12 @@ export function resolveTesseractExecutable(): string | undefined {
 }
 
 /**
- * Claims and processes a single document processing job.
+ * Claims and processes a single document processing job with claim token fencing and semantic provenance verification.
  */
 export async function processNextDocumentJob(
   workerId = `worker-${process.pid}`
 ): Promise<WorkerRunResult> {
-  // 1. Claim next available processing run using PostgreSQL locking
+  // 1. Claim next available processing run using PostgreSQL locking and fencing
   const { data: claims, error: claimError } = await supabaseAdmin.rpc(
     "claim_next_processing_run",
     {
@@ -191,30 +316,38 @@ export async function processNextDocumentJob(
       .download(job.storage_key);
 
     if (downloadError || !blob) {
+      const isConfirmedMissing = isConfirmedObjectNotFoundError(downloadError);
+      const errorCode: ProcessingErrorCode = isConfirmedMissing
+        ? "SOURCE_MISSING"
+        : "STORAGE_UNAVAILABLE";
+      const isRetryable = !isConfirmedMissing;
+
       await supabaseAdmin.rpc("fail_processing_run_privileged", {
         p_run_id: job.run_id,
-        p_error_code: "SOURCE_MISSING",
-        p_retryable: true,
+        p_claim_token: job.claim_token,
+        p_error_code: errorCode,
+        p_retryable: isRetryable,
       });
+
       return {
         claimed: true,
         runId: job.run_id,
         documentId: job.document_id,
         status: "FAILED",
-        errorCode: "SOURCE_MISSING",
+        errorCode,
       };
     }
 
     const buffer = Buffer.from(await blob.arrayBuffer());
     await fs.writeFile(sourcePdfPath, buffer);
 
-    // Compute SHA-256 of downloaded PDF
+    // Compute SHA-256 of downloaded PDF in trusted orchestrator
     const sourceSha256 = crypto
       .createHash("sha256")
       .update(buffer)
       .digest("hex");
 
-    // 4. Spawn secure parser child process
+    // 4. Spawn secure parser child process with explicit centralized configuration
     const pythonExe = resolvePythonExecutable();
     const parserScript = path.resolve(
       process.cwd(),
@@ -233,6 +366,8 @@ export async function processNextDocumentJob(
       ocrTempDir,
       "--source-sha256",
       sourceSha256,
+      "--config",
+      JSON.stringify(PROCESSING_LIMITS),
     ];
 
     if (qpdfExe) {
@@ -270,10 +405,29 @@ export async function processNextDocumentJob(
       return 1;
     });
 
-    // 5. Inspect parser output manifest
+    // 5. Bound parser output before readFile()
     const manifestPath = path.join(outputDir, "manifest.json");
-    let manifestData: ProcessingManifest | null = null;
+    const manifestStat = await fs.stat(manifestPath).catch(() => null);
 
+    // Manifest size bound: maximum 64 KB
+    if (!manifestStat || manifestStat.size > 64 * 1024) {
+      await supabaseAdmin.rpc("fail_processing_run_privileged", {
+        p_run_id: job.run_id,
+        p_claim_token: job.claim_token,
+        p_error_code: "PARSER_OUTPUT_INVALID",
+        p_retryable: false,
+      });
+
+      return {
+        claimed: true,
+        runId: job.run_id,
+        documentId: job.document_id,
+        status: "FAILED",
+        errorCode: "PARSER_OUTPUT_INVALID",
+      };
+    }
+
+    let manifestData: ProcessingManifest | null = null;
     try {
       const rawManifest = await fs.readFile(manifestPath, "utf-8");
       manifestData = processingManifestSchema.parse(JSON.parse(rawManifest));
@@ -302,6 +456,7 @@ export async function processNextDocumentJob(
 
       await supabaseAdmin.rpc("fail_processing_run_privileged", {
         p_run_id: job.run_id,
+        p_claim_token: job.claim_token,
         p_error_code: errorCode,
         p_retryable: isRetryable,
       });
@@ -315,28 +470,87 @@ export async function processNextDocumentJob(
       };
     }
 
-    // 6. Validate each individual page result file
-    const pagesList: PageProcessingResult[] = [];
+    // Bound page count: must not exceed maxPagesPerDocument or be <= 0
+    if (
+      manifestData.page_count <= 0 ||
+      manifestData.page_count > PROCESSING_LIMITS.maxPagesPerDocument
+    ) {
+      await supabaseAdmin.rpc("fail_processing_run_privileged", {
+        p_run_id: job.run_id,
+        p_claim_token: job.claim_token,
+        p_error_code: "PARSER_OUTPUT_INVALID",
+        p_retryable: false,
+      });
+
+      return {
+        claimed: true,
+        runId: job.run_id,
+        documentId: job.document_id,
+        status: "FAILED",
+        errorCode: "PARSER_OUTPUT_INVALID",
+      };
+    }
+
+    // Check pages directory contents: exactly page_count files, no unexpected files
     const pagesDir = path.join(outputDir, "pages");
+    let pageFiles: string[];
+    try {
+      pageFiles = await fs.readdir(pagesDir);
+    } catch {
+      pageFiles = [];
+    }
+
+    if (pageFiles.length !== manifestData.page_count) {
+      await supabaseAdmin.rpc("fail_processing_run_privileged", {
+        p_run_id: job.run_id,
+        p_claim_token: job.claim_token,
+        p_error_code: "PARSER_OUTPUT_INVALID",
+        p_retryable: false,
+      });
+
+      return {
+        claimed: true,
+        runId: job.run_id,
+        documentId: job.document_id,
+        status: "FAILED",
+        errorCode: "PARSER_OUTPUT_INVALID",
+      };
+    }
+
+    // 6. Trusted Provenance Verification: Read and validate each page result file
+    const pagesList: PageProcessingResult[] = [];
 
     for (let p = 1; p <= manifestData.page_count; p++) {
       const pageFileName = `${String(p).padStart(4, "0")}.json`;
       const pageFilePath = path.join(pagesDir, pageFileName);
 
+      // Bound page JSON size: maximum 1.5 MB per page
+      const pageStat = await fs.stat(pageFilePath).catch(() => null);
+      if (!pageStat || pageStat.size > 1.5 * 1024 * 1024) {
+        await supabaseAdmin.rpc("fail_processing_run_privileged", {
+          p_run_id: job.run_id,
+          p_claim_token: job.claim_token,
+          p_error_code: "PARSER_OUTPUT_INVALID",
+          p_retryable: false,
+        });
+
+        return {
+          claimed: true,
+          runId: job.run_id,
+          documentId: job.document_id,
+          status: "FAILED",
+          errorCode: "PARSER_OUTPUT_INVALID",
+        };
+      }
+
       try {
         const rawPage = await fs.readFile(pageFilePath, "utf-8");
         const pageObj = pageProcessingResultSchema.parse(JSON.parse(rawPage));
-
-        if (pageObj.page_number !== p) {
-          throw new Error(
-            `Page number mismatch: expected ${p}, got ${pageObj.page_number}`
-          );
-        }
-
         pagesList.push(pageObj);
       } catch {
         await supabaseAdmin.rpc("fail_processing_run_privileged", {
           p_run_id: job.run_id,
+          p_claim_token: job.claim_token,
           p_error_code: "PARSER_OUTPUT_INVALID",
           p_retryable: false,
         });
@@ -351,11 +565,37 @@ export async function processNextDocumentJob(
       }
     }
 
-    // 7. Atomically persist results and transition run to SUCCEEDED
+    // 7. Verify Semantic Provenance Invariants
+    const provenance = verifyParserProvenance({
+      job,
+      sourceSha256,
+      manifest: manifestData,
+      pages: pagesList,
+    });
+
+    if (!provenance.valid) {
+      await supabaseAdmin.rpc("fail_processing_run_privileged", {
+        p_run_id: job.run_id,
+        p_claim_token: job.claim_token,
+        p_error_code: "PARSER_OUTPUT_INVALID",
+        p_retryable: false,
+      });
+
+      return {
+        claimed: true,
+        runId: job.run_id,
+        documentId: job.document_id,
+        status: "FAILED",
+        errorCode: "PARSER_OUTPUT_INVALID",
+      };
+    }
+
+    // 8. Atomically persist results with active claim token and transition run to SUCCEEDED
     const { error: persistError } = await supabaseAdmin.rpc(
       "persist_processing_run_results_privileged",
       {
         p_run_id: job.run_id,
+        p_claim_token: job.claim_token,
         p_manifest: manifestData,
         p_pages: pagesList,
       }
@@ -364,6 +604,7 @@ export async function processNextDocumentJob(
     if (persistError) {
       await supabaseAdmin.rpc("fail_processing_run_privileged", {
         p_run_id: job.run_id,
+        p_claim_token: job.claim_token,
         p_error_code: "WORKER_INTERNAL_ERROR",
         p_retryable: true,
       });
@@ -385,7 +626,7 @@ export async function processNextDocumentJob(
       pageCount: manifestData.page_count,
     };
   } finally {
-    // Guaranteed cleanup of temporary working directory
+    // Guaranteed cleanup of temporary working directory on success and failure
     try {
       await fs.rm(jobTempDir, { recursive: true, force: true });
     } catch {
