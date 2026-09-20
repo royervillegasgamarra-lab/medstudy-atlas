@@ -34,6 +34,71 @@ export type Database = {
   };
   public: {
     Tables: {
+      documents: {
+        Row: {
+          archived_at: string | null;
+          created_at: string;
+          finalize_token: string;
+          id: string;
+          mime_type: string;
+          original_filename: string;
+          sha256_hash: string | null;
+          size_bytes: number;
+          status: string;
+          storage_bucket: string;
+          storage_key: string;
+          storage_provider: string;
+          subject_id: string | null;
+          updated_at: string;
+          user_id: string;
+          validation_error_code: string | null;
+        };
+        Insert: {
+          archived_at?: string | null;
+          created_at?: string;
+          finalize_token: string;
+          id?: string;
+          mime_type?: string;
+          original_filename: string;
+          sha256_hash?: string | null;
+          size_bytes: number;
+          status?: string;
+          storage_bucket?: string;
+          storage_key: string;
+          storage_provider?: string;
+          subject_id?: string | null;
+          updated_at?: string;
+          user_id: string;
+          validation_error_code?: string | null;
+        };
+        Update: {
+          archived_at?: string | null;
+          created_at?: string;
+          finalize_token?: string;
+          id?: string;
+          mime_type?: string;
+          original_filename?: string;
+          sha256_hash?: string | null;
+          size_bytes?: number;
+          status?: string;
+          storage_bucket?: string;
+          storage_key?: string;
+          storage_provider?: string;
+          subject_id?: string | null;
+          updated_at?: string;
+          user_id?: string;
+          validation_error_code?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "fk_documents_subject_owner";
+            columns: ["subject_id", "user_id"];
+            isOneToOne: false;
+            referencedRelation: "subjects";
+            referencedColumns: ["id", "user_id"];
+          },
+        ];
+      };
       exam_targets: {
         Row: {
           archived_at: string | null;
@@ -140,7 +205,56 @@ export type Database = {
       [_ in never]: never;
     };
     Functions: {
+      archive_document: { Args: { p_document_id: string }; Returns: boolean };
       complete_onboarding: { Args: never; Returns: string };
+      finalize_document_upload: {
+        Args: {
+          p_document_id: string;
+          p_finalize_token: string;
+          p_sha256?: string;
+          p_size_bytes: number;
+          p_status: string;
+          p_validation_error_code?: string;
+        };
+        Returns: {
+          archived_at: string | null;
+          created_at: string;
+          finalize_token: string;
+          id: string;
+          mime_type: string;
+          original_filename: string;
+          sha256_hash: string | null;
+          size_bytes: number;
+          status: string;
+          storage_bucket: string;
+          storage_key: string;
+          storage_provider: string;
+          subject_id: string | null;
+          updated_at: string;
+          user_id: string;
+          validation_error_code: string | null;
+        };
+        SetofOptions: {
+          from: "*";
+          to: "documents";
+          isOneToOne: true;
+          isSetofReturn: false;
+        };
+      };
+      request_document_upload: {
+        Args: {
+          p_mime_type?: string;
+          p_original_filename: string;
+          p_size_bytes: number;
+          p_subject_id?: string;
+        };
+        Returns: {
+          document_id: string;
+          finalize_token: string;
+          storage_bucket: string;
+          storage_key: string;
+        }[];
+      };
     };
     Enums: {
       [_ in never]: never;

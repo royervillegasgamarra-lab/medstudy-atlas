@@ -86,6 +86,8 @@ if (-not $PhaseSlug -or $PhaseSlug -eq "phase-00a") {
         $PhaseSlug = "phase-01a"
     } elseif ($detectedBranch -match "phase/01b") {
         $PhaseSlug = "phase-01b"
+    } elseif ($detectedBranch -match "phase/01c") {
+        $PhaseSlug = "phase-01c"
     }
 }
 
@@ -97,6 +99,7 @@ $branchMatches = switch -Regex ($PhaseSlug) {
     "00?c" { $currentBranch -match "phase/00c" }
     "01?a" { $currentBranch -match "phase/01a" }
     "01?b" { $currentBranch -match "phase/01b" }
+    "01?c" { $currentBranch -match "phase/01c" }
     default { $true }
 }
 if (-not $branchMatches) {
@@ -115,6 +118,7 @@ $phaseIdentifier = switch -Regex ($PhaseSlug) {
     "00?c" { "0C" }
     "01?a" { "1A" }
     "01?b" { "1B" }
+    "01?c" { "1C" }
     default { $PhaseSlug }
 }
 if ($statusContent -notmatch $phaseIdentifier) {
@@ -136,6 +140,7 @@ $phaseTitle = switch -Regex ($PhaseSlug) {
     "00?c" { "Phase 0C -- Engineering Baseline" }
     "01?a" { "Vertical Slice 1A -- Identity, Auth & RLS Baseline" }
     "01?b" { "Vertical Slice 1B -- Onboarding, Curriculum & Exam Targets" }
+    "01?c" { "Vertical Slice 1C -- Document Library & Secure Upload" }
     default { "$PhaseSlug -- Local Review Package" }
 }
 
@@ -206,6 +211,22 @@ $reviewCriteria = switch -Regex ($PhaseSlug) {
             '12. [ ] **Zero Cloud Resources & Paid Services**: Local-First execution; $0.00 cost.'
         )
     }
+    "01?c" {
+        @(
+            '1. [ ] **Private Storage Bucket & Boundaries**: Private Supabase Storage bucket (`documents`, `public = false`), canonical object keys (`{user_id}/{doc_id}/source.pdf`), direct client-to-storage upload via signed upload tokens/URLs with short TTL (300s).',
+            '2. [ ] **Storage RLS & Tenant Isolation**: RLS on `storage.objects` strictly enforces caller owns path prefix (`name LIKE auth.uid()::text || ''/%''`). User A cannot read or write User B storage objects.',
+            '3. [ ] **Container-Level File Validation**: Server-side `%PDF-` magic byte inspection on first 5 bytes. File extension alone is never trusted. Non-PDFs or spoofed text files rejected.',
+            '4. [ ] **Metadata & Composite Foreign Key**: `public.documents` table with composite foreign key `(subject_id, user_id) REFERENCES public.subjects(id, user_id)` preventing cross-user subject hijacking.',
+            '5. [ ] **Centralized Quotas & Limits**: Config-driven upload limits (25MB max file size, 10 active documents per user, 100MB total storage per user). Quotas verified at upload request and finalized in database transactions.',
+            '6. [ ] **Atomic Upload Finalization**: `finalize_document_upload` RPC validates storage object existence, size, magic bytes verification, and upload token before transitioning document status from `PENDING_UPLOAD` to `READY`. Direct mutations revoked.',
+            '7. [ ] **Soft-Delete Archival**: Direct table DELETE revoked. Soft-deletion via `archive_document` RPC sets `archived_at` and frees user quota while retaining storage object reference.',
+            '8. [ ] **Short-Lived Signed Download URLs**: Authorized downloads use signed URLs with 300s TTL. Direct public URLs are impossible (`public = false`).',
+            '9. [ ] **Document Library UI**: Mobile-first responsive document library at `/app/documents`, drag-and-drop upload zone, subject selector, upload progress indicators, quota progress bar, and soft-delete archive with confirmation.',
+            '10. [ ] **In-Database Security Matrix (pgTAP)**: 51 pgTAP tests in `03_documents_rls.sql` verify storage and table schema, anon denial, direct mutation denial, composite FK cross-user isolation, quota limits, two-user isolation, token verification, and archive idempotency.',
+            '11. [ ] **E2E & Browser Verification (Playwright)**: E2E tests verify onboarding-to-upload flow, magic byte validation, status transitions, user-content XSS regression, mobile & desktop rendering, and archival.',
+            '12. [ ] **Zero AI & Cloud Spend**: No text extraction, OCR, embeddings, vector search, or external paid storage introduced ($0.00 cloud spend).'
+        )
+    }
     default {
         @(
             '1. [ ] **Local-First Compliance**: Work matches phase objectives without remote dependencies.',
@@ -274,6 +295,18 @@ $nextStep = switch -Regex ($PhaseSlug) {
             'git commit -m "feat(phase-01b): implement onboarding, curriculum, and exam targets"',
             '```',
             'Then proceed to **Vertical Slice 1C -- Document Library & Secure Upload** (`phase/01c-documents`).'
+        )
+    }
+    "01?c" {
+        @(
+            '## 4. Next Step Upon Approval',
+            "Upon approval of this review package, merge $currentBranch into $BaseBranch locally via squash merge:",
+            '```powershell',
+            "git checkout $BaseBranch",
+            "git merge --squash $currentBranch",
+            'git commit -m "feat(phase-01c): implement document library and secure upload boundary"',
+            '```',
+            'Then proceed to **Vertical Slice 1D -- Document Ingestion & Text Processing** (`phase/01d-processing`).'
         )
     }
     default {

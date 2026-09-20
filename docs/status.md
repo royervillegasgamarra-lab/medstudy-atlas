@@ -1,25 +1,25 @@
 # MedStudy Atlas — Project Status
 
 ## Snapshot
-- **Current Phase**: Vertical Slice 1B — Onboarding / Curriculum / Exam Target
+- **Current Phase**: Vertical Slice 1C — Document Library & Secure Upload
 - **Development Mode**: LOCAL-FIRST
 - **Repository**: Local Git repository
 - **Remote**: Optional / not required
-- **Current Branch**: `phase/01b-onboarding`
-- **Current External Review**: Ready for Review (Phase 1B)
-- **Next Checkpoint**: Vertical Slice 1C — Document Library & Secure Upload
+- **Current Branch**: `phase/01c-documents`
+- **Current External Review**: Ready for Review (Phase 1C)
+- **Next Checkpoint**: Vertical Slice 1D — Document Processing / Ingestion
 
 ## Subsystem State
 | Subsystem | State | Notes |
 | :--- | :--- | :--- |
 | **Engineering Baseline** | `IMPLEMENTED` | Next.js 16 (App Router), React 19, TypeScript strict, Tailwind v4, shadcn/ui. |
 | **Application** | `RUNNING LOCALLY` | Renders locally at `http://localhost:3000`; production build tested and verified. |
-| **Database** | `OPERATIONAL (LOCAL)` | Local Supabase PostgreSQL 17; `user_profiles`, `subjects`, and `exam_targets` schemas; hardened security triggers; explicit column-level UPDATE grants; RLS policies; database security suite passes. $0.00 cost. |
-| **Authentication** | `OPERATIONAL (LOCAL)` | Supabase Auth SSR via `@supabase/ssr`, Next.js 16 `proxy.ts`, signup, login, logout, protected `/app` & `/onboarding`, profile editing, two-user isolation verified via Playwright. $0.00 cost. |
+| **Database** | `OPERATIONAL (LOCAL)` | Local Supabase PostgreSQL 17; `user_profiles`, `subjects`, `exam_targets`, and `documents` schemas; hardened security triggers; explicit column-level grants; RLS policies; database security suite passes. $0.00 cost. |
+| **Authentication** | `OPERATIONAL (LOCAL)` | Supabase Auth SSR via `@supabase/ssr`, Next.js 16 `proxy.ts`, signup, login, logout, protected `/app`, `/app/documents` & `/onboarding`, profile editing, two-user isolation verified via Playwright. $0.00 cost. |
 | **Onboarding** | `OPERATIONAL (LOCAL)` | 3-step progressive wizard with database resumability, academic context, subjects, optional exam targets, server-side completion validation. |
 | **Curriculum** | `OPERATIONAL (LOCAL)` | User-owned subjects with active unique index, exam targets with composite ownership integrity, course entity deferred. |
 | **AI** | `UNINITIALIZED` | Thin `AIProvider` interface & hard cost controls designed (ADR 006); Study Pack generation scheduled for Slice 1E and AI Tutor for Slice 1F; $0 cost. |
-| **Document Pipeline** | `UNINITIALIZED` | Storage bucket in Slice 1C; ingestion with `pdf-inspector`, selective OCR (ADR 003), and chunking scheduled for Slice 1D; $0 cost. |
+| **Document Pipeline** | `OPERATIONAL (LOCAL)` | Private Supabase Storage bucket (`documents`), system-enforced canonical storage keys (`{user_id}/{doc_id}/source.pdf`), direct browser-to-storage upload, server-side container validation (`%PDF-`), authorized short-lived access (300s TTL), soft-delete archival, and quota enforcement. Text parsing, OCR, and chunking scheduled for Slice 1D. $0.00 cost. |
 | **Billing** | `UNINITIALIZED` | Provider-neutral domain designed; Mercado Pago/Stripe integration deferred to Phase 1K; $0 cost. |
 | **Deployment** | `LOCAL ONLY` | Local execution verified; zero remote hosting or paid cloud services. |
 

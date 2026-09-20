@@ -155,17 +155,24 @@ CREATE TABLE exam_targets (
 ```sql
 CREATE TABLE documents (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL REFERENCES user_profiles(id) ON DELETE CASCADE,
-    subject_id UUID REFERENCES subjects(id),
+    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    subject_id UUID,
     title TEXT NOT NULL,
     storage_path TEXT NOT NULL,
     file_size_bytes BIGINT NOT NULL,
-    page_count INT,
-    mime_type TEXT NOT NULL,
-    status TEXT NOT NULL CHECK (status IN ('PENDING', 'PROCESSING', 'READY', 'FAILED')),
+    mime_type TEXT NOT NULL DEFAULT 'application/pdf',
+    status TEXT NOT NULL DEFAULT 'PENDING_UPLOAD' CHECK (status IN ('PENDING_UPLOAD', 'PROCESSING', 'READY', 'FAILED')),
     failure_reason TEXT,
-    sha256_hash TEXT NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    upload_token_hash TEXT,
+    upload_expires_at TIMESTAMPTZ,
+    page_count INT,
+    sha256_hash TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    archived_at TIMESTAMPTZ,
+    CONSTRAINT fk_documents_subject_owner FOREIGN KEY (subject_id, user_id)
+        REFERENCES subjects(id, user_id)
+        ON DELETE SET NULL (subject_id)
 );
 
 CREATE TABLE document_pages (
