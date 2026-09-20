@@ -1,7 +1,10 @@
 // Load local environment for worker process if available
-if (typeof (process as any).loadEnvFile === "function") {
+const procWithEnv = process as unknown as {
+  loadEnvFile?: (path?: string) => void;
+};
+if (typeof procWithEnv.loadEnvFile === "function") {
   try {
-    (process as any).loadEnvFile(".env.local");
+    procWithEnv.loadEnvFile(".env.local");
   } catch {
     // ignore if not present
   }
@@ -9,6 +12,7 @@ if (typeof (process as any).loadEnvFile === "function") {
 
 import { spawn } from "child_process";
 import * as fs from "fs/promises";
+import * as fsSync from "fs";
 import * as path from "path";
 import * as os from "os";
 import * as crypto from "crypto";
@@ -75,7 +79,9 @@ export function createSafeParserEnvironment(): NodeJS.ProcessEnv {
     "TESSDATA_PREFIX",
   ];
 
-  const safeEnv: NodeJS.ProcessEnv = {};
+  const safeEnv: NodeJS.ProcessEnv = {
+    NODE_ENV: process.env.NODE_ENV || "production",
+  } as NodeJS.ProcessEnv;
   for (const key of allowedKeys) {
     if (process.env[key] !== undefined) {
       safeEnv[key] = process.env[key];
@@ -98,7 +104,6 @@ export function resolvePythonExecutable(): string {
   const venvPythonPosix = path.resolve(process.cwd(), ".venv/bin/python");
 
   try {
-    const fsSync = require("fs");
     if (fsSync.existsSync(venvPythonWin)) return venvPythonWin;
     if (fsSync.existsSync(venvPythonPosix)) return venvPythonPosix;
   } catch {
@@ -117,7 +122,6 @@ export function resolveQpdfExecutable(): string | undefined {
     "tools/bin/qpdf/bin/qpdf.exe"
   );
   try {
-    const fsSync = require("fs");
     if (fsSync.existsSync(localQpdfWin)) return localQpdfWin;
   } catch {
     // fallback
@@ -131,7 +135,6 @@ export function resolveQpdfExecutable(): string | undefined {
 export function resolveTesseractExecutable(): string | undefined {
   const standardWin = "C:\\Program Files\\Tesseract-OCR\\tesseract.exe";
   try {
-    const fsSync = require("fs");
     if (fsSync.existsSync(standardWin)) return standardWin;
   } catch {
     // fallback
@@ -167,7 +170,6 @@ export async function processNextDocumentJob(
   }
 
   const job = claimList[0];
-  const startTime = Date.now();
   const randomJobId = crypto.randomBytes(8).toString("hex");
   const jobTempDir = path.join(
     os.tmpdir(),
@@ -279,7 +281,11 @@ export async function processNextDocumentJob(
       manifestData = null;
     }
 
-    if (parserExitCode !== 0 || !manifestData || manifestData.status === "FAILED") {
+    if (
+      parserExitCode !== 0 ||
+      !manifestData ||
+      manifestData.status === "FAILED"
+    ) {
       let errorCode: ProcessingErrorCode = "PARSER_CRASH";
       if (parserExitCode === -1) {
         errorCode = "PARSER_TIMEOUT";
@@ -322,7 +328,9 @@ export async function processNextDocumentJob(
         const pageObj = pageProcessingResultSchema.parse(JSON.parse(rawPage));
 
         if (pageObj.page_number !== p) {
-          throw new Error(`Page number mismatch: expected ${p}, got ${pageObj.page_number}`);
+          throw new Error(
+            `Page number mismatch: expected ${p}, got ${pageObj.page_number}`
+          );
         }
 
         pagesList.push(pageObj);
@@ -389,15 +397,19 @@ export async function processNextDocumentJob(
 /**
  * Continuous worker loop with adaptive polling.
  */
-export async function startDocumentsWorker(options: {
-  pollIntervalMs?: number;
-  idlePollIntervalMs?: number;
-  stopSignal?: AbortSignal;
-} = {}): Promise<void> {
+export async function startDocumentsWorker(
+  options: {
+    pollIntervalMs?: number;
+    idlePollIntervalMs?: number;
+    stopSignal?: AbortSignal;
+  } = {}
+): Promise<void> {
   const pollInterval = options.pollIntervalMs ?? 1000;
   const idleInterval = options.idlePollIntervalMs ?? 5000;
 
-  console.log("[DocumentsWorker] Worker started. Waiting for processing jobs...");
+  console.log(
+    "[DocumentsWorker] Worker started. Waiting for processing jobs..."
+  );
 
   while (!options.stopSignal?.aborted) {
     try {

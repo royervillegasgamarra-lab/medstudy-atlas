@@ -123,4 +123,3 @@ export async function retryDocumentProcessingAction(
   revalidatePath("/app");
   return { success: true, data: result.data };
 }
-

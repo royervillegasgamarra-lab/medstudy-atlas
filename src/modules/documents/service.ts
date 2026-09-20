@@ -49,11 +49,14 @@ export async function getUserDocuments(): Promise<
       return { error: "No se pudieron obtener los documentos." };
     }
 
-    const docsWithRun = (data || []).map((d: any) => {
-      const runs = d.processing_runs || [];
+    const docsWithRun = (data || []).map((d) => {
+      const docItem = d as unknown as DocumentWithSubject & {
+        processing_runs?: NonNullable<DocumentWithSubject["processing_run"]>[];
+      };
+      const runs = docItem.processing_runs || [];
       const latestRun = Array.isArray(runs) && runs.length > 0 ? runs[0] : null;
       return {
-        ...d,
+        ...docItem,
         processing_run: latestRun,
       };
     });

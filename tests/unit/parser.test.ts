@@ -24,10 +24,7 @@ describe("Document Parser Subprocess & Schemas", () => {
   );
   const qpdfExe = resolveQpdfExecutable();
   const tesseractExe = resolveTesseractExecutable();
-  const fixturesDir = path.resolve(
-    process.cwd(),
-    "tests/fixtures/documents"
-  );
+  const fixturesDir = path.resolve(process.cwd(), "tests/fixtures/documents");
 
   let testTempDir: string;
 
@@ -76,7 +73,8 @@ describe("Document Parser Subprocess & Schemas", () => {
     it("validates compliant manifest object", () => {
       const validManifest: ProcessingManifest = {
         pipeline_version: "1.0.0",
-        source_sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        source_sha256:
+          "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         page_count: 2,
         structural_warning_count: 0,
         native_text_page_count: 2,
@@ -93,7 +91,8 @@ describe("Document Parser Subprocess & Schemas", () => {
     it("rejects invalid status in manifest", () => {
       const invalidManifest = {
         pipeline_version: "1.0.0",
-        source_sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        source_sha256:
+          "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         page_count: 1,
         structural_warning_count: 0,
         native_text_page_count: 1,
@@ -120,7 +119,8 @@ describe("Document Parser Subprocess & Schemas", () => {
         width_points: 612,
         height_points: 792,
         rotation_degrees: 0,
-        text_sha256: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+        text_sha256:
+          "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
       };
 
       const parsed = pageProcessingResultSchema.safeParse(validPage);
@@ -204,7 +204,9 @@ describe("Document Parser Subprocess & Schemas", () => {
       const page1: PageProcessingResult = JSON.parse(page1Raw);
       expect(page1.page_number).toBe(1);
       expect(page1.extraction_method).toBe("NATIVE");
-      expect(page1.text_content).toContain("Cardiologia: Insuficiencia Cardiaca");
+      expect(page1.text_content).toContain(
+        "Cardiologia: Insuficiencia Cardiaca"
+      );
       expect(page1.width_points).toBeCloseTo(612, 1);
       expect(page1.height_points).toBeCloseTo(792, 1);
 
@@ -220,7 +222,10 @@ describe("Document Parser Subprocess & Schemas", () => {
     });
 
     it("applies Tesseract OCR on scanned_image.pdf in Spanish", async () => {
-      const { exitCode, outDir } = runParser("scanned_image.pdf", "scanned-ocr");
+      const { exitCode, outDir } = runParser(
+        "scanned_image.pdf",
+        "scanned-ocr"
+      );
       expect(exitCode).toBe(0);
 
       const manifestRaw = await fs.readFile(

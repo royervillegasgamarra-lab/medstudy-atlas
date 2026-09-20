@@ -5,9 +5,12 @@ import { execSync } from "child_process";
 import { createClient } from "@supabase/supabase-js";
 
 // Load local environment variables for Playwright runner
-if (typeof (process as any).loadEnvFile === "function") {
+const procWithEnv = process as unknown as {
+  loadEnvFile?: (path?: string) => void;
+};
+if (typeof procWithEnv.loadEnvFile === "function") {
   try {
-    (process as any).loadEnvFile(".env.local");
+    procWithEnv.loadEnvFile(".env.local");
   } catch {
     // Ignore if not present
   }
@@ -72,9 +75,9 @@ test.describe("Phase 1D: Secure Document Processing & Provenance UI", () => {
     await page.click('button[type="submit"]:has-text("Subir Documento")');
 
     // Wait for successful upload and page reload
-    await expect(
-      page.getByText("fisiopatologia_cardiaca.pdf")
-    ).toBeVisible({ timeout: 20000 });
+    await expect(page.getByText("fisiopatologia_cardiaca.pdf")).toBeVisible({
+      timeout: 20000,
+    });
 
     // Verify initial processing status is "Pendiente de procesar"
     await expect(
@@ -86,9 +89,7 @@ test.describe("Phase 1D: Secure Document Processing & Provenance UI", () => {
 
     // 5. Reload page and verify status transitions to "Procesado"
     await page.reload();
-    await expect(
-      page.getByText(/Procesado/)
-    ).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText(/Procesado/)).toBeVisible({ timeout: 10000 });
 
     // Capture screenshot of processed document in library
     await page.screenshot({

@@ -13,9 +13,12 @@ import {
 } from "@/workers/documents-worker";
 
 // Load local environment variables if available
-if (typeof (process as any).loadEnvFile === "function") {
+const procWithEnv = process as unknown as {
+  loadEnvFile?: (path?: string) => void;
+};
+if (typeof procWithEnv.loadEnvFile === "function") {
   try {
-    (process as any).loadEnvFile(".env.local");
+    procWithEnv.loadEnvFile(".env.local");
   } catch {
     // Ignore if not present
   }
@@ -80,7 +83,8 @@ describe("Document Processing Worker & Isolation Integration (Phase 1D)", () => 
 
       try {
         process.env.SUPABASE_SECRET_KEY = "super_secret_supabase_key_123";
-        process.env.DATABASE_URL = "postgresql://postgres:secret@localhost:5432/db";
+        process.env.DATABASE_URL =
+          "postgresql://postgres:secret@localhost:5432/db";
 
         const safeEnv = createSafeParserEnvironment();
         expect(safeEnv.SUPABASE_SECRET_KEY).toBeUndefined();
@@ -88,7 +92,8 @@ describe("Document Processing Worker & Isolation Integration (Phase 1D)", () => 
 
         // Spawn a python one-liner with safeEnv to verify isolation at the OS level
         const pythonExe = resolvePythonExecutable();
-        const verifyScript = "import os; print('SECRET_FOUND' if 'SUPABASE_SECRET_KEY' in os.environ or 'DATABASE_URL' in os.environ else 'CLEAN_ISOLATION')";
+        const verifyScript =
+          "import os; print('SECRET_FOUND' if 'SUPABASE_SECRET_KEY' in os.environ or 'DATABASE_URL' in os.environ else 'CLEAN_ISOLATION')";
         const res = spawnSync(pythonExe, ["-c", verifyScript], {
           env: safeEnv,
           encoding: "utf-8",
@@ -134,7 +139,8 @@ describe("Document Processing Worker & Isolation Integration (Phase 1D)", () => 
       );
       expect(enqueueError).toBeNull();
       expect(enqueueData).toBeDefined();
-      const runId = (enqueueData as any)[0].run_id;
+      const runId = (enqueueData as unknown as Array<{ run_id: string }>)[0]
+        .run_id;
 
       // 3. Concurrently attempt to claim the job with two different worker IDs
       const [claimA, claimB] = await Promise.all([
@@ -151,8 +157,10 @@ describe("Document Processing Worker & Isolation Integration (Phase 1D)", () => 
       expect(claimA.error).toBeNull();
       expect(claimB.error).toBeNull();
 
-      const listA = (claimA.data as any[]) || [];
-      const listB = (claimB.data as any[]) || [];
+      const listA =
+        (claimA.data as unknown as Array<{ document_id: string }>) || [];
+      const listB =
+        (claimB.data as unknown as Array<{ document_id: string }>) || [];
 
       // Exactly one worker must claim the job, the other receives empty array
       const totalClaimed = listA.length + listB.length;
@@ -219,7 +227,8 @@ describe("Document Processing Worker & Isolation Integration (Phase 1D)", () => 
         }
       );
       expect(enqueueError).toBeNull();
-      const runId = (enqueueData as any)[0].run_id;
+      const runId = (enqueueData as unknown as Array<{ run_id: string }>)[0]
+        .run_id;
 
       // Execute worker job
       const result = await processNextDocumentJob("integration-worker-1");
@@ -254,7 +263,9 @@ describe("Document Processing Worker & Isolation Integration (Phase 1D)", () => 
 
       expect(pages![0].page_number).toBe(1);
       expect(pages![0].extraction_method).toBe("NATIVE");
-      expect(pages![0].text_content).toContain("Cardiologia: Insuficiencia Cardiaca");
+      expect(pages![0].text_content).toContain(
+        "Cardiologia: Insuficiencia Cardiaca"
+      );
       expect(pages![0].char_count).toBeGreaterThan(30);
       expect(pages![0].width_points).toBeCloseTo(612, 1);
       expect(pages![0].height_points).toBeCloseTo(792, 1);
@@ -270,18 +281,22 @@ describe("Document Processing Worker & Isolation Integration (Phase 1D)", () => 
         p_retryable: true,
       });
 
-      const { data: retryEnqueueData, error: retryEnqueueError } = await adminClient.rpc(
-        "enqueue_document_processing_privileged",
-        {
+      const { data: retryEnqueueData, error: retryEnqueueError } =
+        await adminClient.rpc("enqueue_document_processing_privileged", {
           p_document_id: docId,
           p_user_id: testUserId,
-        }
-      );
+        });
       expect(retryEnqueueError).toBeNull();
-      const retryRunId = (retryEnqueueData as any)[0].run_id;
-      expect((retryEnqueueData as any)[0].status).toBe("PENDING");
+      const retryList = retryEnqueueData as unknown as Array<{
+        run_id: string;
+        status: string;
+      }>;
+      const retryRunId = retryList[0].run_id;
+      expect(retryList[0].status).toBe("PENDING");
 
-      const retryResult = await processNextDocumentJob("integration-worker-retry");
+      const retryResult = await processNextDocumentJob(
+        "integration-worker-retry"
+      );
       expect(retryResult.claimed).toBe(true);
       expect(retryResult.runId).toBe(retryRunId);
       expect(retryResult.status).toBe("SUCCEEDED");
@@ -314,7 +329,9 @@ describe("Document Processing Worker & Isolation Integration (Phase 1D)", () => 
       }
 
       // Run worker when no jobs exist
-      const res = await processNextDocumentJob("integration-worker-cleanup-check");
+      const res = await processNextDocumentJob(
+        "integration-worker-cleanup-check"
+      );
       expect(res.claimed).toBe(false);
 
       let finalCount = 0;

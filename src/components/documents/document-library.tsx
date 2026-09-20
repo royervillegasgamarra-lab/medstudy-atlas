@@ -234,7 +234,7 @@ export function DocumentLibrary({
 
     // doc.status === "READY" -> check processing_run
     const runStatus = doc.processing_run?.status;
-    if (runStatus === "SUCCEEDED" || runStatus === "COMPLETED") {
+    if (runStatus === "SUCCEEDED") {
       return (
         <Badge
           variant="default"
@@ -246,7 +246,7 @@ export function DocumentLibrary({
         </Badge>
       );
     }
-    if (runStatus === "PROCESSING" || runStatus === "RUNNING") {
+    if (runStatus === "RUNNING") {
       return (
         <Badge
           variant="secondary"
@@ -257,20 +257,12 @@ export function DocumentLibrary({
         </Badge>
       );
     }
-    if (
-      runStatus === "FAILED" ||
-      runStatus === "FAILED_RETRYABLE" ||
-      runStatus === "FAILED_FINAL"
-    ) {
+    if (runStatus === "FAILED_RETRYABLE" || runStatus === "FAILED_FINAL") {
       return (
         <Badge
           variant="destructive"
           className="text-xs"
-          title={
-            (doc.processing_run as any)?.error_message ||
-            doc.processing_run?.error_code ||
-            "Error al procesar"
-          }
+          title={doc.processing_run?.error_code || "Error al procesar"}
         >
           Error al procesar
         </Badge>
@@ -524,8 +516,7 @@ export function DocumentLibrary({
 
                   {/* Actions */}
                   <div className="flex items-center gap-2 self-end sm:self-center shrink-0">
-                    {(doc.processing_run?.status === "FAILED" ||
-                      doc.processing_run?.status === "FAILED_RETRYABLE" ||
+                    {(doc.processing_run?.status === "FAILED_RETRYABLE" ||
                       doc.processing_run?.status === "FAILED_FINAL") && (
                       <Button
                         size="sm"

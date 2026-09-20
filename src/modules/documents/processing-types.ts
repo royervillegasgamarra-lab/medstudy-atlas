@@ -30,18 +30,10 @@ export const PROCESSING_ERROR_CODES = [
 export type ProcessingErrorCode = (typeof PROCESSING_ERROR_CODES)[number];
 
 export type ProcessingStatus =
-  | "PENDING"
-  | "RUNNING"
-  | "SUCCEEDED"
-  | "FAILED_RETRYABLE"
-  | "FAILED_FINAL";
+  "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED_RETRYABLE" | "FAILED_FINAL";
 
 export type PageClassification =
-  | "TEXT_BASED"
-  | "SCANNED"
-  | "MIXED"
-  | "IMAGE_ONLY"
-  | "NO_TEXT";
+  "TEXT_BASED" | "SCANNED" | "MIXED" | "IMAGE_ONLY" | "NO_TEXT";
 
 export type ExtractionMethod = "NATIVE" | "OCR" | "HYBRID" | "NONE";
 
