@@ -67,6 +67,12 @@ describe("Document Processing Worker & Isolation Integration (Phase 1D)", () => 
       .single();
     expect(subjectError).toBeNull();
     testSubjectId = subject!.id;
+
+    // Clean up any stale PENDING or PROCESSING runs so tests start from a deterministic queue
+    await adminClient
+      .from("document_processing_runs")
+      .update({ status: "FAILED_FINAL", error_code: "WORKER_INTERNAL_ERROR" })
+      .in("status", ["PENDING", "PROCESSING"]);
   });
 
   afterAll(async () => {
@@ -162,16 +168,17 @@ describe("Document Processing Worker & Isolation Integration (Phase 1D)", () => 
       const listB =
         (claimB.data as unknown as Array<{ document_id: string }>) || [];
 
-      // Exactly one worker must claim the job, the other receives empty array
-      const totalClaimed = listA.length + listB.length;
-      expect(totalClaimed).toBe(1);
+      // Exactly one worker must claim this specific job, never both
+      const claimedThisDocA = listA.filter((c) => c.document_id === docId);
+      const claimedThisDocB = listB.filter((c) => c.document_id === docId);
+      const totalClaimedThisDoc =
+        claimedThisDocA.length + claimedThisDocB.length;
+      expect(totalClaimedThisDoc).toBe(1);
 
-      if (listA.length === 1) {
-        expect(listA[0].document_id).toBe(docId);
-        expect(listB.length).toBe(0);
+      if (claimedThisDocA.length === 1) {
+        expect(claimedThisDocB.length).toBe(0);
       } else {
-        expect(listB[0].document_id).toBe(docId);
-        expect(listA.length).toBe(0);
+        expect(claimedThisDocA.length).toBe(0);
       }
 
       // 4. Release / fail run so it doesn't hang
