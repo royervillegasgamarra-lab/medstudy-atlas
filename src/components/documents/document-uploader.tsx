@@ -17,6 +17,7 @@ import {
   CheckCircle2,
   AlertCircle,
   Loader2,
+  ShieldAlert,
 } from "lucide-react";
 
 interface DocumentUploaderProps {
@@ -104,7 +105,7 @@ export function DocumentUploader({
     setSuccessMsg(null);
 
     try {
-      // Step 1: Request authorization & create system-owned record
+      // Step 1: Request upload reservation & exact signed upload token
       setStep("AUTHORIZING");
       const authRes = await requestDocumentUploadAction({
         original_filename: file.name,
@@ -119,16 +120,17 @@ export function DocumentUploader({
         return;
       }
 
-      const { documentId, storageBucket, storageKey } = authRes.data;
+      const { documentId, storageBucket, storageKey, signedUploadToken } =
+        authRes.data;
 
-      // Step 2: Upload directly to private storage
+      // Step 2: Upload to exact signed upload URL (upsert: false)
       setStep("UPLOADING_STORAGE");
       const supabase = createClient();
       const { error: uploadError } = await supabase.storage
         .from(storageBucket)
-        .upload(storageKey, file, {
-          cacheControl: "3600",
-          upsert: true,
+        .uploadToSignedUrl(storageKey, signedUploadToken, file, {
+          contentType: "application/pdf",
+          upsert: false,
         });
 
       if (uploadError) {
@@ -174,6 +176,17 @@ export function DocumentUploader({
 
   return (
     <div className="space-y-4">
+      {/* P1-6: Concise educational-use PHI warning banner */}
+      <div className="flex items-start gap-2.5 p-3 text-xs bg-amber-500/10 text-amber-700 dark:text-amber-400 border border-amber-500/20 rounded-md">
+        <ShieldAlert className="w-4 h-4 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
+        <div>
+          <span className="font-semibold">Uso exclusivamente educativo:</span>{" "}
+          Queda estrictamente prohibido subir historias clínicas, registros
+          médicos de pacientes o cualquier dato de salud protegido (PHI / datos
+          personales identificables).
+        </div>
+      </div>
+
       {errorMsg && (
         <div className="flex items-start gap-2 p-3 text-sm text-destructive bg-destructive/10 border border-destructive/20 rounded-md">
           <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />

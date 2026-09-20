@@ -213,17 +213,17 @@ $reviewCriteria = switch -Regex ($PhaseSlug) {
     }
     "01?c" {
         @(
-            '1. [ ] **Private Storage Bucket & Boundaries**: Private Supabase Storage bucket (`documents`, `public = false`), canonical object keys (`{user_id}/{doc_id}/source.pdf`), direct client-to-storage upload via signed upload tokens/URLs with short TTL (300s).',
-            '2. [ ] **Storage RLS & Tenant Isolation**: RLS on `storage.objects` strictly enforces caller owns path prefix (`name LIKE auth.uid()::text || ''/%''`). User A cannot read or write User B storage objects.',
-            '3. [ ] **Container-Level File Validation**: Server-side `%PDF-` magic byte inspection on first 5 bytes. File extension alone is never trusted. Non-PDFs or spoofed text files rejected.',
-            '4. [ ] **Metadata & Composite Foreign Key**: `public.documents` table with composite foreign key `(subject_id, user_id) REFERENCES public.subjects(id, user_id)` preventing cross-user subject hijacking.',
-            '5. [ ] **Centralized Quotas & Limits**: Config-driven upload limits (25MB max file size, 10 active documents per user, 100MB total storage per user). Quotas verified at upload request and finalized in database transactions.',
-            '6. [ ] **Atomic Upload Finalization**: `finalize_document_upload` RPC validates storage object existence, size, magic bytes verification, and upload token before transitioning document status from `PENDING_UPLOAD` to `READY`. Direct mutations revoked.',
-            '7. [ ] **Soft-Delete Archival**: Direct table DELETE revoked. Soft-deletion via `archive_document` RPC sets `archived_at` and frees user quota while retaining storage object reference.',
-            '8. [ ] **Short-Lived Signed Download URLs**: Authorized downloads use signed URLs with 300s TTL. Direct public URLs are impossible (`public = false`).',
-            '9. [ ] **Document Library UI**: Mobile-first responsive document library at `/app/documents`, drag-and-drop upload zone, subject selector, upload progress indicators, quota progress bar, and soft-delete archive with confirmation.',
-            '10. [ ] **In-Database Security Matrix (pgTAP)**: 51 pgTAP tests in `03_documents_rls.sql` verify storage and table schema, anon denial, direct mutation denial, composite FK cross-user isolation, quota limits, two-user isolation, token verification, and archive idempotency.',
-            '11. [ ] **E2E & Browser Verification (Playwright)**: E2E tests verify onboarding-to-upload flow, magic byte validation, status transitions, user-content XSS regression, mobile & desktop rendering, and archival.',
+            '1. [ ] **Exact-Path Signed Upload & Storage Boundaries**: Private Supabase Storage bucket (`documents`, `public = false`), canonical object keys (`{user_id}/{doc_id}/source.pdf`), direct client-to-storage upload via exact signed upload URLs (`uploadToSignedUrl`) with `upsert: false`. Broad `storage.objects` permissions removed.',
+            '2. [ ] **Privileged Finalization Boundary**: Authenticated browser cannot invoke `READY` transition directly. Finalization is strictly executed by trusted server code calling `finalize_document_upload_privileged` (callable ONLY by `service_role`).',
+            '3. [ ] **Container-Level File Validation & 5-Byte Range Read**: Server-side inspection of `%PDF-` magic bytes via HTTP Range request on internal signed URL, avoiding 25 MB memory downloads. Non-PDFs rejected and physically deleted.',
+            '4. [ ] **Metadata & Composite Foreign Key**: `public.documents` table with composite foreign key `(subject_id, user_id) REFERENCES public.subjects(id, user_id)` and input check constraints.',
+            '5. [ ] **Centralized & Concurrency-Safe Quotas**: 25MB max file size, 10 active documents, 100MB total active storage (counting `UPLOADING`, `VALIDATING`, `READY`). Concurrency serialized per user via `pg_advisory_xact_lock`. Declared size must equal actual size.',
+            '6. [ ] **Physical Storage Cleanup on Archive**: Archiving physically deletes storage object via official Storage API before setting `archived_at` in database. Quota freed only on successful blob removal.',
+            '7. [ ] **Short-Lived Signed Download URLs**: Authorized downloads use signed URLs with 300s TTL. Direct public URLs and direct storage SELECT are denied.',
+            '8. [ ] **Document Library UI & PHI Warning**: Mobile-first responsive library at `/app/documents`, drag-and-drop uploader with mandatory educational-use PHI warning banner, quota progress bar, and soft-delete archive with confirmation.',
+            '9. [ ] **In-Database Security Matrix (pgTAP)**: 50 pgTAP tests in `03_documents_rls.sql` verify table schema, absence of `finalize_token`, anon denials, direct mutation denials, input constraints, quota limits, two-user isolation, and archive idempotency.',
+            '10. [ ] **Authoritative Storage API Integration Tests**: Real local Supabase Storage API integration tests in `tests/integration/storage-security.test.ts` verify direct unauthorized upload denial, exact signed upload success, fake PDF rejection with physical blob cleanup, size mismatch rejection, signed download verification, and physical deletion on archive.',
+            '11. [ ] **E2E & Browser Verification (Playwright)**: E2E tests verify onboarding-to-upload flow, fake PDF rejection in UI, valid PDF READY, user-content XSS regression, mobile & desktop rendering, and archival.',
             '12. [ ] **Zero AI & Cloud Spend**: No text extraction, OCR, embeddings, vector search, or external paid storage introduced ($0.00 cloud spend).'
         )
     }
@@ -339,6 +339,7 @@ $reviewLines = @(
     '## 2. Package Contents',
     '- `REVIEW.md` -- This review guide and summary.',
     "- `execution-report.md` -- The standardized $phaseTitle Execution Report.",
+    '- `failure-matrix.md` -- The Phase 1C 25-scenario Failure Matrix.',
     '- `status.md` -- Current project status and subsystem states.',
     '- `test-results.md` -- Verification and test suite execution status.',
     "- `changed-files.txt` -- List of all files changed relative to $BaseBranch.",
@@ -361,13 +362,19 @@ $reviewLines += $nextStep
 $reviewLines | Out-File -FilePath (Join-Path $stagingDir "REVIEW.md") -Encoding utf8
 
 # execution-report.md
-$matchedReports = Get-ChildItem -Path (Join-Path $repoRoot "docs/reports") -Filter "$PhaseSlug-*.md" -ErrorAction SilentlyContinue
+$matchedReports = Get-ChildItem -Path (Join-Path $repoRoot "docs/reports") -Filter "$PhaseSlug-*.md" -ErrorAction SilentlyContinue | Where-Object { $_.Name -notmatch 'failure-matrix' }
 if ($matchedReports -and $matchedReports.Count -gt 0) {
     Copy-Item -Path $matchedReports[0].FullName -Destination (Join-Path $stagingDir "execution-report.md")
 } else {
     Write-Host "ERROR: Review package generation ABORTED!" -ForegroundColor Red
     Write-Host "Expected execution report not found for phase: $PhaseSlug in docs/reports/" -ForegroundColor Red
     throw "Review package generation aborted: Expected phase execution report (docs/reports/$PhaseSlug-*.md) missing. Falling back to an older phase report is strictly prohibited."
+}
+
+# failure-matrix.md
+$matchedMatrix = Get-ChildItem -Path (Join-Path $repoRoot "docs/reports") -Filter "$PhaseSlug-failure-matrix.md" -ErrorAction SilentlyContinue
+if ($matchedMatrix -and $matchedMatrix.Count -gt 0) {
+    Copy-Item -Path $matchedMatrix[0].FullName -Destination (Join-Path $stagingDir "failure-matrix.md")
 }
 
 # status.md

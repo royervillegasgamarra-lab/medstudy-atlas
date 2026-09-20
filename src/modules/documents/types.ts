@@ -42,6 +42,8 @@ export interface RequestUploadResult {
   documentId: string;
   storageBucket: string;
   storageKey: string;
+  signedUploadUrl: string;
+  signedUploadToken: string;
 }
 
 export interface FinalizeUploadInput {

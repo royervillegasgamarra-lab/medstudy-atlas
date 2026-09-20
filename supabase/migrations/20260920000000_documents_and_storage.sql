@@ -1,7 +1,7 @@
 -- Migration: 20260920000000_documents_and_storage.sql
--- Description: Create documents bucket in Supabase storage with RLS, public.documents table,
+-- Description: Create documents bucket in Supabase storage, public.documents table,
 -- composite foreign key for subject ownership integrity, strict least-privilege model,
--- and secure RPCs for request, finalization, and archival.
+-- concurrency-safe quota serialization, and privileged server-only finalization RPCs.
 
 -- ============================================================================
 -- 1. Supabase Storage: Private 'documents' Bucket & Storage RLS
@@ -20,40 +20,16 @@ SET public = false,
     file_size_limit = 26214400,
     allowed_mime_types = ARRAY['application/pdf']::text[];
 
--- Note: storage.objects already has RLS enabled by default in Supabase.
-
--- Storage Policy: Users can only upload objects into their own user_id prefix
+-- Note: storage.objects has RLS enabled by default in Supabase.
+-- P0-3: Remove broad authenticated Storage mutation permissions on storage.objects!
+-- Authenticated users must NOT be able to directly upload arbitrary unreserved paths,
+-- directly delete storage objects, or directly select objects.
+-- All uploads are mediated via exact-path signed upload URLs (uploadToSignedUrl),
+-- all downloads are mediated via short-lived signed download URLs (createSignedUrl),
+-- and all physical deletions are performed via server-side Storage API.
 DROP POLICY IF EXISTS "Users can upload own documents to storage" ON storage.objects;
-CREATE POLICY "Users can upload own documents to storage"
-ON storage.objects
-FOR INSERT
-TO authenticated
-WITH CHECK (
-    bucket_id = 'documents' AND
-    (name LIKE (auth.uid()::text || '/%'))
-);
-
--- Storage Policy: Users can only read objects from their own user_id prefix
 DROP POLICY IF EXISTS "Users can view own documents in storage" ON storage.objects;
-CREATE POLICY "Users can view own documents in storage"
-ON storage.objects
-FOR SELECT
-TO authenticated
-USING (
-    bucket_id = 'documents' AND
-    (name LIKE (auth.uid()::text || '/%'))
-);
-
--- Storage Policy: Users can only delete objects from their own user_id prefix
 DROP POLICY IF EXISTS "Users can delete own documents in storage" ON storage.objects;
-CREATE POLICY "Users can delete own documents in storage"
-ON storage.objects
-FOR DELETE
-TO authenticated
-USING (
-    bucket_id = 'documents' AND
-    (name LIKE (auth.uid()::text || '/%'))
-);
 
 -- ============================================================================
 -- 2. Table: public.documents
@@ -72,7 +48,6 @@ CREATE TABLE IF NOT EXISTS public.documents (
     status TEXT NOT NULL DEFAULT 'UPLOADING' CHECK (status IN ('UPLOADING', 'VALIDATING', 'READY', 'REJECTED', 'FAILED')),
     validation_error_code TEXT,
     sha256_hash TEXT,
-    finalize_token TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     archived_at TIMESTAMPTZ,
@@ -80,7 +55,11 @@ CREATE TABLE IF NOT EXISTS public.documents (
     -- Composite foreign key enforcing that documents.subject_id must be owned by documents.user_id
     CONSTRAINT fk_documents_subject_owner FOREIGN KEY (subject_id, user_id)
         REFERENCES public.subjects(id, user_id)
-        ON DELETE SET NULL (subject_id)
+        ON DELETE SET NULL (subject_id),
+    -- P1-2: Authoritative database input constraints
+    CONSTRAINT chk_documents_filename_length CHECK (length(trim(original_filename)) > 0 AND length(trim(original_filename)) <= 255),
+    CONSTRAINT chk_documents_size_positive CHECK (size_bytes > 0 AND size_bytes <= 26214400),
+    CONSTRAINT chk_documents_mime_type CHECK (mime_type = 'application/pdf')
 );
 
 -- Indexes
@@ -113,7 +92,7 @@ CREATE POLICY "Users can view own documents"
 -- Revoke all direct permissions from PUBLIC, anon, and authenticated.
 -- Only SELECT is granted to authenticated (guarded by RLS).
 -- Direct INSERT, UPDATE, DELETE are strictly REVOKED.
--- All mutations occur via the hardened SECURITY DEFINER functions below.
+-- All mutations occur via hardened SECURITY DEFINER functions below.
 REVOKE ALL ON TABLE public.documents FROM PUBLIC, anon, authenticated;
 GRANT SELECT ON TABLE public.documents TO authenticated;
 
@@ -130,8 +109,7 @@ CREATE OR REPLACE FUNCTION public.request_document_upload(
 RETURNS TABLE (
     document_id UUID,
     storage_bucket TEXT,
-    storage_key TEXT,
-    finalize_token TEXT
+    storage_key TEXT
 )
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -141,7 +119,6 @@ DECLARE
     v_user_id UUID;
     v_doc_id UUID;
     v_storage_key TEXT;
-    v_finalize_token TEXT;
     v_active_count INT;
     v_total_bytes BIGINT;
     v_clean_filename TEXT;
@@ -155,7 +132,7 @@ BEGIN
         RAISE EXCEPTION 'Not authenticated' USING ERRCODE = '42501';
     END IF;
 
-    -- Validate file size
+    -- P1-2: Validate file size
     IF p_size_bytes IS NULL OR p_size_bytes <= 0 THEN
         RAISE EXCEPTION 'Invalid file size' USING ERRCODE = '22023';
     END IF;
@@ -164,15 +141,19 @@ BEGIN
         RAISE EXCEPTION 'File size exceeds maximum allowed limit (25 MB)' USING ERRCODE = '22023';
     END IF;
 
-    -- Validate MIME type
+    -- P1-2: Validate MIME type
     IF p_mime_type IS NULL OR p_mime_type != 'application/pdf' THEN
         RAISE EXCEPTION 'Only PDF files are supported' USING ERRCODE = '22023';
     END IF;
 
-    -- Validate filename
+    -- P1-2: Validate filename
     v_clean_filename := TRIM(COALESCE(p_original_filename, ''));
     IF LENGTH(v_clean_filename) = 0 THEN
         RAISE EXCEPTION 'Original filename cannot be empty' USING ERRCODE = '22023';
+    END IF;
+
+    IF LENGTH(v_clean_filename) > 255 THEN
+        RAISE EXCEPTION 'Original filename exceeds maximum length (255 characters)' USING ERRCODE = '22023';
     END IF;
 
     -- Validate subject ownership if subject_id provided
@@ -187,7 +168,10 @@ BEGIN
         END IF;
     END IF;
 
-    -- Check active document count quota
+    -- P0-5: Concurrency-safe quota serialization per user inside the transaction
+    PERFORM pg_advisory_xact_lock(hashtext('doc_quota:' || v_user_id::text));
+
+    -- P0-4: Check active document count quota (counts UPLOADING, VALIDATING, READY)
     SELECT COUNT(*) INTO v_active_count
     FROM public.documents
     WHERE user_id = v_user_id
@@ -198,23 +182,22 @@ BEGIN
         RAISE EXCEPTION 'Active document quota exceeded (maximum % documents)', c_max_active_docs USING ERRCODE = '23514';
     END IF;
 
-    -- Check total storage quota
+    -- P0-4: Check total storage quota (counts ALL non-archived reservations: UPLOADING, VALIDATING, READY)
     SELECT COALESCE(SUM(size_bytes), 0) INTO v_total_bytes
     FROM public.documents
     WHERE user_id = v_user_id
       AND archived_at IS NULL
-      AND status IN ('VALIDATING', 'READY');
+      AND status IN ('UPLOADING', 'VALIDATING', 'READY');
 
     IF (v_total_bytes + p_size_bytes) > c_max_total_bytes THEN
         RAISE EXCEPTION 'Total storage quota exceeded (maximum 100 MB)' USING ERRCODE = '23514';
     END IF;
 
-    -- Generate system-owned ID, canonical storage key, and secret finalize token
+    -- Generate system-owned ID and canonical storage key
     v_doc_id := gen_random_uuid();
     v_storage_key := v_user_id::text || '/' || v_doc_id::text || '/source.pdf';
-    v_finalize_token := replace(gen_random_uuid()::text, '-', '') || replace(gen_random_uuid()::text, '-', '');
 
-    -- Insert document record with UPLOADING status
+    -- Insert document record with UPLOADING status and declared/reserved size
     INSERT INTO public.documents (
         id,
         user_id,
@@ -225,8 +208,7 @@ BEGIN
         storage_key,
         mime_type,
         size_bytes,
-        status,
-        finalize_token
+        status
     ) VALUES (
         v_doc_id,
         v_user_id,
@@ -237,11 +219,10 @@ BEGIN
         v_storage_key,
         'application/pdf',
         p_size_bytes,
-        'UPLOADING',
-        v_finalize_token
+        'UPLOADING'
     );
 
-    RETURN QUERY SELECT v_doc_id, 'documents'::TEXT, v_storage_key, v_finalize_token;
+    RETURN QUERY SELECT v_doc_id, 'documents'::TEXT, v_storage_key;
 END;
 $$;
 
@@ -249,16 +230,16 @@ REVOKE ALL ON FUNCTION public.request_document_upload(TEXT, BIGINT, TEXT, UUID) 
 GRANT EXECUTE ON FUNCTION public.request_document_upload(TEXT, BIGINT, TEXT, UUID) TO authenticated;
 
 -- ============================================================================
--- 4. Secure RPC: public.finalize_document_upload()
+-- 4. Privileged Server-Only RPC: public.finalize_document_upload_privileged()
+-- P0-1 & P0-7: Authenticated browsers CANNOT call this function directly.
+-- Callable ONLY by service_role from trusted server code.
 -- ============================================================================
 
-CREATE OR REPLACE FUNCTION public.finalize_document_upload(
+CREATE OR REPLACE FUNCTION public.finalize_document_upload_privileged(
     p_document_id UUID,
-    p_finalize_token TEXT,
-    p_status TEXT,
-    p_size_bytes BIGINT,
-    p_sha256 TEXT DEFAULT NULL,
-    p_validation_error_code TEXT DEFAULT NULL
+    p_user_id UUID,
+    p_actual_size BIGINT,
+    p_sha256 TEXT DEFAULT NULL
 )
 RETURNS public.documents
 LANGUAGE plpgsql
@@ -266,64 +247,40 @@ SECURITY DEFINER
 SET search_path = ''
 AS $$
 DECLARE
-    v_user_id UUID;
     v_doc public.documents;
-    v_object_exists BOOLEAN;
 BEGIN
-    v_user_id := auth.uid();
-    IF v_user_id IS NULL THEN
-        RAISE EXCEPTION 'Not authenticated' USING ERRCODE = '42501';
-    END IF;
-
-    -- Validate target status
-    IF p_status NOT IN ('READY', 'REJECTED', 'FAILED') THEN
-        RAISE EXCEPTION 'Invalid target status: %', p_status USING ERRCODE = '22023';
-    END IF;
-
-    -- Fetch document
+    -- Fetch document matching id, user_id, and active status
     SELECT * INTO v_doc
     FROM public.documents
     WHERE id = p_document_id
-      AND user_id = v_user_id;
+      AND user_id = p_user_id
+      AND archived_at IS NULL;
 
     IF v_doc.id IS NULL THEN
-        RAISE EXCEPTION 'Document not found' USING ERRCODE = '22023';
+        RAISE EXCEPTION 'Document not found or not active' USING ERRCODE = '22023';
     END IF;
 
-    -- Idempotency: If already READY and repeated call with READY, return cleanly
-    IF v_doc.status = 'READY' AND p_status = 'READY' THEN
+    -- Idempotency: If already READY, return cleanly
+    IF v_doc.status = 'READY' THEN
         RETURN v_doc;
     END IF;
 
-    -- Verify finalize token
-    IF v_doc.finalize_token != p_finalize_token THEN
-        RAISE EXCEPTION 'Invalid finalization token' USING ERRCODE = '42501';
+    -- Must be in an uploadable state
+    IF v_doc.status NOT IN ('UPLOADING', 'VALIDATING') THEN
+        RAISE EXCEPTION 'Document is not in an uploadable state: %', v_doc.status USING ERRCODE = '22023';
     END IF;
 
-    -- If transitioning to READY, verify object exists in storage.objects
-    IF p_status = 'READY' THEN
-        SELECT EXISTS (
-            SELECT 1 FROM storage.objects
-            WHERE bucket_id = v_doc.storage_bucket
-              AND name = v_doc.storage_key
-        ) INTO v_object_exists;
-
-        IF NOT v_object_exists THEN
-            RAISE EXCEPTION 'Storage object does not exist for this document' USING ERRCODE = '23514';
-        END IF;
-
-        -- Verify size is valid
-        IF p_size_bytes IS NULL OR p_size_bytes <= 0 THEN
-            RAISE EXCEPTION 'Invalid verified size' USING ERRCODE = '22023';
-        END IF;
+    -- P0-4: Actual storage size MUST equal the reserved/declared size
+    IF v_doc.size_bytes != p_actual_size THEN
+        RAISE EXCEPTION 'Actual file size (%) does not match reserved size (%)', p_actual_size, v_doc.size_bytes USING ERRCODE = '23514';
     END IF;
 
-    -- Update document record
+    -- Update document record to READY
     UPDATE public.documents
-    SET status = p_status,
-        size_bytes = COALESCE(p_size_bytes, v_doc.size_bytes),
+    SET status = 'READY',
+        size_bytes = p_actual_size,
         sha256_hash = COALESCE(p_sha256, v_doc.sha256_hash),
-        validation_error_code = p_validation_error_code
+        validation_error_code = NULL
     WHERE id = p_document_id
     RETURNING * INTO v_doc;
 
@@ -331,11 +288,55 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION public.finalize_document_upload(UUID, TEXT, TEXT, BIGINT, TEXT, TEXT) FROM PUBLIC, anon;
-GRANT EXECUTE ON FUNCTION public.finalize_document_upload(UUID, TEXT, TEXT, BIGINT, TEXT, TEXT) TO authenticated;
+-- Revoke from all public/authenticated roles; grant ONLY to service_role
+REVOKE ALL ON FUNCTION public.finalize_document_upload_privileged(UUID, UUID, BIGINT, TEXT) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.finalize_document_upload_privileged(UUID, UUID, BIGINT, TEXT) TO service_role;
 
 -- ============================================================================
--- 5. Secure RPC: public.archive_document()
+-- 5. Privileged Server-Only RPC: public.reject_document_upload_privileged()
+-- P0-7: Called by trusted server code when container validation or size checks fail.
+-- ============================================================================
+
+CREATE OR REPLACE FUNCTION public.reject_document_upload_privileged(
+    p_document_id UUID,
+    p_user_id UUID,
+    p_error_code TEXT,
+    p_status TEXT DEFAULT 'REJECTED'
+)
+RETURNS public.documents
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+    v_doc public.documents;
+BEGIN
+    IF p_status NOT IN ('REJECTED', 'FAILED') THEN
+        RAISE EXCEPTION 'Invalid rejection status: %', p_status USING ERRCODE = '22023';
+    END IF;
+
+    UPDATE public.documents
+    SET status = p_status,
+        validation_error_code = p_error_code
+    WHERE id = p_document_id
+      AND user_id = p_user_id
+    RETURNING * INTO v_doc;
+
+    IF v_doc.id IS NULL THEN
+        RAISE EXCEPTION 'Document not found' USING ERRCODE = '22023';
+    END IF;
+
+    RETURN v_doc;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.reject_document_upload_privileged(UUID, UUID, TEXT, TEXT) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.reject_document_upload_privileged(UUID, UUID, TEXT, TEXT) TO service_role;
+
+-- ============================================================================
+-- 6. Secure RPC: public.archive_document()
+-- P0-6: Idempotently marks archived_at. Quota is freed once archived_at is set.
+-- Server Action removes the physical storage object via Storage API before calling this RPC.
 -- ============================================================================
 
 CREATE OR REPLACE FUNCTION public.archive_document(

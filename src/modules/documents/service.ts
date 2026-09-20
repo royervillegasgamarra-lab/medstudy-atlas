@@ -1,4 +1,5 @@
 import { createClient } from "@/lib/supabase/server";
+import { supabaseAdmin } from "@/lib/supabase/admin";
 import { UPLOAD_LIMITS } from "@/config/app";
 import {
   requestUploadSchema,
@@ -54,6 +55,7 @@ export async function getUserDocuments(): Promise<
 
 /**
  * Calculates current document quota usage for the authenticated user.
+ * P0-4: Counts all active reservations (UPLOADING, VALIDATING, READY).
  */
 export async function getDocumentQuotaUsage(): Promise<
   DocumentsResult<DocumentQuotaUsage>
@@ -80,12 +82,9 @@ export async function getDocumentQuotaUsage(): Promise<
     const activeDocs = data.filter((d) =>
       ["UPLOADING", "VALIDATING", "READY"].includes(d.status)
     );
-    const readyDocs = data.filter((d) =>
-      ["VALIDATING", "READY"].includes(d.status)
-    );
 
     const activeCount = activeDocs.length;
-    const totalBytes = readyDocs.reduce(
+    const totalBytes = activeDocs.reduce(
       (acc, d) => acc + (d.size_bytes || 0),
       0
     );
@@ -105,6 +104,7 @@ export async function getDocumentQuotaUsage(): Promise<
 
 /**
  * Authorizes a document upload and creates the initial system-owned record.
+ * P0-3: Creates an exact signed upload authorization for {user_id}/{doc_id}/source.pdf.
  */
 export async function requestDocumentUpload(
   input: RequestUploadInput
@@ -128,6 +128,7 @@ export async function requestDocumentUpload(
       return { error: "No autenticado." };
     }
 
+    // Call database RPC to reserve quota and insert initial UPLOADING record
     const { data, error } = await supabase.rpc("request_document_upload", {
       p_original_filename: cleanFilename,
       p_size_bytes: parsed.data.size_bytes,
@@ -156,11 +157,25 @@ export async function requestDocumentUpload(
       return { error: "Respuesta inválida del servidor al iniciar subida." };
     }
 
+    // P0-3: Trusted server admin client creates signed upload authorization for THAT EXACT KEY
+    const { data: signedData, error: signedError } = await supabaseAdmin.storage
+      .from(record.storage_bucket)
+      .createSignedUploadUrl(record.storage_key);
+
+    if (signedError || !signedData?.token) {
+      return {
+        error:
+          "No se pudo generar la autorización de subida al almacenamiento.",
+      };
+    }
+
     return {
       data: {
         documentId: record.document_id,
         storageBucket: record.storage_bucket,
         storageKey: record.storage_key,
+        signedUploadUrl: signedData.signedUrl,
+        signedUploadToken: signedData.token,
       },
     };
   } catch {
@@ -169,7 +184,10 @@ export async function requestDocumentUpload(
 }
 
 /**
- * Validates the uploaded object in private storage and transitions status to READY or REJECTED.
+ * Authoritatively validates the uploaded object in private storage and transitions status to READY or REJECTED.
+ * P0-1 & P0-7: Authenticated browsers cannot invoke finalization directly; execution is performed
+ * by trusted server code using privileged admin access and server-only RPCs.
+ * P1-1: Avoids full 25 MB download by inspecting metadata for actual size and using 5-byte range read.
  */
 export async function finalizeDocumentUpload(input: {
   documentId: string;
@@ -189,16 +207,17 @@ export async function finalizeDocumentUpload(input: {
       return { error: "No autenticado." };
     }
 
-    // Retrieve document record
+    // Retrieve document record to verify ownership and active status
     const { data: doc, error: docError } = await supabase
       .from("documents")
       .select("*")
       .eq("id", parsed.data.documentId)
+      .eq("user_id", user.id)
       .is("archived_at", null)
       .single();
 
     if (docError || !doc) {
-      return { error: "Documento no encontrado." };
+      return { error: "Documento no encontrado o acceso no autorizado." };
     }
 
     // Idempotency: If already READY, return cleanly
@@ -206,40 +225,92 @@ export async function finalizeDocumentUpload(input: {
       return { data: doc as unknown as DocumentRecord };
     }
 
-    // Download object from storage to validate container and magic bytes
-    const { data: fileBlob, error: downloadError } = await supabase.storage
+    // P0-7: Privileged Storage access to confirm exact object exists and get metadata
+    const { data: info, error: infoError } = await supabaseAdmin.storage
       .from(doc.storage_bucket)
-      .download(doc.storage_key);
+      .info(doc.storage_key);
 
-    if (downloadError || !fileBlob) {
-      // Mark as REJECTED due to missing storage object
-      await supabase.rpc("finalize_document_upload", {
+    if (infoError || !info) {
+      await supabaseAdmin.rpc("reject_document_upload_privileged", {
         p_document_id: doc.id,
-        p_finalize_token: doc.finalize_token,
+        p_user_id: user.id,
+        p_error_code: "OBJECT_NOT_FOUND",
         p_status: "REJECTED",
-        p_size_bytes: doc.size_bytes,
-        p_validation_error_code: "OBJECT_NOT_FOUND",
       });
       return {
         error: "El archivo no se encontró en el almacenamiento privado.",
       };
     }
 
-    const arrayBuffer = await fileBlob.arrayBuffer();
-    const bytes = new Uint8Array(arrayBuffer);
+    // P0-4: Actual storage size MUST equal the reserved/declared size
+    if (info.size !== doc.size_bytes) {
+      await supabaseAdmin.storage
+        .from(doc.storage_bucket)
+        .remove([doc.storage_key]);
 
-    // Validate magic bytes
-    const isValidPdf = validatePdfMagicBytes(bytes);
-    if (!isValidPdf) {
-      // Reject and remove hostile/invalid object from storage
-      await supabase.storage.from(doc.storage_bucket).remove([doc.storage_key]);
-
-      await supabase.rpc("finalize_document_upload", {
+      await supabaseAdmin.rpc("reject_document_upload_privileged", {
         p_document_id: doc.id,
-        p_finalize_token: doc.finalize_token,
+        p_user_id: user.id,
+        p_error_code: "SIZE_MISMATCH",
         p_status: "REJECTED",
-        p_size_bytes: fileBlob.size,
-        p_validation_error_code: "INVALID_PDF_SIGNATURE",
+      });
+
+      return {
+        error: "El tamaño del archivo no coincide con la reserva declarada.",
+      };
+    }
+
+    // P0-7: Confirm allowed content type as defense-in-depth
+    if (info.contentType !== "application/pdf") {
+      await supabaseAdmin.storage
+        .from(doc.storage_bucket)
+        .remove([doc.storage_key]);
+
+      await supabaseAdmin.rpc("reject_document_upload_privileged", {
+        p_document_id: doc.id,
+        p_user_id: user.id,
+        p_error_code: "INVALID_MIME_TYPE",
+        p_status: "REJECTED",
+      });
+
+      return {
+        error: "Tipo de archivo no permitido. Solo se aceptan archivos PDF.",
+      };
+    }
+
+    // P1-1: Read only the minimum prefix (5 bytes) needed to verify %PDF-
+    let isValidPdf = false;
+    try {
+      const { data: signed, error: signErr } = await supabaseAdmin.storage
+        .from(doc.storage_bucket)
+        .createSignedUrl(doc.storage_key, 60);
+
+      if (!signErr && signed?.signedUrl) {
+        const rangeRes = await fetch(signed.signedUrl, {
+          headers: { Range: "bytes=0-4" },
+        });
+
+        if (rangeRes.ok || rangeRes.status === 206) {
+          const rangeBuffer = await rangeRes.arrayBuffer();
+          const rangeBytes = new Uint8Array(rangeBuffer);
+          isValidPdf = validatePdfMagicBytes(rangeBytes);
+        }
+      }
+    } catch {
+      isValidPdf = false;
+    }
+
+    if (!isValidPdf) {
+      // Reject and remove invalid object from physical storage
+      await supabaseAdmin.storage
+        .from(doc.storage_bucket)
+        .remove([doc.storage_key]);
+
+      await supabaseAdmin.rpc("reject_document_upload_privileged", {
+        p_document_id: doc.id,
+        p_user_id: user.id,
+        p_error_code: "INVALID_PDF_SIGNATURE",
+        p_status: "REJECTED",
       });
 
       return {
@@ -248,49 +319,18 @@ export async function finalizeDocumentUpload(input: {
       };
     }
 
-    // Validate actual size does not exceed quota
-    if (fileBlob.size > UPLOAD_LIMITS.maxFileSizeBytes) {
-      await supabase.storage.from(doc.storage_bucket).remove([doc.storage_key]);
-
-      await supabase.rpc("finalize_document_upload", {
-        p_document_id: doc.id,
-        p_finalize_token: doc.finalize_token,
-        p_status: "REJECTED",
-        p_size_bytes: fileBlob.size,
-        p_validation_error_code: "FILE_SIZE_EXCEEDED",
-      });
-
-      return {
-        error: "El archivo excede el tamaño máximo permitido de 25 MB.",
-      };
-    }
-
-    // Compute SHA-256 hash for integrity
-    let sha256Hex: string | null = null;
-    try {
-      const hashBuffer = await crypto.subtle.digest("SHA-256", arrayBuffer);
-      const hashArray = Array.from(new Uint8Array(hashBuffer));
-      sha256Hex = hashArray
-        .map((b) => b.toString(16).padStart(2, "0"))
-        .join("");
-    } catch {
-      // Non-critical hash failure fallback
-    }
-
-    // Finalize to READY
-    const { data: updatedDoc, error: finalizeError } = await supabase.rpc(
-      "finalize_document_upload",
+    // P0-7: Mark READY through server-only privileged DB path
+    const { data: updatedDoc, error: finalizeError } = await supabaseAdmin.rpc(
+      "finalize_document_upload_privileged",
       {
         p_document_id: doc.id,
-        p_finalize_token: doc.finalize_token,
-        p_status: "READY",
-        p_size_bytes: fileBlob.size,
-        p_sha256: sha256Hex || undefined,
+        p_user_id: user.id,
+        p_actual_size: info.size,
       }
     );
 
-    if (finalizeError) {
-      return { error: "No se pudo completar la validación del documento." };
+    if (finalizeError || !updatedDoc) {
+      return { error: "No se pudo completar la finalización del documento." };
     }
 
     return { data: updatedDoc as unknown as DocumentRecord };
@@ -301,6 +341,8 @@ export async function finalizeDocumentUpload(input: {
 
 /**
  * Generates an authorized, short-lived signed URL for accessing a private document.
+ * P0-3: Access is exclusively through short-lived signed URLs (300s TTL)
+ * after server-side ownership authorization.
  */
 export async function getAuthorizedDocumentUrl(
   documentId: string
@@ -320,6 +362,7 @@ export async function getAuthorizedDocumentUrl(
       .from("documents")
       .select("id, storage_bucket, storage_key, status, user_id")
       .eq("id", documentId)
+      .eq("user_id", user.id)
       .is("archived_at", null)
       .single();
 
@@ -331,7 +374,8 @@ export async function getAuthorizedDocumentUrl(
       return { error: "El documento aún no está listo para su visualización." };
     }
 
-    const { data, error } = await supabase.storage
+    // Server creates signed download URL using admin client
+    const { data, error } = await supabaseAdmin.storage
       .from(doc.storage_bucket)
       .createSignedUrl(doc.storage_key, UPLOAD_LIMITS.signedUrlTtlSeconds);
 
@@ -346,7 +390,10 @@ export async function getAuthorizedDocumentUrl(
 }
 
 /**
- * Archives a document (soft-delete).
+ * Archives a document and removes the physical storage object.
+ * P0-6: Physically removes the Storage object through the official Storage API
+ * before setting archived_at. Quota is freed only when storage removal succeeds
+ * or the object is already absent.
  */
 export async function archiveDocument(
   documentId: string
@@ -366,12 +413,38 @@ export async function archiveDocument(
       return { error: "No autenticado." };
     }
 
-    const { error } = await supabase.rpc("archive_document", {
-      p_document_id: parsed.data.documentId,
+    // Retrieve document to get storage key and verify ownership
+    const { data: doc, error: docError } = await supabase
+      .from("documents")
+      .select("id, storage_bucket, storage_key, user_id")
+      .eq("id", parsed.data.documentId)
+      .eq("user_id", user.id)
+      .is("archived_at", null)
+      .single();
+
+    if (docError || !doc) {
+      return { error: "Documento no encontrado o ya archivado." };
+    }
+
+    // P0-6: Physically remove storage object through official Storage API
+    try {
+      await supabaseAdmin.storage
+        .from(doc.storage_bucket)
+        .remove([doc.storage_key]);
+    } catch {
+      // If removal fails, do not silently free quota
+      return {
+        error: "No se pudo eliminar el archivo físico del almacenamiento.",
+      };
+    }
+
+    // Mark document archived in database
+    const { error: archiveError } = await supabase.rpc("archive_document", {
+      p_document_id: doc.id,
     });
 
-    if (error) {
-      return { error: "No se pudo archivar el documento." };
+    if (archiveError) {
+      return { error: "No se pudo actualizar el registro de archivo." };
     }
 
     return { data: true };

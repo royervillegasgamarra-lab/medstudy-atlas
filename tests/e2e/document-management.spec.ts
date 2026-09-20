@@ -15,13 +15,19 @@ test.describe("Phase 1C: Document Library & Secure Upload Boundary", () => {
   );
   const validPdfBuffer = fs.readFileSync(validSmallPdfPath);
 
+  const fakePdfPath = path.resolve(
+    process.cwd(),
+    "tests/fixtures/documents/fake-pdf.pdf"
+  );
+  const fakePdfBuffer = fs.readFileSync(fakePdfPath);
+
   test.beforeAll(() => {
     if (!fs.existsSync(screenshotsDir)) {
       fs.mkdirSync(screenshotsDir, { recursive: true });
     }
   });
 
-  test("Complete Document Upload, Validation, Quota, XSS Defense, and Archival Flow", async ({
+  test("Complete Document Upload, Fake PDF Rejection, Validation, Quota, XSS Defense, and Archival Flow", async ({
     page,
   }) => {
     // 1. Register and complete onboarding to enter /app
@@ -54,9 +60,14 @@ test.describe("Phase 1C: Document Library & Secure Upload Boundary", () => {
       page.getByText("No hay documentos en esta lista")
     ).toBeVisible();
 
-    // 3. Open Uploader
+    // 3. Open Uploader & Verify Educational-Use PHI Warning Banner (P1-6)
     await page.click('button:has-text("Subir PDF")');
     await expect(page.getByText("Subir Nuevo Documento PDF")).toBeVisible();
+    await expect(
+      page.getByText(
+        /Uso exclusivamente educativo.*Queda estrictamente prohibido subir historias clínicas/i
+      )
+    ).toBeVisible();
 
     // Capture upload modal / uploader screenshot
     await page.screenshot({
@@ -65,8 +76,26 @@ test.describe("Phase 1C: Document Library & Secure Upload Boundary", () => {
       caret: "initial",
     });
 
-    // 4. Upload Valid PDF Document with Subject
     const fileInput = page.locator('input[type="file"]');
+
+    // 4. Negative Test: Upload Fake PDF (P1-5)
+    // Attempt to upload fake-pdf.pdf (plain text disguised as PDF)
+    await fileInput.setInputFiles({
+      name: "fake-pdf.pdf",
+      mimeType: "application/pdf",
+      buffer: fakePdfBuffer,
+    });
+
+    await page.click('button[type="submit"]:has-text("Subir Documento")');
+
+    // Verification must reject fake PDF container
+    await expect(
+      page.getByText(
+        /El archivo subido no es un PDF válido|rechazado durante la validación/i
+      )
+    ).toBeVisible({ timeout: 15000 });
+
+    // 5. Positive Test: Upload Valid PDF Document with Subject (P1-5)
     await fileInput.setInputFiles({
       name: "guia_farmacologia_clinica.pdf",
       mimeType: "application/pdf",
@@ -79,7 +108,7 @@ test.describe("Phase 1C: Document Library & Secure Upload Boundary", () => {
       await subjectSelect.selectOption({ label: "Farmacología" });
     }
 
-    // Submit upload
+    // Submit valid upload
     await page.click('button[type="submit"]:has-text("Subir Documento")');
 
     // Wait for validation to complete and success message
@@ -87,7 +116,7 @@ test.describe("Phase 1C: Document Library & Secure Upload Boundary", () => {
       page.getByText("¡Documento subido y validado con éxito!")
     ).toBeVisible({ timeout: 15000 });
 
-    // Wait for list to update
+    // Wait for list to update and verify status READY ("Listo")
     await expect(page.getByText("guia_farmacologia_clinica.pdf")).toBeVisible({
       timeout: 10000,
     });
@@ -96,7 +125,7 @@ test.describe("Phase 1C: Document Library & Secure Upload Boundary", () => {
       page.locator("div").filter({ hasText: /^Farmacología$/ })
     ).toBeVisible();
 
-    // 5. User-Content XSS Defense Regression Test
+    // 6. User-Content XSS Defense Regression Test
     // Upload a file with hostile script/HTML tags in filename: <img src=x onerror=alert('xss')>.pdf
     await page.click('button:has-text("Subir PDF")');
     await fileInput.setInputFiles({
@@ -122,21 +151,21 @@ test.describe("Phase 1C: Document Library & Secure Upload Boundary", () => {
     ).toBeVisible({ timeout: 10000 });
     expect(xssTriggered).toBe(false);
 
-    // 6. Capture Desktop Document Library Screenshot
+    // 7. Capture Desktop Document Library Screenshot
     await page.screenshot({
       path: path.join(screenshotsDir, "document-library.png"),
       fullPage: true,
       caret: "initial",
     });
 
-    // 7. Verify Authorized Access (Ver / Descargar)
+    // 8. Verify Authorized Access (Ver / Descargar) (P1-5)
     // Click on the first "Ver / Descargar" button
     const downloadButton = page
       .getByRole("button", { name: "Ver / Descargar" })
       .first();
     await expect(downloadButton).toBeVisible();
 
-    // 8. Capture Mobile Viewport Screenshot
+    // 9. Capture Mobile Viewport Screenshot
     await page.setViewportSize({ width: 375, height: 667 });
     await page.screenshot({
       path: path.join(screenshotsDir, "document-library-mobile.png"),
@@ -147,7 +176,7 @@ test.describe("Phase 1C: Document Library & Secure Upload Boundary", () => {
     // Reset viewport
     await page.setViewportSize({ width: 1280, height: 800 });
 
-    // 9. Archive Document
+    // 10. Archive Document (P1-5)
     page.once("dialog", async (dialog) => {
       await dialog.accept();
     });

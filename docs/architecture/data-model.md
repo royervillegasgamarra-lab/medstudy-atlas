@@ -157,22 +157,24 @@ CREATE TABLE documents (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
     subject_id UUID,
-    title TEXT NOT NULL,
-    storage_path TEXT NOT NULL,
-    file_size_bytes BIGINT NOT NULL,
+    original_filename TEXT NOT NULL,
+    storage_provider TEXT NOT NULL DEFAULT 'supabase',
+    storage_bucket TEXT NOT NULL DEFAULT 'documents',
+    storage_key TEXT NOT NULL UNIQUE,
     mime_type TEXT NOT NULL DEFAULT 'application/pdf',
-    status TEXT NOT NULL DEFAULT 'PENDING_UPLOAD' CHECK (status IN ('PENDING_UPLOAD', 'PROCESSING', 'READY', 'FAILED')),
-    failure_reason TEXT,
-    upload_token_hash TEXT,
-    upload_expires_at TIMESTAMPTZ,
-    page_count INT,
+    size_bytes BIGINT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'UPLOADING' CHECK (status IN ('UPLOADING', 'VALIDATING', 'READY', 'REJECTED', 'FAILED')),
+    validation_error_code TEXT,
     sha256_hash TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     archived_at TIMESTAMPTZ,
     CONSTRAINT fk_documents_subject_owner FOREIGN KEY (subject_id, user_id)
         REFERENCES subjects(id, user_id)
-        ON DELETE SET NULL (subject_id)
+        ON DELETE SET NULL (subject_id),
+    CONSTRAINT chk_documents_filename_length CHECK (length(trim(original_filename)) > 0 AND length(trim(original_filename)) <= 255),
+    CONSTRAINT chk_documents_size_positive CHECK (size_bytes > 0 AND size_bytes <= 26214400),
+    CONSTRAINT chk_documents_mime_type CHECK (mime_type = 'application/pdf')
 );
 
 CREATE TABLE document_pages (

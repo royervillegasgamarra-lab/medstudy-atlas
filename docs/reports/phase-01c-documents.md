@@ -7,8 +7,8 @@
 - **Review Package**: `review-output/phase-01c-review.zip`
 - **Review Target**: Phase 1C committed checkpoint on `phase/01c-documents`
 - **Canonical Commit SHA**: Exact commit SHA is captured in `review-output/phase-01c-review.zip` (`REVIEW.md` and `test-results/*.log`).
-- **LOCAL HEAD SHA BEFORE REPORT**: `3bcf87a`
-- **Objective**: Implement secure document library, private Supabase Storage bucket, canonical storage keys `{user_id}/{doc_id}/source.pdf`, storage RLS isolation, server-side `%PDF-` container validation, short-lived signed URLs (300s TTL), centralized upload quotas (25MB file, 10 active docs, 100MB total), soft-delete archival, and mobile-first document library UI with local-first isolation and $0.00 cloud spend.
+- **LOCAL HEAD SHA BEFORE REPORT**: `d41a304`
+- **Objective**: Implement secure document library, private Supabase Storage bucket, exact-path signed upload authorization, privileged server-only finalization, concurrency-safe quota serialization, 5-byte range container validation, physical storage deletion on archive, and mobile-first document library UI with local-first isolation and $0.00 cloud spend.
 
 > **Note on SHA Semantics**: Committed reports record the commit SHA of implementation prior to report generation (`LOCAL HEAD SHA BEFORE REPORT`). Committed reports do not contain their own final commit SHA to prevent self-referential commit loops. The final local HEAD SHA is printed in the final agent chat output after all report/status files are committed locally.
 
@@ -16,167 +16,135 @@
 
 ## 1. Work Completed
 
-1. **Configuration & Centralized Quotas (`src/config/app.ts`, `tests/unit/config.test.ts`)**:
-   - Updated `APP_CONFIG.phase` to `1C — Document Library & Secure Upload`.
-   - Defined centralized `UPLOAD_LIMITS` configuration:
-     - `maxFileSizeBytes`: 25 MB (`25 * 1024 * 1024`).
-     - `maxActiveDocumentsPerUser`: 10.
-     - `maxTotalDocumentBytesPerUser`: 100 MB (`100 * 1024 * 1024`).
-     - `allowedMimeTypes`: `['application/pdf']`.
-     - `pdfMagicBytes`: `'%PDF-'`.
-     - `signedUrlTtlSeconds`: 300 (5 minutes).
-     - `storageBucket`: `'documents'`.
-   - Updated unit test in `tests/unit/config.test.ts` verifying all quota parameters and constraints.
+1. **Dedicated Server-Only Configuration & Supabase Admin Client (`P0-2`)**:
+   - Authored [`src/config/server-env.ts`](file:///c:/Users/DR_%20CHAPATIN/Documents/GitHub/medstudy-atlas/src/config/server-env.ts) guarded with `import "server-only"`. Validates `SUPABASE_SECRET_KEY` (or `SUPABASE_SERVICE_ROLE_KEY`) and `NEXT_PUBLIC_SUPABASE_URL`. Never exposed to client bundles or Server Action return values.
+   - Authored [`src/lib/supabase/admin.ts`](file:///c:/Users/DR_%20CHAPATIN/Documents/GitHub/medstudy-atlas/src/lib/supabase/admin.ts) guarded with `import "server-only"`. Instantiates a singleton `supabaseAdmin` client with session persistence and auto-refresh disabled (`persistSession: false`, `autoRefreshToken: false`).
+   - Updated [`.env.example`](file:///c:/Users/DR_%20CHAPATIN/Documents/GitHub/medstudy-atlas/.env.example) to include `SUPABASE_SECRET_KEY=your-supabase-secret-key` (name only, no real secrets).
 
-2. **Database Schema, Storage Bucket & RPCs (`supabase/migrations/20260920000000_documents_and_storage.sql`)**:
-   - **Private Storage Bucket**: Created private `documents` bucket (`public = false`, `file_size_limit = 26214400`, `allowed_mime_types = ARRAY['application/pdf']`).
-   - **Storage RLS Policies on `storage.objects`**:
-     - `documents_select_own`: Authenticated users can SELECT objects where `bucket_id = 'documents' AND (name LIKE auth.uid()::text || '/%')`.
-     - `documents_insert_own`: Authenticated users can INSERT objects matching their user prefix.
-     - `documents_update_own`: Authenticated users can UPDATE objects matching their user prefix.
-     - Direct public/anon access to storage is strictly prohibited.
-   - **`public.documents` Table**:
-     - Columns: `id UUID PRIMARY KEY DEFAULT gen_random_uuid()`, `user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE`, `subject_id UUID`, `title TEXT NOT NULL`, `storage_path TEXT NOT NULL`, `file_size_bytes BIGINT NOT NULL`, `mime_type TEXT NOT NULL DEFAULT 'application/pdf'`, `status TEXT NOT NULL DEFAULT 'PENDING_UPLOAD' CHECK (status IN ('PENDING_UPLOAD', 'PROCESSING', 'READY', 'FAILED'))`, `failure_reason TEXT`, `upload_token_hash TEXT`, `upload_expires_at TIMESTAMPTZ`, `page_count INT`, `sha256_hash TEXT`, `created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`, `updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`, `archived_at TIMESTAMPTZ`.
-     - Attached `private.handle_updated_at()` trigger.
-     - Composite foreign key:
-       `CONSTRAINT fk_documents_subject_owner FOREIGN KEY (subject_id, user_id) REFERENCES public.subjects(id, user_id) ON DELETE SET NULL (subject_id)`
-       guaranteeing cross-user subject hijacking is impossible at the database engine level.
-   - **Least-Privilege Grants & Revocations**:
-     - Revoked all privileges from `PUBLIC` and `anon`.
-     - Revoked direct table `INSERT`, `UPDATE`, and `DELETE` on `public.documents` from `authenticated`.
-     - Granted `authenticated` strictly `SELECT` guarded by RLS (`auth.uid() = user_id`).
-   - **Secure Atomic RPCs (`SECURITY DEFINER`, `SET search_path = ''`)**:
-     - `request_document_upload`: Validates caller identity, verifies subject ownership via composite key, verifies active document count quota ($\le 10$) and total active bytes quota ($\le 100\text{MB}$), generates canonical path (`auth.uid()/doc_id/source.pdf`), inserts row with status `PENDING_UPLOAD`, and returns upload token and token hash.
-     - `finalize_document_upload`: Validates caller identity, verifies upload token against stored hash, verifies expiration, inspects physical storage object in `storage.objects` to ensure object exists, verifies storage object size matches declared size, verifies container magic bytes (`%PDF-`), and transitions status to `READY`.
-     - `archive_document`: Validates caller identity, marks document `archived_at = NOW()` idempotently, freeing up user quota while preserving storage object reference for auditability. Direct DELETE is blocked.
+2. **Removal of Authenticated Finalization Bypass (`P0-1`) & Token Elimination**:
+   - Completely removed `finalize_token` from database schema, RPC signatures, domain types, and service methods.
+   - Replaced user-callable finalization with privileged server-only RPCs:
+     - `public.finalize_document_upload_privileged`: Callable ONLY by `service_role` (revoked from `PUBLIC`, `anon`, `authenticated`). Validates document belongs to user, is in `UPLOADING` or `VALIDATING` status, and verifies that `actual_size === reserved_size`. Transitions status to `READY`.
+     - `public.reject_document_upload_privileged`: Callable ONLY by `service_role`. Marks status `REJECTED` and records `validation_error_code`.
+   - Authenticated browser users cannot invoke the `READY` transition directly under any circumstances.
 
-3. **Database Security & RLS Test Suite (`supabase/tests/database/03_documents_rls.sql`)**:
-   - 51 pgTAP assertions verifying:
-     - `documents` bucket exists and is strictly private (`public = false`).
-     - Schema columns, types, defaults, and status constraint.
-     - Composite foreign key `fk_documents_subject_owner` rejects cross-user subject hijacking.
-     - Direct table `INSERT`, `UPDATE`, `DELETE` denial for `authenticated` and `anon`.
-     - `request_document_upload`: caller validation, subject validation, quota rejection (count > 10, bytes > 100MB), canonical key format.
-     - `finalize_document_upload`: token mismatch rejection, storage object absence rejection, magic byte failure handling, successful transition to `READY`.
-     - `archive_document`: ownership enforcement and idempotency.
-     - User A / User B isolation across `public.documents` and `storage.objects`.
-   - Executed `pnpm db:test`: Total 179 assertions passing across all 3 test files (`01_`, `02_`, `03_`).
+3. **Exact-Path Signed Uploads & Storage Mutation Denial (`P0-3`)**:
+   - Removed all direct mutation policies on `storage.objects` for `authenticated` users (`INSERT`, `UPDATE`, `DELETE`) and direct `SELECT`.
+   - Direct client upload attempts to unreserved or arbitrary paths (`{user_id}/arbitrary.pdf`) are denied with 403 / AccessDenied.
+   - Server generates an exact signed upload authorization via `supabaseAdmin.storage.from('documents').createSignedUploadUrl(storageKey)` for `{user_id}/{doc_id}/source.pdf`.
+   - Browser client uploads exclusively using `uploadToSignedUrl` with `upsert: false`.
 
-4. **Safe Test Fixtures (`tests/fixtures/documents/`)**:
-   - `valid-small.pdf`: Minimal valid 1-page PDF container with valid `%PDF-1.4` magic bytes.
-   - `fake-pdf.pdf`: Plain text file renamed to `.pdf` to verify magic byte rejection.
-   - `corrupted.pdf`: Binary file with truncated/invalid PDF header.
+4. **Total Storage Quota Reservation & Concurrency Safety (`P0-4`, `P0-5`)**:
+   - In `public.request_document_upload` RPC:
+     - Enforced per-user transaction advisory locking via `PERFORM pg_advisory_xact_lock(hashtext('doc_quota:' || v_user_id::text));` to serialize concurrent upload requests per user within the database transaction without external distributed infrastructure.
+     - Quota byte calculation sums ALL active reservations (`UPLOADING`, `VALIDATING`, `READY`), preventing the 100 MB bypass where parallel uploads observe 0 bytes.
+     - Active document count check counts all rows in `UPLOADING`, `VALIDATING`, `READY` ($\le 10$).
+     - Declared size is recorded on row creation; finalization strictly enforces `actual_size === declared_size`.
 
-5. **Documents Module (`src/modules/documents/`)**:
-   - `types.ts`: Domain models (`Document`, `DocumentStatus`, `DocumentUploadRequest`, `DocumentUploadTicket`, `DocumentQuotaUsage`, etc.).
-   - `validation.ts`: Zod validation schemas with `validatePdfMagicBytes` (verifying first 5 bytes equal `%PDF-`) and `sanitizeFilename` (stripping directory traversal, control characters, and unsafe symbols).
-   - `service.ts`: Backend service methods (`getActiveDocuments`, `getArchivedDocuments`, `getDocumentById`, `getQuotaUsage`, `requestUploadTicket`, `finalizeUpload`, `archiveDocument`, `getDownloadSignedUrl`).
-   - `actions.ts`: Next.js Server Actions with error sanitization to protect database and storage internals.
-   - `index.ts`: Module barrel export.
-   - `tests/unit/documents.test.ts`: 21 comprehensive unit tests verifying magic bytes, schemas, filename sanitization, and edge cases.
+5. **Physical Storage Cleanup on Archive (`P0-6`)**:
+   - Archiving a document (`archiveDocument`) physically removes the Storage object through the official Supabase Storage API (`supabaseAdmin.storage.from(bucket).remove([storageKey])`) before setting `archived_at = NOW()` in the database.
+   - Quota is freed only upon successful storage object removal or if the object is already absent. Direct browser Storage `DELETE` is denied.
 
-6. **UI Components & Pages (`src/components/documents/`, `src/app/app/documents/`)**:
-   - `document-uploader.tsx`: Mobile-first upload component with drag-and-drop zone, subject selector, 3-step progress indicators (Requesting ticket -> Uploading to storage -> Verifying container), clear error messages, and educational PHI warning banner.
-   - `document-library.tsx`: Quota progress bar (showing active document count and storage bytes), document list with status badges, authorized download button with short-lived signed URLs (300s TTL), and soft-delete archive with confirmation dialog.
-   - `src/app/app/documents/page.tsx`: Server Component with parallel fetching (`getActiveDocuments`, `getActiveSubjects`, `getQuotaUsage`).
-   - Navigation: Added "Documentos" link to `/app/layout.tsx` header and quick-access banner to `/app/page.tsx` dashboard.
+6. **Authoritative Final Validation & 5-Byte Range Optimization (`P0-7`, `P1-1`)**:
+   - In `finalizeDocumentUpload`:
+     - Verifies user authentication and document ownership.
+     - Obtains actual object size directly from storage metadata (`supabaseAdmin.storage.from(bucket).info(storageKey)`).
+     - Confirms `info.size === doc.size_bytes` and `info.contentType === 'application/pdf'`.
+     - Inspects `%PDF-` magic bytes via HTTP Range request (`Range: bytes=0-4`) on an internal signed URL, downloading only 5 bytes instead of 25 MB into server memory.
+     - On validation failure: removes physical object via Storage API, sets `REJECTED` with error code `INVALID_PDF_SIGNATURE`, and never marks `READY`.
+     - On validation success: calls privileged `finalize_document_upload_privileged`.
 
-7. **Content Security Policy (CSP) Hardening (`next.config.ts`)**:
-   - Updated `connect-src` to include `http://127.0.0.1:54321 http://localhost:54321 https://*.supabase.co` to allow direct browser-to-storage uploads while maintaining strict frame-ancestors, object-src, and base-uri restrictions.
+7. **Database Input Hardening (`P1-2`)**:
+   - Added database-level check constraints on `public.documents`:
+     - `chk_documents_filename_length`: `length(trim(original_filename)) > 0 AND length(trim(original_filename)) <= 255`.
+     - `chk_documents_size_positive`: `size_bytes > 0 AND size_bytes <= 26214400`.
+     - `chk_documents_mime_type`: `mime_type = 'application/pdf'`.
+   - Validated in `request_document_upload` RPC and enforced by database engine.
 
-8. **End-to-End & Browser Verification (`tests/e2e/document-management.spec.ts`)**:
-   - Authored comprehensive E2E test:
-     - User signup and onboarding completion.
-     - Navigation to `/app/documents`.
-     - Direct upload of valid PDF (`valid-small.pdf`) with subject association.
-     - Container verification and transition to `READY`.
-     - Magic byte rejection test: uploading `fake-pdf.pdf` fails container validation and displays user-friendly error.
-     - User-content XSS regression: document title with HTML/JS payload is rendered safely without script execution.
-     - Short-lived signed URL generation and download verification.
-     - Soft-delete archival and quota release.
-     - Visual screenshot capture for mobile and desktop viewports.
-   - Total 17 E2E tests passing cleanly across 5 test suites.
+8. **In-Database Security Test Suite (pgTAP) & Authoritative Storage Integration Tests (`P1-3`)**:
+   - Updated [`supabase/tests/database/03_documents_rls.sql`](file:///c:/Users/DR_%20CHAPATIN/Documents/GitHub/medstudy-atlas/supabase/tests/database/03_documents_rls.sql): 50 assertions covering table schema, absence of `finalize_token`, anon denials, direct mutation denials, storage.objects select denial, input constraint checks, canonical key format, quota reservation with `UPLOADING` rows, privileged finalization authorization, size mismatch rejection, User A / User B isolation, and archive idempotency. All 178 database tests pass.
+   - Created [`tests/integration/storage-security.test.ts`](file:///c:/Users/DR_%20CHAPATIN/Documents/GitHub/medstudy-atlas/tests/integration/storage-security.test.ts): 5 authoritative integration tests using the real Supabase Storage API verifying direct unauthorized upload denial, exact signed upload success, physical object existence, fake PDF rejection with physical blob cleanup, size mismatch rejection, signed download verification, Bob vs Alice isolation, and physical blob removal on archive.
+
+9. **Complete 25-Scenario Failure Matrix (`P1-4`)**:
+   - Authored [`docs/reports/phase-01c-failure-matrix.md`](file:///c:/Users/DR_%20CHAPATIN/Documents/GitHub/medstudy-atlas/docs/reports/phase-01c-failure-matrix.md) mapping all 25 security scenarios across database, integration, unit, and E2E layers.
+
+10. **E2E Browser Verification & PHI Warning (`P1-5`, `P1-6`)**:
+    - Added educational-use PHI warning banner in [`src/components/documents/document-uploader.tsx`](file:///c:/Users/DR_%20CHAPATIN/Documents/GitHub/medstudy-atlas/src/components/documents/document-uploader.tsx).
+    - Updated [`tests/e2e/document-management.spec.ts`](file:///c:/Users/DR_%20CHAPATIN/Documents/GitHub/medstudy-atlas/tests/e2e/document-management.spec.ts) with real automated coverage for:
+      - PHI warning banner visibility.
+      - Negative test: fake PDF container rejection in UI.
+      - Positive test: valid PDF upload transitioning to `READY` ("Listo").
+      - User-content XSS regression with hostile filename payload.
+      - Authorized signed download button verification.
+      - Document archival and UI quota update.
 
 ---
 
 ## 2. File Changes
 
 ### Important Files Created
-- `supabase/migrations/20260920000000_documents_and_storage.sql` — Private storage bucket, storage RLS, `public.documents` schema, composite foreign key, upload RPCs, and least-privilege grants.
-- `supabase/tests/database/03_documents_rls.sql` — 51 pgTAP in-database tests for storage and document security boundaries.
-- `src/modules/documents/types.ts` — TypeScript domain types for documents and upload flow.
-- `src/modules/documents/validation.ts` — Zod schemas, magic byte validator, and filename sanitizer.
-- `src/modules/documents/service.ts` — Database and storage service operations.
-- `src/modules/documents/actions.ts` — Server actions for document upload, finalization, download, and archival.
-- `src/modules/documents/index.ts` — Module barrel export.
-- `src/components/documents/document-uploader.tsx` — Mobile-first dropzone uploader with progress and PHI warning.
-- `src/components/documents/document-library.tsx` — Responsive document library, quota progress bar, and archive dialog.
-- `src/app/app/documents/page.tsx` — Server component page for `/app/documents`.
-- `tests/unit/documents.test.ts` — 21 unit tests for document validation and magic bytes.
-- `tests/fixtures/documents/valid-small.pdf` — Minimal valid PDF fixture.
-- `tests/fixtures/documents/fake-pdf.pdf` — Fake PDF fixture for negative testing.
-- `tests/fixtures/documents/corrupted.pdf` — Corrupted PDF fixture.
-- `tests/e2e/document-management.spec.ts` — Playwright E2E test suite for document upload and library.
-- `docs/screenshots/document-library.png` — Desktop screenshot of document library.
-- `docs/screenshots/document-library-mobile.png` — Mobile screenshot of document library.
-- `docs/screenshots/document-upload-modal.png` — Screenshot of document upload component.
-- `docs/reports/phase-01c-documents.md` — This execution report.
+- `src/config/server-env.ts` — Server-only environment configuration for `SUPABASE_SECRET_KEY`.
+- `src/lib/supabase/admin.ts` — Server-only privileged Supabase admin client.
+- `tests/integration/storage-security.test.ts` — Authoritative Supabase Storage API integration test suite.
+- `docs/reports/phase-01c-failure-matrix.md` — 25-scenario security and failure matrix.
 
 ### Important Files Modified
-- `src/config/app.ts` — Updated phase and added `UPLOAD_LIMITS` configuration.
-- `tests/unit/config.test.ts` — Added assertions for `UPLOAD_LIMITS`.
-- `next.config.ts` — Updated CSP `connect-src` for Supabase Storage uploads.
-- `src/app/app/layout.tsx` — Added "Documentos" link to authenticated navigation.
-- `src/app/app/page.tsx` — Added Document Library quick-access banner.
-- `src/types/database.ts` — Regenerated Supabase database types.
-- `docs/status.md` — Updated snapshot and Document Pipeline subsystem status.
-- `docs/security/threat-model.md` — Updated threat matrix rows for Phase 1C controls.
-- `docs/architecture/data-model.md` — Updated `documents` table DDL.
-- `README.md` — Marked Phase 1C complete; set next checkpoint to Phase 1D.
-- `scripts/create-review-package.ps1` — Added Phase 1C detection, criteria checklist, and next-step guidance.
+- `supabase/migrations/20260920000000_documents_and_storage.sql` — Hardened storage policies, removed `finalize_token`, added input check constraints, concurrency-safe advisory lock, quota counting `UPLOADING` rows, and privileged finalization RPCs.
+- `supabase/tests/database/03_documents_rls.sql` — Updated pgTAP tests to verify new security boundaries.
+- `src/modules/documents/types.ts` — Updated domain types: removed `finalize_token`, added `signedUploadUrl` and `signedUploadToken`.
+- `src/modules/documents/service.ts` — Updated service: exact signed upload, 5-byte range validation, server-only privileged finalization, and physical storage deletion on archive.
+- `src/modules/documents/actions.ts` — Updated server actions to pass signed upload parameters.
+- `src/components/documents/document-uploader.tsx` — Added PHI warning banner and `uploadToSignedUrl` integration.
+- `vitest.config.mts` — Added `tests/integration` to test runner.
+- `tests/e2e/document-management.spec.ts` — Added fake PDF rejection, PHI warning check, and full E2E flow.
+- `.env.example` — Added `SUPABASE_SECRET_KEY` placeholder.
+- `docs/architecture/data-model.md` — Synchronized `documents` DDL with migration.
+- `docs/security/threat-model.md` — Updated threat matrix rows for P0/P1 security architecture.
+- `scripts/create-review-package.ps1` — Updated review checklist and verification pipeline.
 
 ---
 
 ## 3. Architecture & Subsystem Impact
 
 - **Architecture Decisions**:
-  - Implemented direct client-to-storage upload pattern mediated by short-lived server tickets, preventing application server bottlenecking on large file transfers.
-  - Enforced container validation at server boundary (`finalize_document_upload`) via `%PDF-` magic byte inspection before marking documents `READY`.
-  - Composite foreign key `(subject_id, user_id) REFERENCES subjects(id, user_id)` guarantees tenant subject isolation at database engine level.
-  - Direct mutations revoked from `public.documents`; mutations must use `SECURITY DEFINER` RPCs (`SET search_path = ''`).
+  - Eliminated `finalize_token`: Authenticated browsers can no longer invoke finalization directly. Privileged finalization is callable ONLY by `service_role`.
+  - Removed broad authenticated mutation policies on `storage.objects`. Uploads use exact-path signed upload URLs (`uploadToSignedUrl`) with `upsert: false`.
+  - Concurrency-safe quota reservations via PostgreSQL per-user transaction advisory locks (`pg_advisory_xact_lock`).
+  - Total storage quota counts all active reservations (`UPLOADING`, `VALIDATING`, `READY`).
+  - 5-byte range validation via HTTP Range request on internal signed URL avoids downloading 25 MB into server memory.
+  - Physical blob removal on archive via official Storage API before stamping `archived_at`.
 - **Database Impact**:
   - Migration `20260920000000_documents_and_storage.sql` applied cleanly.
-  - Added `public.documents` table with RLS.
-  - Added private `documents` bucket with `storage.objects` RLS.
-  - Added RPCs: `request_document_upload`, `finalize_document_upload`, `archive_document`.
+  - `public.documents` table updated: check constraints added, `finalize_token` removed.
+  - Privileged RPCs: `finalize_document_upload_privileged` and `reject_document_upload_privileged` granted strictly to `service_role`.
+  - Quota serialization inside `request_document_upload`.
 - **API Impact**:
-  - Added Server Actions: `requestUploadTicketAction`, `finalizeUploadAction`, `archiveDocumentAction`, `getDownloadUrlAction`.
+  - `requestDocumentUploadAction` returns exact `signedUploadUrl` and `signedUploadToken`.
+  - `finalizeDocumentUploadAction` executes server-side validation and privileged finalization.
 - **AI Impact**: NONE (strictly deferred to Slice 1E and 1F).
 - **Background-Job Impact**: NONE (worker pipeline deferred to Slice 1D).
-- **Dependencies Introduced**: NONE (zero new dependencies added; evaluated existing libraries).
+- **Dependencies Introduced**: NONE (zero new dependencies added).
 
 ---
 
 ## 4. Security & Compliance Review
 
 - **Security Review**:
-  - Storage bucket is strictly private (`public = false`). Direct public URLs fail with 400/403.
-  - Storage RLS on `storage.objects` restricts operations to caller's own path prefix (`name LIKE auth.uid()::text || '/%'`).
-  - Access to documents is strictly mediated through short-lived signed URLs (TTL = 300s).
-  - Server-side `%PDF-` magic byte validation rejects non-PDFs or spoofed text files.
-  - Filename sanitization strips directory traversal (`..`) and control characters.
-  - Composite foreign key prevents cross-tenant subject linking.
-  - Quotas enforced: 25MB max file size, 10 active documents, 100MB total storage.
-  - Soft-delete archival sets `archived_at` and frees user quota.
-  - CSP updated safely: `connect-src` permits Supabase endpoints; `object-src 'none'` and strict frame ancestors maintained.
+  - Authenticated user CANNOT directly finalize documents to `READY`.
+  - Authenticated user CANNOT upload arbitrary unreserved Storage objects.
+  - Exact-path signed upload authorization strictly binds path `{user_id}/{doc_id}/source.pdf`.
+  - User A / User B isolation verified across database queries, storage access, signed URLs, and archival.
+  - Container validation inspects `%PDF-` magic bytes; non-PDFs are rejected and physically deleted.
+  - Quota bypass via parallel reservations prevented by transaction advisory locks and counting `UPLOADING` rows.
+  - Real Storage API deletion on archive prevents unbounded storage accumulation.
   - Automated security scan in `create-review-package.ps1`: Zero secrets, keys, or credentials detected.
 - **Medical & Content Safety**:
-  - Educational positioning: Document upload UI displays mandatory educational-use banner informing students that uploaded materials must be academic notes/slides only.
-  - Zero PHI permitted. Deep text-based PHI scanning deferred to Slice 1D text extraction.
+  - Upload UI displays prominent educational-use banner warning against patient records and PHI.
+  - Invariant: strictly educational platform; deep text-based PHI scanning deferred to Slice 1D.
 - **Environment Variables**:
-  - `NEXT_PUBLIC_SUPABASE_URL` (existing)
-  - `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` (existing)
-  - Zero secrets or private keys required in client runtime.
+  - `NEXT_PUBLIC_SUPABASE_URL`
+  - `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`
+  - `SUPABASE_SECRET_KEY` (server-only; never exposed to browser bundles)
 
 ---
 
@@ -187,29 +155,27 @@
   - `pnpm format:check` -> Exit Code 0 (PASS)
   - `pnpm lint` -> Exit Code 0 (PASS)
   - `pnpm typecheck` -> Exit Code 0 (PASS)
-  - `pnpm test` -> Exit Code 0 (PASS, 87 unit tests across 4 suites)
+  - `pnpm test` -> Exit Code 0 (PASS, 92 tests across 10 suites including real Storage API integration tests)
   - `pnpm db:reset` -> Exit Code 0 (PASS, migrations applied)
   - `pnpm db:types` -> Exit Code 0 (PASS, database types regenerated)
-  - `pnpm db:test` -> Exit Code 0 (PASS, 179 pgTAP assertions across 3 suites)
+  - `pnpm db:test` -> Exit Code 0 (PASS, 178 pgTAP assertions across 3 suites)
   - `pnpm build` -> Exit Code 0 (PASS, Turbopack production build)
   - `pnpm test:e2e` -> Exit Code 0 (PASS, 17 Playwright tests across 5 suites)
   - `pnpm audit` -> Exit Code 0 (PASS, 0 vulnerabilities)
 - **Browser Verification**:
   - Playwright automated browser tests executed against local Chromium.
-  - Tested mobile (375x667) and desktop (1280x720) viewports.
-  - Verified drag-and-drop dropzone, upload progress indicators, quota progress bar, signed URL download, and archive modal.
-  - Screenshots saved to `docs/screenshots/document-library.png`, `document-library-mobile.png`, and `document-upload-modal.png`.
+  - Verified drag-and-drop dropzone, PHI warning banner, fake PDF rejection, valid upload, XSS filename safety, signed URL download, and archival.
+  - Screenshots updated in `docs/screenshots/`.
 - **Performance Impact**:
-  - Direct browser-to-storage upload offloads file data transfer from the Next.js server.
-  - Document library query uses parallel database fetches for documents, subjects, and quota calculation.
-- **Analytics Impact**: NONE.
+  - 5-byte range read avoids 25 MB memory allocation per document upload.
+  - Direct browser-to-storage upload offloads file data transfer from Next.js server.
 - **Cost Impact**: $0.00 (Local Supabase Storage; no cloud resources, no paid APIs).
 
 ---
 
 ## 6. Deviations, Issues & Debt
 
-- **Deviations from Specification**: None. All Phase 1C scope items delivered in full.
+- **Deviations from Specification**: None. All P0 and P1 review requirements addressed in full.
 - **Known Issues**: None.
 - **Blockers**: None.
 - **Technical Debt Knowingly Introduced**: None.

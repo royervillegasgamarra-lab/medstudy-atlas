@@ -38,7 +38,6 @@ export type Database = {
         Row: {
           archived_at: string | null;
           created_at: string;
-          finalize_token: string;
           id: string;
           mime_type: string;
           original_filename: string;
@@ -56,7 +55,6 @@ export type Database = {
         Insert: {
           archived_at?: string | null;
           created_at?: string;
-          finalize_token: string;
           id?: string;
           mime_type?: string;
           original_filename: string;
@@ -74,7 +72,6 @@ export type Database = {
         Update: {
           archived_at?: string | null;
           created_at?: string;
-          finalize_token?: string;
           id?: string;
           mime_type?: string;
           original_filename?: string;
@@ -207,19 +204,47 @@ export type Database = {
     Functions: {
       archive_document: { Args: { p_document_id: string }; Returns: boolean };
       complete_onboarding: { Args: never; Returns: string };
-      finalize_document_upload: {
+      finalize_document_upload_privileged: {
         Args: {
+          p_actual_size: number;
           p_document_id: string;
-          p_finalize_token: string;
           p_sha256?: string;
-          p_size_bytes: number;
-          p_status: string;
-          p_validation_error_code?: string;
+          p_user_id: string;
         };
         Returns: {
           archived_at: string | null;
           created_at: string;
-          finalize_token: string;
+          id: string;
+          mime_type: string;
+          original_filename: string;
+          sha256_hash: string | null;
+          size_bytes: number;
+          status: string;
+          storage_bucket: string;
+          storage_key: string;
+          storage_provider: string;
+          subject_id: string | null;
+          updated_at: string;
+          user_id: string;
+          validation_error_code: string | null;
+        };
+        SetofOptions: {
+          from: "*";
+          to: "documents";
+          isOneToOne: true;
+          isSetofReturn: false;
+        };
+      };
+      reject_document_upload_privileged: {
+        Args: {
+          p_document_id: string;
+          p_error_code: string;
+          p_status?: string;
+          p_user_id: string;
+        };
+        Returns: {
+          archived_at: string | null;
+          created_at: string;
           id: string;
           mime_type: string;
           original_filename: string;
@@ -250,7 +275,6 @@ export type Database = {
         };
         Returns: {
           document_id: string;
-          finalize_token: string;
           storage_bucket: string;
           storage_key: string;
         }[];
