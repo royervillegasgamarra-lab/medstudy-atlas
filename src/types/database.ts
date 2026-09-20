@@ -34,6 +34,146 @@ export type Database = {
   };
   public: {
     Tables: {
+      document_pages: {
+        Row: {
+          char_count: number;
+          classification: string;
+          created_at: string;
+          document_id: string;
+          extraction_method: string;
+          height_points: number;
+          id: string;
+          native_char_count: number;
+          ocr_char_count: number;
+          ocr_confidence: number | null;
+          page_number: number;
+          processing_run_id: string;
+          rotation_degrees: number;
+          text_content: string;
+          text_sha256: string;
+          user_id: string;
+          width_points: number;
+        };
+        Insert: {
+          char_count?: number;
+          classification: string;
+          created_at?: string;
+          document_id: string;
+          extraction_method: string;
+          height_points: number;
+          id?: string;
+          native_char_count?: number;
+          ocr_char_count?: number;
+          ocr_confidence?: number | null;
+          page_number: number;
+          processing_run_id: string;
+          rotation_degrees?: number;
+          text_content?: string;
+          text_sha256: string;
+          user_id: string;
+          width_points: number;
+        };
+        Update: {
+          char_count?: number;
+          classification?: string;
+          created_at?: string;
+          document_id?: string;
+          extraction_method?: string;
+          height_points?: number;
+          id?: string;
+          native_char_count?: number;
+          ocr_char_count?: number;
+          ocr_confidence?: number | null;
+          page_number?: number;
+          processing_run_id?: string;
+          rotation_degrees?: number;
+          text_content?: string;
+          text_sha256?: string;
+          user_id?: string;
+          width_points?: number;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "document_pages_processing_run_id_fkey";
+            columns: ["processing_run_id"];
+            isOneToOne: false;
+            referencedRelation: "document_processing_runs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "fk_document_pages_doc_owner";
+            columns: ["document_id", "user_id"];
+            isOneToOne: false;
+            referencedRelation: "documents";
+            referencedColumns: ["id", "user_id"];
+          },
+        ];
+      };
+      document_processing_runs: {
+        Row: {
+          attempt_count: number;
+          created_at: string;
+          document_id: string;
+          error_code: string | null;
+          finished_at: string | null;
+          id: string;
+          native_text_page_count: number;
+          no_text_page_count: number;
+          ocr_page_count: number;
+          page_count: number | null;
+          pipeline_version: string;
+          source_sha256: string | null;
+          started_at: string | null;
+          status: string;
+          updated_at: string;
+          user_id: string;
+        };
+        Insert: {
+          attempt_count?: number;
+          created_at?: string;
+          document_id: string;
+          error_code?: string | null;
+          finished_at?: string | null;
+          id?: string;
+          native_text_page_count?: number;
+          no_text_page_count?: number;
+          ocr_page_count?: number;
+          page_count?: number | null;
+          pipeline_version?: string;
+          source_sha256?: string | null;
+          started_at?: string | null;
+          status?: string;
+          updated_at?: string;
+          user_id: string;
+        };
+        Update: {
+          attempt_count?: number;
+          created_at?: string;
+          document_id?: string;
+          error_code?: string | null;
+          finished_at?: string | null;
+          id?: string;
+          native_text_page_count?: number;
+          no_text_page_count?: number;
+          ocr_page_count?: number;
+          page_count?: number | null;
+          pipeline_version?: string;
+          source_sha256?: string | null;
+          started_at?: string | null;
+          status?: string;
+          updated_at?: string;
+          user_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "fk_processing_runs_document_owner";
+            columns: ["document_id", "user_id"];
+            isOneToOne: false;
+            referencedRelation: "documents";
+            referencedColumns: ["id", "user_id"];
+          },
+        ];
+      };
       documents: {
         Row: {
           archived_at: string | null;
@@ -206,6 +346,20 @@ export type Database = {
         Args: { p_document_id: string; p_user_id: string };
         Returns: boolean;
       };
+      claim_next_processing_run: {
+        Args: { p_lease_seconds?: number; p_worker_id: string };
+        Returns: {
+          attempt_count: number;
+          document_id: string;
+          original_filename: string;
+          pipeline_version: string;
+          run_id: string;
+          size_bytes: number;
+          storage_bucket: string;
+          storage_key: string;
+          user_id: string;
+        }[];
+      };
       complete_document_cleanup_privileged: {
         Args: {
           p_document_id: string;
@@ -238,6 +392,25 @@ export type Database = {
         };
       };
       complete_onboarding: { Args: never; Returns: string };
+      enqueue_document_processing_privileged: {
+        Args: {
+          p_document_id: string;
+          p_pipeline_version?: string;
+          p_user_id: string;
+        };
+        Returns: {
+          attempt_count: number;
+          document_id: string;
+          pipeline_version: string;
+          run_id: string;
+          status: string;
+          user_id: string;
+        }[];
+      };
+      fail_processing_run_privileged: {
+        Args: { p_error_code: string; p_retryable?: boolean; p_run_id: string };
+        Returns: boolean;
+      };
       finalize_document_upload_privileged: {
         Args: {
           p_actual_size: number;
@@ -268,6 +441,10 @@ export type Database = {
           isOneToOne: true;
           isSetofReturn: false;
         };
+      };
+      persist_processing_run_results_privileged: {
+        Args: { p_manifest: Json; p_pages: Json; p_run_id: string };
+        Returns: boolean;
       };
       request_document_upload: {
         Args: {

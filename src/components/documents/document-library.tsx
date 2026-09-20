@@ -5,6 +5,7 @@ import {
   getAuthorizedDocumentUrlAction,
   archiveDocumentAction,
   getDocumentQuotaAction,
+  retryDocumentProcessingAction,
 } from "@/modules/documents/actions";
 import type {
   DocumentWithSubject,
@@ -28,6 +29,7 @@ import {
   AlertCircle,
   CheckCircle2,
   Loader2,
+  RotateCcw,
   HardDrive,
   Files,
   ExternalLink,
@@ -50,12 +52,58 @@ export function DocumentLibrary({
   const [isUploaderOpen, setIsUploaderOpen] = useState(false);
   const [subjectFilter, setSubjectFilter] = useState<string>("");
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  const [retryingId, setRetryingId] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
   const [feedback, setFeedback] = useState<{
     type: "success" | "error";
     text: string;
   } | null>(null);
+
+  const handleRetryProcessing = (docId: string) => {
+    setFeedback(null);
+    setRetryingId(docId);
+    startTransition(async () => {
+      try {
+        const res = await retryDocumentProcessingAction(docId);
+        if (!res.success) {
+          setFeedback({
+            type: "error",
+            text: res.error || "No se pudo reintentar el procesamiento.",
+          });
+          return;
+        }
+        setFeedback({
+          type: "success",
+          text: "Procesamiento reencolado exitosamente.",
+        });
+        setDocuments((prev) =>
+          prev.map((d) =>
+            d.id === docId
+              ? {
+                  ...d,
+                  processing_run: d.processing_run
+                    ? {
+                        ...d.processing_run,
+                        status: "PENDING",
+                        error_code: null,
+                        error_message: null,
+                      }
+                    : null,
+                }
+              : d
+          )
+        );
+      } catch {
+        setFeedback({
+          type: "error",
+          text: "Error inesperado al reintentar el procesamiento.",
+        });
+      } finally {
+        setRetryingId(null);
+      }
+    });
+  };
 
   const handleDownload = async (doc: DocumentWithSubject) => {
     setFeedback(null);
@@ -154,44 +202,86 @@ export function DocumentLibrary({
     }
   };
 
-  const getStatusBadge = (status: string, errorCode?: string | null) => {
-    switch (status) {
-      case "READY":
-        return (
-          <Badge
-            variant="default"
-            className="bg-emerald-600/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30 text-xs"
-          >
-            Listo
-          </Badge>
-        );
-      case "UPLOADING":
-        return (
-          <Badge
-            variant="secondary"
-            className="bg-blue-500/15 text-blue-600 dark:text-blue-400 border-blue-500/30 text-xs"
-          >
-            Subiendo
-          </Badge>
-        );
-      case "REJECTED":
-        return (
-          <Badge
-            variant="destructive"
-            className="text-xs"
-            title={errorCode || "Archivo rechazado"}
-          >
-            Rechazado
-          </Badge>
-        );
-      case "FAILED":
-      default:
-        return (
-          <Badge variant="destructive" className="text-xs">
-            Fallido
-          </Badge>
-        );
+  const getStatusBadge = (doc: DocumentWithSubject) => {
+    if (doc.status === "UPLOADING") {
+      return (
+        <Badge
+          variant="secondary"
+          className="bg-blue-500/15 text-blue-600 dark:text-blue-400 border-blue-500/30 text-xs"
+        >
+          Subiendo
+        </Badge>
+      );
     }
+    if (doc.status === "REJECTED") {
+      return (
+        <Badge
+          variant="destructive"
+          className="text-xs"
+          title={doc.validation_error_code || "Archivo rechazado"}
+        >
+          Rechazado
+        </Badge>
+      );
+    }
+    if (doc.status === "FAILED") {
+      return (
+        <Badge variant="destructive" className="text-xs">
+          Fallido
+        </Badge>
+      );
+    }
+
+    // doc.status === "READY" -> check processing_run
+    const runStatus = doc.processing_run?.status;
+    if (runStatus === "COMPLETED") {
+      return (
+        <Badge
+          variant="default"
+          className="bg-emerald-600/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30 text-xs"
+        >
+          Procesado
+          {doc.processing_run?.total_pages != null &&
+            ` (${doc.processing_run.total_pages} págs)`}
+        </Badge>
+      );
+    }
+    if (runStatus === "PROCESSING") {
+      return (
+        <Badge
+          variant="secondary"
+          className="bg-blue-500/15 text-blue-600 dark:text-blue-400 border-blue-500/30 text-xs flex items-center gap-1"
+        >
+          <Loader2 className="w-3 h-3 animate-spin" />
+          Procesando
+        </Badge>
+      );
+    }
+    if (runStatus === "FAILED") {
+      return (
+        <Badge
+          variant="destructive"
+          className="text-xs"
+          title={
+            doc.processing_run?.error_message ||
+            doc.processing_run?.error_code ||
+            "Error al procesar"
+          }
+        >
+          Error al procesar
+        </Badge>
+      );
+    }
+
+    // PENDING or no run yet
+    return (
+      <Badge
+        variant="outline"
+        className="bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/30 text-xs"
+      >
+        Pendiente de procesar
+      </Badge>
+    );
   };
 
   const storagePercentage = Math.min(
@@ -406,7 +496,7 @@ export function DocumentLibrary({
                         >
                           {doc.original_filename}
                         </p>
-                        {getStatusBadge(doc.status, doc.validation_error_code)}
+                        {getStatusBadge(doc)}
                       </div>
 
                       <div className="flex items-center gap-3 text-xs text-muted-foreground flex-wrap">
@@ -430,6 +520,23 @@ export function DocumentLibrary({
 
                   {/* Actions */}
                   <div className="flex items-center gap-2 self-end sm:self-center shrink-0">
+                    {doc.processing_run?.status === "FAILED" && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleRetryProcessing(doc.id)}
+                        disabled={retryingId === doc.id || isPending}
+                        className="gap-1.5 text-xs h-8 text-amber-600 dark:text-amber-400 border-amber-500/30 hover:bg-amber-500/10"
+                      >
+                        {retryingId === doc.id ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <RotateCcw className="w-3.5 h-3.5" />
+                        )}
+                        Reintentar
+                      </Button>
+                    )}
+
                     {isReady && (
                       <Button
                         size="sm"

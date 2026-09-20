@@ -39,7 +39,9 @@ export async function getUserDocuments(): Promise<
 
     const { data, error } = await supabase
       .from("documents")
-      .select("*, subject:subjects(id, name)")
+      .select(
+        "*, subject:subjects(id, name), processing_runs:document_processing_runs(id, status, error_code, attempt_count, page_count)"
+      )
       .is("archived_at", null)
       .order("created_at", { ascending: false });
 
@@ -47,7 +49,16 @@ export async function getUserDocuments(): Promise<
       return { error: "No se pudieron obtener los documentos." };
     }
 
-    return { data: (data as unknown as DocumentWithSubject[]) || [] };
+    const docsWithRun = (data || []).map((d: any) => {
+      const runs = d.processing_runs || [];
+      const latestRun = Array.isArray(runs) && runs.length > 0 ? runs[0] : null;
+      return {
+        ...d,
+        processing_run: latestRun,
+      };
+    });
+
+    return { data: docsWithRun as DocumentWithSubject[] };
   } catch {
     return { error: "Error inesperado al cargar documentos." };
   }
@@ -660,9 +671,76 @@ export async function finalizeDocumentUpload(input: {
       return { error: "No se pudo completar la finalización del documento." };
     }
 
+    // Phase 1D: Automatically enqueue document processing asynchronously
+    try {
+      await supabaseAdmin.rpc("enqueue_document_processing_privileged", {
+        p_document_id: doc.id,
+        p_user_id: user.id,
+        p_pipeline_version: "1.0.0",
+      });
+    } catch {
+      // Non-blocking: failure to enqueue processing MUST NOT invalidate or delete READY upload
+    }
+
     return { data: updatedDoc as unknown as DocumentRecord };
   } catch {
     return { error: "Error inesperado al validar el documento." };
+  }
+}
+
+/**
+ * Allows an authenticated user to request retry of a failed processing run for their document.
+ */
+export async function retryDocumentProcessing(
+  documentId: string
+): Promise<DocumentsResult<boolean>> {
+  try {
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      return { error: "No autenticado." };
+    }
+
+    // Verify document ownership and READY status
+    const { data: doc, error: docError } = await supabase
+      .from("documents")
+      .select("id, status, user_id")
+      .eq("id", documentId)
+      .eq("user_id", user.id)
+      .is("archived_at", null)
+      .single();
+
+    if (docError || !doc) {
+      return { error: "Documento no encontrado o acceso no autorizado." };
+    }
+
+    if (doc.status !== "READY") {
+      return {
+        error: "Solo los documentos en estado Listo pueden ser procesados.",
+      };
+    }
+
+    const { error: enqueueError } = await supabaseAdmin.rpc(
+      "enqueue_document_processing_privileged",
+      {
+        p_document_id: doc.id,
+        p_user_id: user.id,
+        p_pipeline_version: "1.0.0",
+      }
+    );
+
+    if (enqueueError) {
+      return { error: "No se pudo encolar el reintento de procesamiento." };
+    }
+
+    return { data: true };
+  } catch {
+    return {
+      error: "Error inesperado al solicitar el reintento de procesamiento.",
+    };
   }
 }
 

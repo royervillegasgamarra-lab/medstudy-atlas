@@ -24,10 +24,19 @@ export interface DocumentRecord {
   archived_at: string | null;
 }
 
+import type { ProcessingStatus } from "./processing-types";
+
 export interface DocumentWithSubject extends DocumentRecord {
   subject?: {
     id: string;
     name: string;
+  } | null;
+  processing_run?: {
+    id: string;
+    status: ProcessingStatus;
+    error_code: string | null;
+    attempt_count: number;
+    page_count: number | null;
   } | null;
 }
 
