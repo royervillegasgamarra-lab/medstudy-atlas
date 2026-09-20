@@ -53,26 +53,63 @@ export async function getUserDocuments(): Promise<
   }
 }
 
-function isStorageNotFoundError(err: unknown): boolean {
+/**
+ * Conservatively classifies whether a Supabase Storage error unambiguously confirms
+ * that the OBJECT itself is absent (e.g. NoSuchKey, explicit "Object not found").
+ *
+ * MUST NOT return true for:
+ * - NoSuchBucket / "Bucket not found"
+ * - authentication / authorization errors (401, 403)
+ * - 5xx server errors
+ * - network / timeout errors
+ * - generic or ambiguous 404 errors that lack explicit object-level missing semantics
+ *
+ * Ambiguous conditions MUST fail closed (return false) to protect documents, reservations,
+ * and quota from accidental destruction or improper release.
+ */
+export function isConfirmedObjectNotFoundError(err: unknown): boolean {
   if (!err) return false;
   const anyErr = err as {
     statusCode?: number | string;
     status?: number | string;
     message?: string;
     error?: string;
+    name?: string;
   };
-  const status = anyErr.statusCode || anyErr.status;
-  if (status === 404 || status === "404") return true;
-  const msg = (
-    (anyErr.message || "") +
-    " " +
-    (anyErr.error || "")
-  ).toLowerCase();
-  return (
-    msg.includes("not found") ||
-    msg.includes("not_found") ||
-    msg.includes("404")
-  );
+
+  const rawMsg = `${anyErr.name || ""} ${anyErr.message || ""} ${anyErr.error || ""}`;
+  const msg = rawMsg.toLowerCase();
+
+  // Exclude bucket-level missing errors explicitly
+  if (
+    msg.includes("nosuchbucket") ||
+    msg.includes("bucket not found") ||
+    msg.includes("bucket_not_found")
+  ) {
+    return false;
+  }
+
+  // Check for unambiguous object-level missing conditions
+  const isObjectSpecificMissing =
+    msg.includes("nosuchkey") ||
+    msg.includes("object not found") ||
+    msg.includes("object_not_found") ||
+    msg.includes("key not found");
+
+  if (!isObjectSpecificMissing) {
+    return false;
+  }
+
+  // If status / statusCode is provided, it must be 404
+  const status = anyErr.statusCode ?? anyErr.status;
+  if (status !== undefined && status !== null) {
+    const statusNum = Number(status);
+    if (statusNum !== 404) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 /**
@@ -156,12 +193,20 @@ export async function requestDocumentUpload(
     }
 
     // P0: Lazy physical cleanup of any CLEANUP_PENDING rows for this user
-    const { data: pendingCleanupDocs } = await supabaseAdmin
-      .from("documents")
-      .select("id, storage_bucket, storage_key, validation_error_code")
-      .eq("user_id", user.id)
-      .eq("status", "CLEANUP_PENDING")
-      .is("archived_at", null);
+    const { data: pendingCleanupDocs, error: pendingQueryErr } =
+      await supabaseAdmin
+        .from("documents")
+        .select("id, storage_bucket, storage_key, validation_error_code")
+        .eq("user_id", user.id)
+        .eq("status", "CLEANUP_PENDING")
+        .is("archived_at", null);
+
+    if (pendingQueryErr) {
+      return {
+        error:
+          "Error temporal al verificar el estado de limpieza de documentos.",
+      };
+    }
 
     if (pendingCleanupDocs && pendingCleanupDocs.length > 0) {
       for (const pending of pendingCleanupDocs) {
@@ -170,40 +215,59 @@ export async function requestDocumentUpload(
             .from(pending.storage_bucket)
             .remove([pending.storage_key]);
 
-          if (!removeErr) {
-            const targetStatus = pending.validation_error_code
-              ? "REJECTED"
-              : "FAILED";
-            const targetErrorCode =
-              pending.validation_error_code || "CLEANUP_RECOVERED";
-            const { error: completeErr } = await supabaseAdmin.rpc(
-              "complete_document_cleanup_privileged",
-              {
-                p_document_id: pending.id,
-                p_user_id: user.id,
-                p_status: targetStatus,
-                p_error_code: targetErrorCode,
-              }
-            );
-            if (completeErr) {
-              // Remains in CLEANUP_PENDING if RPC fails
+          const isPhysicallyAbsent =
+            !removeErr || isConfirmedObjectNotFoundError(removeErr);
+
+          if (!isPhysicallyAbsent) {
+            return {
+              error:
+                "Error temporal de almacenamiento al limpiar documentos pendientes.",
+            };
+          }
+
+          const targetStatus = pending.validation_error_code
+            ? "REJECTED"
+            : "FAILED";
+          const targetErrorCode =
+            pending.validation_error_code || "CLEANUP_RECOVERED";
+          const { error: completeErr } = await supabaseAdmin.rpc(
+            "complete_document_cleanup_privileged",
+            {
+              p_document_id: pending.id,
+              p_user_id: user.id,
+              p_status: targetStatus,
+              p_error_code: targetErrorCode,
             }
+          );
+          if (completeErr) {
+            return {
+              error:
+                "Error temporal al completar la limpieza del documento en la base de datos.",
+            };
           }
         } catch {
-          // Leave in CLEANUP_PENDING if physical removal fails
+          return {
+            error: "Error inesperado al limpiar documentos pendientes.",
+          };
         }
       }
     }
 
     // P0: Lazy physical cleanup of stale UPLOADING reservations (> 2 hours)
     const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
-    const { data: staleDocs } = await supabaseAdmin
+    const { data: staleDocs, error: staleQueryErr } = await supabaseAdmin
       .from("documents")
       .select("id, storage_bucket, storage_key, user_id")
       .eq("user_id", user.id)
       .eq("status", "UPLOADING")
       .is("archived_at", null)
       .lte("created_at", twoHoursAgo);
+
+    if (staleQueryErr) {
+      return {
+        error: "Error temporal al verificar reservas de documentos expiradas.",
+      };
+    }
 
     if (staleDocs && staleDocs.length > 0) {
       for (const stale of staleDocs) {
@@ -216,29 +280,45 @@ export async function requestDocumentUpload(
             }
           );
           if (startErr) {
-            continue;
+            return {
+              error:
+                "Error temporal al iniciar la limpieza de reservas expiradas.",
+            };
           }
 
           const { error: removeErr } = await supabaseAdmin.storage
             .from(stale.storage_bucket)
             .remove([stale.storage_key]);
 
-          if (!removeErr) {
-            const { error: completeErr } = await supabaseAdmin.rpc(
-              "complete_document_cleanup_privileged",
-              {
-                p_document_id: stale.id,
-                p_user_id: user.id,
-                p_status: "FAILED",
-                p_error_code: "UPLOAD_TIMEOUT",
-              }
-            );
-            if (completeErr) {
-              // Remains in CLEANUP_PENDING if RPC fails
+          const isPhysicallyAbsent =
+            !removeErr || isConfirmedObjectNotFoundError(removeErr);
+
+          if (!isPhysicallyAbsent) {
+            return {
+              error:
+                "Error temporal de almacenamiento al limpiar reservas expiradas.",
+            };
+          }
+
+          const { error: completeErr } = await supabaseAdmin.rpc(
+            "complete_document_cleanup_privileged",
+            {
+              p_document_id: stale.id,
+              p_user_id: user.id,
+              p_status: "FAILED",
+              p_error_code: "UPLOAD_TIMEOUT",
             }
+          );
+          if (completeErr) {
+            return {
+              error:
+                "Error temporal al completar la limpieza de reservas expiradas.",
+            };
           }
         } catch {
-          // Leave in CLEANUP_PENDING if physical removal fails
+          return {
+            error: "Error inesperado al limpiar reservas expiradas.",
+          };
         }
       }
     }
@@ -340,15 +420,16 @@ export async function finalizeDocumentUpload(input: {
       .info(doc.storage_key);
 
     if (infoError || !info) {
-      if (infoError && !isStorageNotFoundError(infoError)) {
-        // P0: Transient 5xx / network error: return recoverable error without rejecting or deleting
+      if (!isConfirmedObjectNotFoundError(infoError)) {
+        // P0: Transient 5xx, network error, NoSuchBucket, or generic ambiguous 404:
+        // Fail closed! Return recoverable storage error without rejecting, deleting, or releasing quota.
         return {
           error:
             "Error temporal de almacenamiento al verificar el archivo. Intenta nuevamente.",
         };
       }
 
-      // Confirmed 404: execute safe two-step cleanup
+      // Confirmed object-level absence (NoSuchKey / explicit Object not found): execute safe two-step cleanup
       const { error: startErr } = await supabaseAdmin.rpc(
         "start_document_cleanup_privileged",
         {
@@ -679,8 +760,8 @@ export async function archiveDocument(
         .info(doc.storage_key);
 
       if (infoError) {
-        if (isStorageNotFoundError(infoError)) {
-          // Blob already removed and record archived: return success
+        if (isConfirmedObjectNotFoundError(infoError)) {
+          // Confirmed object absence: blob already removed and record archived: return success
           return { data: true };
         }
         return {
@@ -690,8 +771,10 @@ export async function archiveDocument(
       }
 
       if (!infoData) {
-        // Blob already removed and record archived: return success
-        return { data: true };
+        return {
+          error:
+            "Error temporal de almacenamiento al verificar el archivo archivado.",
+        };
       }
 
       // If blob is still present, attempt removal
@@ -699,7 +782,10 @@ export async function archiveDocument(
         .from(doc.storage_bucket)
         .remove([doc.storage_key]);
 
-      if (retryRemoveError) {
+      if (
+        retryRemoveError &&
+        !isConfirmedObjectNotFoundError(retryRemoveError)
+      ) {
         return {
           error: "No se pudo eliminar el archivo físico del almacenamiento.",
         };

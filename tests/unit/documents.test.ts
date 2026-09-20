@@ -8,6 +8,7 @@ import {
   validatePdfMagicBytes,
   sanitizeFilename,
 } from "@/modules/documents/validation";
+import { isConfirmedObjectNotFoundError } from "@/modules/documents/service";
 
 describe("Document Validation & Security Controls", () => {
   describe("validatePdfMagicBytes", () => {
@@ -195,6 +196,100 @@ describe("Document Validation & Security Controls", () => {
         documentId: "invalid-id",
       });
       expect(result.success).toBe(false);
+    });
+  });
+
+  describe("isConfirmedObjectNotFoundError", () => {
+    it("returns true for explicit NoSuchKey error", () => {
+      expect(
+        isConfirmedObjectNotFoundError({
+          name: "StorageApiError",
+          message: "The specified key does not exist.",
+          error: "NoSuchKey",
+          statusCode: 404,
+        })
+      ).toBe(true);
+    });
+
+    it("returns true for explicit 'Object not found' error", () => {
+      expect(
+        isConfirmedObjectNotFoundError({
+          name: "StorageApiError",
+          message: "Object not found",
+          statusCode: 404,
+        })
+      ).toBe(true);
+    });
+
+    it("returns true for explicit 'object_not_found' error", () => {
+      expect(
+        isConfirmedObjectNotFoundError({
+          name: "StorageApiError",
+          message: "object_not_found in storage",
+          status: 404,
+        })
+      ).toBe(true);
+    });
+
+    it("returns false for NoSuchBucket error (even with 404)", () => {
+      expect(
+        isConfirmedObjectNotFoundError({
+          name: "StorageApiError",
+          message: "The specified bucket does not exist.",
+          error: "NoSuchBucket",
+          statusCode: 404,
+        })
+      ).toBe(false);
+    });
+
+    it("returns false for 'Bucket not found' error", () => {
+      expect(
+        isConfirmedObjectNotFoundError({
+          name: "StorageApiError",
+          message: "Bucket not found",
+          statusCode: 404,
+        })
+      ).toBe(false);
+    });
+
+    it("returns false for generic ambiguous 404 (e.g. 'Not Found')", () => {
+      expect(
+        isConfirmedObjectNotFoundError({
+          name: "StorageApiError",
+          message: "Not Found",
+          statusCode: 404,
+        })
+      ).toBe(false);
+      expect(
+        isConfirmedObjectNotFoundError({
+          statusCode: 404,
+        })
+      ).toBe(false);
+    });
+
+    it("returns false for 5xx server errors", () => {
+      expect(
+        isConfirmedObjectNotFoundError({
+          name: "StorageApiError",
+          message: "Internal Server Error",
+          statusCode: 500,
+        })
+      ).toBe(false);
+    });
+
+    it("returns false for 401/403 authorization errors", () => {
+      expect(
+        isConfirmedObjectNotFoundError({
+          name: "StorageApiError",
+          message: "Access Denied",
+          statusCode: 403,
+        })
+      ).toBe(false);
+    });
+
+    it("returns false for null or undefined", () => {
+      expect(isConfirmedObjectNotFoundError(null)).toBe(false);
+      expect(isConfirmedObjectNotFoundError(undefined)).toBe(false);
     });
   });
 });

@@ -1485,4 +1485,348 @@ describe("Authoritative Supabase Storage API Integration & Security Boundary (Ph
       .delete()
       .eq("id", docRecord.document_id);
   });
+
+  it("25. DB completion failure after physical delete and subsequent recovery convergence (P0)", async () => {
+    // Ensure clean state for Alice
+    await adminClient.from("documents").delete().eq("user_id", aliceUserId);
+
+    const invalidContent = Buffer.from("NOT_A_VALID_PDF_12345");
+    const declaredSize = invalidContent.length;
+
+    // 1. Real reservation
+    const { data: rpcData, error: rpcError } = await aliceClient.rpc(
+      "request_document_upload",
+      {
+        p_original_filename: "db_completion_fail_recovery.pdf",
+        p_size_bytes: declaredSize,
+        p_mime_type: "application/pdf",
+        p_subject_id: aliceSubjectId,
+      }
+    );
+    expect(rpcError).toBeNull();
+    const docRecord = Array.isArray(rpcData) ? rpcData[0] : rpcData;
+    if (!docRecord) throw new Error("Expected docRecord");
+
+    let recoveryDocId: string | undefined;
+
+    try {
+      // 2. Real physical blob
+      const { error: uploadError } = await aliceClient.storage
+        .from(docRecord.storage_bucket)
+        .upload(docRecord.storage_key, invalidContent, {
+          contentType: "application/pdf",
+          upsert: false,
+        });
+      expect(uploadError).toBeNull();
+
+      // 3, 4, 5. Enter CLEANUP_PENDING, physical remove succeeds, but simulate complete_document_cleanup_privileged failure
+      const realRpc = supabaseAdmin.rpc.bind(supabaseAdmin);
+      const rpcSpy = vi
+        .spyOn(supabaseAdmin, "rpc")
+        .mockImplementation((...args: Parameters<typeof supabaseAdmin.rpc>) => {
+          if (args[0] === "complete_document_cleanup_privileged") {
+            return Promise.resolve({
+              data: null,
+              error: {
+                code: "500",
+                message: "Simulated transient DB completion RPC failure",
+              },
+            }) as unknown as ReturnType<typeof realRpc>;
+          }
+          return realRpc(...args);
+        });
+
+      currentClient = aliceClient;
+      const finalizeRes = await finalizeDocumentUpload({
+        documentId: docRecord.document_id,
+      });
+      rpcSpy.mockRestore();
+
+      expect(finalizeRes.error).toContain(
+        "Error al registrar rechazo del documento"
+      );
+
+      // 4. Physical remove succeeded: blob is absent from storage
+      const { data: infoAfterRemove } = await adminClient.storage
+        .from(docRecord.storage_bucket)
+        .info(docRecord.storage_key);
+      expect(infoAfterRemove).toBeNull();
+
+      // 6. Row remains in CLEANUP_PENDING
+      const { data: docPending } = await adminClient
+        .from("documents")
+        .select("status, validation_error_code")
+        .eq("id", docRecord.document_id)
+        .single();
+      expect(docPending?.status).toBe("CLEANUP_PENDING");
+
+      // 7. Quota remains reserved (counts as 25 MB)
+      const quotaRes1 = await getDocumentQuotaUsage();
+      expect(quotaRes1.data?.activeDocumentsCount).toBe(1);
+      expect(quotaRes1.data?.totalSizeBytes).toBe(25 * 1024 * 1024);
+
+      // 8. Retry recovery via requestDocumentUpload()
+      // In requestDocumentUpload:
+      // - Storage.remove() encounters already-absent blob -> isConfirmedObjectNotFoundError or !removeErr -> isPhysicallyAbsent = true
+      // - complete_document_cleanup_privileged succeeds
+      const recoveryRes = await requestDocumentUpload({
+        original_filename: "after_db_fail_recovered.pdf",
+        size_bytes: 1024,
+        mime_type: "application/pdf",
+        subject_id: aliceSubjectId,
+      });
+      expect(recoveryRes.error).toBeUndefined();
+      expect(recoveryRes.data?.documentId).toBeDefined();
+      recoveryDocId = recoveryRes.data?.documentId;
+
+      // 9. Storage confirms blob absent
+      const { data: infoConfirmedAbsent } = await adminClient.storage
+        .from(docRecord.storage_bucket)
+        .info(docRecord.storage_key);
+      expect(infoConfirmedAbsent).toBeNull();
+
+      // 10 & 11. Terminal state reached in DB
+      const { data: docRecovered } = await adminClient
+        .from("documents")
+        .select("status, validation_error_code")
+        .eq("id", docRecord.document_id)
+        .single();
+      expect(docRecovered?.status).toBe("FAILED");
+      expect(docRecovered?.validation_error_code).toBe("CLEANUP_RECOVERED");
+
+      // 12. Quota released for the original doc (only the new 1 active doc remains)
+      const quotaRes2 = await getDocumentQuotaUsage();
+      expect(quotaRes2.data?.activeDocumentsCount).toBe(1);
+      expect(quotaRes2.data?.totalSizeBytes).toBe(25 * 1024 * 1024);
+    } finally {
+      // Cleanup
+      const idsToDelete = [docRecord.document_id];
+      if (recoveryDocId) idsToDelete.push(recoveryDocId);
+      await adminClient.from("documents").delete().in("id", idsToDelete);
+    }
+  });
+
+  it("26. Storage 404 classification in finalization: NoSuchBucket and ambiguous 404 fail closed, NoSuchKey triggers cleanup (P0)", async () => {
+    // Ensure clean state for Alice
+    await adminClient.from("documents").delete().eq("user_id", aliceUserId);
+
+    // 1. Create an active UPLOADING reservation (1024 bytes)
+    const { data: rpcData, error: rpcError } = await aliceClient.rpc(
+      "request_document_upload",
+      {
+        p_original_filename: "storage_404_classification.pdf",
+        p_size_bytes: 1024,
+        p_mime_type: "application/pdf",
+        p_subject_id: aliceSubjectId,
+      }
+    );
+    expect(rpcError).toBeNull();
+    const docRecord = Array.isArray(rpcData) ? rpcData[0] : rpcData;
+    if (!docRecord) throw new Error("Expected docRecord");
+
+    const realFrom = supabaseAdmin.storage.from.bind(supabaseAdmin.storage);
+
+    try {
+      // B. NoSuchBucket 404: NOT rejected, NOT quota-released, recoverable error returned
+      const fromSpyBucket = vi
+        .spyOn(supabaseAdmin.storage, "from")
+        .mockImplementation((bucket: string) => {
+          const fileApi = realFrom(bucket);
+          vi.spyOn(fileApi, "info").mockResolvedValue({
+            data: null,
+            error: {
+              name: "StorageApiError",
+              message: "The specified bucket does not exist.",
+              error: "NoSuchBucket",
+              statusCode: 404,
+            } as unknown as NonNullable<
+              Awaited<ReturnType<typeof fileApi.info>>["error"]
+            >,
+          });
+          return fileApi;
+        });
+
+      currentClient = aliceClient;
+      const finalizeBucketRes = await finalizeDocumentUpload({
+        documentId: docRecord.document_id,
+      });
+      fromSpyBucket.mockRestore();
+
+      expect(finalizeBucketRes.error).toContain(
+        "Error temporal de almacenamiento al verificar el archivo"
+      );
+
+      // Verify row remains in UPLOADING
+      const { data: docAfterBucket } = await adminClient
+        .from("documents")
+        .select("status")
+        .eq("id", docRecord.document_id)
+        .single();
+      expect(docAfterBucket?.status).toBe("UPLOADING");
+
+      // Verify quota remains reserved
+      const quotaBucket = await getDocumentQuotaUsage();
+      expect(quotaBucket.data?.activeDocumentsCount).toBe(1);
+
+      // C. Generic ambiguous 404: NOT treated as confirmed object absence
+      const fromSpyGeneric = vi
+        .spyOn(supabaseAdmin.storage, "from")
+        .mockImplementation((bucket: string) => {
+          const fileApi = realFrom(bucket);
+          vi.spyOn(fileApi, "info").mockResolvedValue({
+            data: null,
+            error: {
+              name: "StorageApiError",
+              message: "Not Found",
+              statusCode: 404,
+            } as unknown as NonNullable<
+              Awaited<ReturnType<typeof fileApi.info>>["error"]
+            >,
+          });
+          return fileApi;
+        });
+
+      const finalizeGenericRes = await finalizeDocumentUpload({
+        documentId: docRecord.document_id,
+      });
+      fromSpyGeneric.mockRestore();
+
+      expect(finalizeGenericRes.error).toContain(
+        "Error temporal de almacenamiento al verificar el archivo"
+      );
+
+      // Verify row still in UPLOADING
+      const { data: docAfterGeneric } = await adminClient
+        .from("documents")
+        .select("status")
+        .eq("id", docRecord.document_id)
+        .single();
+      expect(docAfterGeneric?.status).toBe("UPLOADING");
+
+      // A. NoSuchKey 404: Confirmed missing behavior -> safe cleanup to REJECTED / OBJECT_NOT_FOUND
+      const fromSpyNoSuchKey = vi
+        .spyOn(supabaseAdmin.storage, "from")
+        .mockImplementation((bucket: string) => {
+          const fileApi = realFrom(bucket);
+          vi.spyOn(fileApi, "info").mockResolvedValue({
+            data: null,
+            error: {
+              name: "StorageApiError",
+              message: "The specified key does not exist.",
+              error: "NoSuchKey",
+              statusCode: 404,
+            } as unknown as NonNullable<
+              Awaited<ReturnType<typeof fileApi.info>>["error"]
+            >,
+          });
+          return fileApi;
+        });
+
+      const finalizeNoSuchKeyRes = await finalizeDocumentUpload({
+        documentId: docRecord.document_id,
+      });
+      fromSpyNoSuchKey.mockRestore();
+
+      expect(finalizeNoSuchKeyRes.error).toContain(
+        "El archivo no se encontró en el almacenamiento privado"
+      );
+
+      // Verify row is REJECTED with OBJECT_NOT_FOUND
+      const { data: docAfterNoSuchKey } = await adminClient
+        .from("documents")
+        .select("status, validation_error_code")
+        .eq("id", docRecord.document_id)
+        .single();
+      expect(docAfterNoSuchKey?.status).toBe("REJECTED");
+      expect(docAfterNoSuchKey?.validation_error_code).toBe("OBJECT_NOT_FOUND");
+
+      // Verify quota released
+      const quotaFinal = await getDocumentQuotaUsage();
+      expect(quotaFinal.data?.activeDocumentsCount).toBe(0);
+    } finally {
+      // Cleanup
+      await adminClient
+        .from("documents")
+        .delete()
+        .eq("id", docRecord.document_id);
+    }
+  });
+
+  it("27. Storage 404 classification in archive idempotency: NoSuchBucket returns recoverable error; NoSuchKey permits success (P0)", async () => {
+    // 1. Insert an already-archived document row directly into DB
+    const archivedDocId = "44444444-4444-4444-a444-444444444444";
+    await adminClient.from("documents").insert({
+      id: archivedDocId,
+      user_id: aliceUserId,
+      subject_id: aliceSubjectId,
+      original_filename: "already_archived_test.pdf",
+      storage_key: `${aliceUserId}/${archivedDocId}/source.pdf`,
+      mime_type: "application/pdf",
+      size_bytes: 1024,
+      status: "READY",
+      archived_at: new Date().toISOString(),
+    });
+
+    const realFrom = supabaseAdmin.storage.from.bind(supabaseAdmin.storage);
+
+    try {
+      // Part A: storage.info returns NoSuchBucket / Bucket not found
+      // Must return recoverable storage error, NOT claim confirmed physical absence
+      const fromSpyBucket = vi
+        .spyOn(supabaseAdmin.storage, "from")
+        .mockImplementation((bucket: string) => {
+          const fileApi = realFrom(bucket);
+          vi.spyOn(fileApi, "info").mockResolvedValue({
+            data: null,
+            error: {
+              name: "StorageApiError",
+              message: "Bucket not found",
+              error: "NoSuchBucket",
+              statusCode: 404,
+            } as unknown as NonNullable<
+              Awaited<ReturnType<typeof fileApi.info>>["error"]
+            >,
+          });
+          return fileApi;
+        });
+
+      currentClient = aliceClient;
+      const archiveBucketRes = await archiveDocument(archivedDocId);
+      fromSpyBucket.mockRestore();
+
+      expect(archiveBucketRes.error).toContain(
+        "Error temporal de almacenamiento al verificar el archivo archivado"
+      );
+      expect(archiveBucketRes.data).toBeUndefined();
+
+      // Part B: storage.info returns confirmed object absence (NoSuchKey / Object not found)
+      // Only confirmed object-level absence permits idempotent success
+      const fromSpyObjectMissing = vi
+        .spyOn(supabaseAdmin.storage, "from")
+        .mockImplementation((bucket: string) => {
+          const fileApi = realFrom(bucket);
+          vi.spyOn(fileApi, "info").mockResolvedValue({
+            data: null,
+            error: {
+              name: "StorageApiError",
+              message: "Object not found",
+              error: "NoSuchKey",
+              statusCode: 404,
+            } as unknown as NonNullable<
+              Awaited<ReturnType<typeof fileApi.info>>["error"]
+            >,
+          });
+          return fileApi;
+        });
+
+      const archiveObjectMissingRes = await archiveDocument(archivedDocId);
+      fromSpyObjectMissing.mockRestore();
+
+      expect(archiveObjectMissingRes.error).toBeUndefined();
+      expect(archiveObjectMissingRes.data).toBe(true);
+    } finally {
+      // Cleanup
+      await adminClient.from("documents").delete().eq("id", archivedDocId);
+    }
+  });
 });

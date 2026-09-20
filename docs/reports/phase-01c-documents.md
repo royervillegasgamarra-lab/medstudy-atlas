@@ -104,9 +104,20 @@
      19. Storage deletion failure on archive does NOT free quota or mark archived (P0).
      20. Application download authorization boundary: Alice (owner) is ALLOWED, Bob (cross-user) is DENIED (P0/P1).
      21. CLEANUP_PENDING recovery: transient remove failure leaves quota reserved, subsequent lazy retry succeeds, removes blob, transitions to FAILED, and frees quota for new upload (P0).
-     22. Adversarial archive/upload TOCTOU race: upload authority is closed (status=CLEANUP_PENDING) BEFORE physical deletion (P0).
-     23. Real concurrent quota reservation: pg_advisory_xact_lock serializes parallel requests, exactly one succeeds, one fails (P1).
-     24. Real size-mismatch storage integration: physical blob is removed, DB marked REJECTED, quota released (P1).
+      22. Adversarial archive/upload TOCTOU race: upload authority is closed (status=CLEANUP_PENDING) BEFORE physical deletion (P0).
+      23. Real concurrent quota reservation: pg_advisory_xact_lock serializes parallel requests, exactly one succeeds, one fails (P1).
+      24. Real size-mismatch storage integration: physical blob is removed, DB marked REJECTED, quota released (P1).
+      25. DB completion failure after physical delete and subsequent recovery convergence (P0).
+      26. Storage 404 classification in finalization: NoSuchBucket and ambiguous 404 fail closed, NoSuchKey triggers cleanup (P0).
+      27. Storage 404 classification in archive idempotency: NoSuchBucket returns recoverable error; NoSuchKey permits success (P0).
+
+10. **Conservative Storage 404 Error Classification & Safe Convergence (`P0`)**:
+    - Replaced broad 404 checks with `isConfirmedObjectNotFoundError`:
+      - Returns `true` ONLY for confirmed object-level missing conditions (`NoSuchKey`, explicit "Object not found", "object_not_found", "key not found").
+      - Returns `false` (fails closed) for `NoSuchBucket`, "Bucket not found", 401/403, 5xx, network errors, and generic ambiguous 404s without object-level semantics.
+    - In `finalizeDocumentUpload`: `NoSuchBucket` and ambiguous 404 return recoverable storage errors without rejecting documents, deleting blobs, or releasing quota.
+    - In `archiveDocument`: `NoSuchBucket` on already-archived rows returns recoverable error rather than falsely claiming confirmed physical absence.
+    - In `requestDocumentUpload`: `remove()` treating confirmed `NoSuchKey` as physically absent ensures convergence even if a prior DB completion RPC failed; query errors and privileged RPC errors are strictly inspected and propagated.
 
 ---
 
@@ -115,14 +126,14 @@
 ### Important Files Created
 - `src/config/server-env.ts` — Server-only environment configuration for `SUPABASE_SECRET_KEY`.
 - `src/lib/supabase/admin.ts` — Server-only privileged Supabase admin client.
-- `tests/integration/storage-security.test.ts` — Authoritative Supabase Storage API integration test suite (24 tests).
-- `docs/reports/phase-01c-failure-matrix.md` — 31-scenario security and failure matrix.
+- `tests/integration/storage-security.test.ts` — Authoritative Supabase Storage API integration test suite (27 tests).
+- `docs/reports/phase-01c-failure-matrix.md` — 34-scenario security and failure matrix.
 
 ### Important Files Modified
 - `supabase/migrations/20260920000000_documents_and_storage.sql` — Hardened storage policies, removed `finalize_token`, added `CLEANUP_PENDING` status, reservation-backed Storage INSERT RLS, input check constraints, concurrency-safe advisory lock, worst-case quota counting, and privileged finalization/cleanup/archive RPCs.
 - `supabase/tests/database/03_documents_rls.sql` — Updated pgTAP tests to verify new security boundaries (62 tests).
 - `src/modules/documents/types.ts` — Updated domain types: removed `finalize_token`, added `CLEANUP_PENDING` status, updated `RequestUploadResult`.
-- `src/modules/documents/service.ts` — Updated service: direct authenticated upload, 5-byte range validation, server-only privileged finalization, two-step cleanup lifecycle with `CLEANUP_PENDING` recovery, archive/upload TOCTOU race closure via `start_document_cleanup_privileged`, and physical storage deletion on archive.
+- `src/modules/documents/service.ts` — Updated service: direct authenticated upload, 5-byte range validation, server-only privileged finalization, two-step cleanup lifecycle with `CLEANUP_PENDING` recovery, archive/upload TOCTOU race closure via `start_document_cleanup_privileged`, conservative `isConfirmedObjectNotFoundError` storage classification, cleanup convergence on already-absent blobs, and strict error propagation.
 - `src/modules/documents/actions.ts` — Updated server actions: pass reservation parameters for direct authenticated upload, and added `getDocumentQuotaAction` for authoritative server quota checks.
 - `src/components/documents/document-library.tsx` — Authoritative server quota refresh on archive via `getDocumentQuotaAction`, and removed unreachable `case "VALIDATING":`.
 - `src/components/documents/document-uploader.tsx` — Added PHI warning banner and direct authenticated upload integration.
@@ -131,7 +142,7 @@
 - `.env.example` — Added `SUPABASE_SECRET_KEY` placeholder.
 - `docs/architecture/data-model.md` — Synchronized `documents` DDL with migration.
 - `docs/security/threat-model.md` — Updated threat matrix rows for P0/P1 security architecture.
-- `scripts/create-review-package.ps1` — Updated review checklist and dynamic failure matrix naming.
+- `scripts/create-review-package.ps1` — Updated review checklist, dynamic failure matrix naming, and safe literal string concatenation for Package Contents.
 
 ---
 
@@ -146,6 +157,8 @@
   - Physical blob removal on archive via official Storage API before stamping `archived_at`.
   - Archive TOCTOU race closure: For `UPLOADING` documents, `archiveDocument` calls `start_document_cleanup_privileged` to transition status to `CLEANUP_PENDING` before calling `Storage.remove()`, instantly revoking Storage INSERT RLS upload permissions. Only after physical deletion succeeds is `archive_document_privileged` invoked. If deletion fails, status remains `CLEANUP_PENDING` and quota remains reserved.
   - Two-step cleanup lifecycle (`UPLOADING` -> `CLEANUP_PENDING` -> physical `remove()` -> `REJECTED`/`FAILED`) with lazy recovery in `requestDocumentUpload`.
+  - Conservative Storage 404 Error Classification: `isConfirmedObjectNotFoundError` ensures `NoSuchBucket` and generic ambiguous 404s fail closed without rejecting documents or releasing quota. Only confirmed object-level missing conditions (`NoSuchKey`) are treated as absent.
+  - Cleanup Convergence: During recovery, confirmed `NoSuchKey` is treated as successful physical removal, allowing cleanup to converge even if a previous DB completion RPC failed.
   - Authoritative UI quota: Quota display refreshes via server-side `getDocumentQuotaAction()` rather than local client math.
 - **Database Impact**:
   - Migration `20260920000000_documents_and_storage.sql` applied cleanly.
@@ -172,6 +185,7 @@
   - Container validation inspects `%PDF-` magic bytes; non-PDFs are rejected and physically deleted.
   - Quota bypass via parallel reservations prevented by transaction advisory locks and worst-case accounting of `UPLOADING` and `CLEANUP_PENDING` rows.
   - Archive/upload TOCTOU race closed: status set to `CLEANUP_PENDING` prior to physical deletion, shutting down upload capability during blob removal.
+  - Storage 404 classification fails closed: `NoSuchBucket` and ambiguous 404 errors do NOT delete blobs, reject documents, or free quota.
   - Real Storage API deletion on archive prevents unbounded storage accumulation.
   - Application download authorization boundary strictly checked: owner receives signed URL and fetches valid PDF bytes (HTTP 200); cross-user is denied.
   - Automated security scan in `create-review-package.ps1`: Zero secrets, keys, or credentials detected.
@@ -192,7 +206,7 @@
   - `pnpm format:check` -> Exit Code 0 (PASS)
   - `pnpm lint` -> Exit Code 0 (PASS)
   - `pnpm typecheck` -> Exit Code 0 (PASS)
-  - `pnpm test` -> Exit Code 0 (PASS, 111 tests across 10 suites including 24 real Storage API integration tests)
+  - `pnpm test` -> Exit Code 0 (PASS, 123 tests across 10 suites including 27 real Storage API integration tests)
   - `pnpm db:reset` -> Exit Code 0 (PASS, migrations applied)
   - `pnpm db:types` -> Exit Code 0 (PASS, database types regenerated)
   - `pnpm db:test` -> Exit Code 0 (PASS, 190 pgTAP assertions across 3 suites including 62 in 03_documents_rls.sql)
