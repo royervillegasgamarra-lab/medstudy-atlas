@@ -3,8 +3,7 @@
  * Phase 1C: Document Library & Secure Upload.
  */
 
-export type DocumentStatus =
-  "UPLOADING" | "VALIDATING" | "READY" | "REJECTED" | "FAILED";
+export type DocumentStatus = "UPLOADING" | "READY" | "REJECTED" | "FAILED";
 
 export interface DocumentRecord {
   id: string;

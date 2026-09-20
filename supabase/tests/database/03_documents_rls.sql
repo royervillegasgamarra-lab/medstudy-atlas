@@ -1,5 +1,5 @@
 BEGIN;
-SELECT plan(50);
+SELECT plan(52);
 
 -- ============================================================================
 -- 1. Schema, Table & Column Structure
@@ -111,10 +111,10 @@ SELECT throws_ok(
 );
 
 SELECT throws_ok(
-    $$ SELECT public.archive_document('11111111-1111-1111-1111-111111111111') $$,
+    $$ SELECT public.archive_document_privileged('11111111-1111-1111-1111-111111111111', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa') $$,
     '42501',
     NULL,
-    'Anon: EXECUTE denied on archive_document'
+    'Anon: EXECUTE denied on archive_document_privileged'
 );
 
 -- ============================================================================
@@ -151,6 +151,14 @@ SELECT throws_ok(
     '42501',
     NULL,
     'Authenticated: EXECUTE denied on finalize_document_upload_privileged'
+);
+
+-- P0: Authenticated cannot execute privileged archive
+SELECT throws_ok(
+    $$ SELECT public.archive_document_privileged('11111111-1111-1111-1111-111111111111', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa') $$,
+    '42501',
+    NULL,
+    'Authenticated: EXECUTE denied on archive_document_privileged'
 );
 
 -- P0-3: Direct storage.objects mutation and select policies are removed
@@ -295,6 +303,31 @@ SELECT results_eq(
     'Privileged finalize: Idempotent repeat call returns READY'
 );
 
+-- Lease expiration rejection
+INSERT INTO public.documents (
+    id, user_id, original_filename, storage_key, mime_type, size_bytes, status, created_at
+) VALUES (
+    '99999999-9999-9999-9999-999999999999',
+    'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+    'expired.pdf',
+    'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/expired/source.pdf',
+    'application/pdf',
+    1024,
+    'UPLOADING',
+    NOW() - INTERVAL '3 hours'
+);
+
+SELECT throws_ok(
+    $$ SELECT * FROM public.finalize_document_upload_privileged(
+           '99999999-9999-9999-9999-999999999999',
+           'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+           1024
+       ) $$,
+    '22023',
+    NULL,
+    'Privileged finalize: Rejects expired upload lease'
+);
+
 -- ============================================================================
 -- 9. User Isolation (User A vs User B)
 -- ============================================================================
@@ -307,23 +340,23 @@ SELECT is_empty(
     'Isolation: User B cannot SELECT User A documents'
 );
 
--- User B cannot archive User A documents
+-- User B cannot archive User A documents (even if attempted via service_role with wrong user_id)
+SET LOCAL ROLE service_role;
 SELECT throws_ok(
-    $$ SELECT public.archive_document((SELECT doc_id FROM test_doc_context LIMIT 1)) $$,
+    $$ SELECT public.archive_document_privileged((SELECT doc_id FROM test_doc_context LIMIT 1), 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb') $$,
     '22023',
     NULL,
-    'Isolation: User B cannot archive User A document'
+    'Isolation: Cannot archive document belonging to another user'
 );
 
 -- ============================================================================
--- 10. Archival & Idempotency (P0-6)
+-- 10. Archival & Idempotency (P0, P0-6)
 -- ============================================================================
-SET LOCAL ROLE authenticated;
-SET LOCAL "request.jwt.claims" = '{"sub": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"}';
+SET LOCAL ROLE service_role;
 
 SELECT ok(
-    (SELECT public.archive_document((SELECT doc_id FROM test_doc_context LIMIT 1))),
-    'Archive: User A archives own document successfully'
+    (SELECT public.archive_document_privileged((SELECT doc_id FROM test_doc_context LIMIT 1), 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa')),
+    'Archive: Privileged archive sets archived_at successfully'
 );
 
 SELECT results_eq(
@@ -334,7 +367,7 @@ SELECT results_eq(
 
 -- Idempotent repeat archival
 SELECT ok(
-    (SELECT public.archive_document((SELECT doc_id FROM test_doc_context LIMIT 1))),
+    (SELECT public.archive_document_privileged((SELECT doc_id FROM test_doc_context LIMIT 1), 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa')),
     'Archive: Idempotent repeat call succeeds'
 );
 

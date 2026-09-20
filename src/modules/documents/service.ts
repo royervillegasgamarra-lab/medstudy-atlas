@@ -244,9 +244,15 @@ export async function finalizeDocumentUpload(input: {
 
     // P0-4: Actual storage size MUST equal the reserved/declared size
     if (info.size !== doc.size_bytes) {
-      await supabaseAdmin.storage
+      const { error: removeError } = await supabaseAdmin.storage
         .from(doc.storage_bucket)
         .remove([doc.storage_key]);
+
+      if (removeError) {
+        return {
+          error: "Error al limpiar archivo con tamaño no coincidente.",
+        };
+      }
 
       await supabaseAdmin.rpc("reject_document_upload_privileged", {
         p_document_id: doc.id,
@@ -262,9 +268,15 @@ export async function finalizeDocumentUpload(input: {
 
     // P0-7: Confirm allowed content type as defense-in-depth
     if (info.contentType !== "application/pdf") {
-      await supabaseAdmin.storage
+      const { error: removeError } = await supabaseAdmin.storage
         .from(doc.storage_bucket)
         .remove([doc.storage_key]);
+
+      if (removeError) {
+        return {
+          error: "Error al limpiar archivo con tipo MIME no permitido.",
+        };
+      }
 
       await supabaseAdmin.rpc("reject_document_upload_privileged", {
         p_document_id: doc.id,
@@ -301,10 +313,16 @@ export async function finalizeDocumentUpload(input: {
     }
 
     if (!isValidPdf) {
-      // Reject and remove invalid object from physical storage
-      await supabaseAdmin.storage
+      // Reject and remove invalid object from physical storage with explicit error check
+      const { error: removeError } = await supabaseAdmin.storage
         .from(doc.storage_bucket)
         .remove([doc.storage_key]);
+
+      if (removeError) {
+        return {
+          error: "Error al limpiar archivo con firma PDF inválida.",
+        };
+      }
 
       await supabaseAdmin.rpc("reject_document_upload_privileged", {
         p_document_id: doc.id,
@@ -391,9 +409,10 @@ export async function getAuthorizedDocumentUrl(
 
 /**
  * Archives a document and removes the physical storage object.
- * P0-6: Physically removes the Storage object through the official Storage API
- * before setting archived_at. Quota is freed only when storage removal succeeds
- * or the object is already absent.
+ * P0: Authenticated user cannot call archive transition directly.
+ * Server Action verifies ownership, performs physical Storage cleanup with explicit error check,
+ * and only on confirmed deletion invokes privileged archive RPC.
+ * P1: Idempotent - retries or already-archived states return success cleanly.
  */
 export async function archiveDocument(
   documentId: string
@@ -413,35 +432,63 @@ export async function archiveDocument(
       return { error: "No autenticado." };
     }
 
-    // Retrieve document to get storage key and verify ownership
+    // Retrieve document to get storage key and verify ownership (including already archived)
     const { data: doc, error: docError } = await supabase
       .from("documents")
-      .select("id, storage_bucket, storage_key, user_id")
+      .select("id, storage_bucket, storage_key, user_id, archived_at")
       .eq("id", parsed.data.documentId)
       .eq("user_id", user.id)
-      .is("archived_at", null)
       .single();
 
     if (docError || !doc) {
-      return { error: "Documento no encontrado o ya archivado." };
+      return { error: "Documento no encontrado o acceso no autorizado." };
     }
 
-    // P0-6: Physically remove storage object through official Storage API
-    try {
-      await supabaseAdmin.storage
+    // P1 Idempotency: If already archived, check if physical blob is absent
+    if (doc.archived_at !== null) {
+      const { data: infoData } = await supabaseAdmin.storage
+        .from(doc.storage_bucket)
+        .info(doc.storage_key);
+
+      if (!infoData) {
+        // Blob already removed and record archived: return success
+        return { data: true };
+      }
+
+      // If blob is still present, attempt removal
+      const { error: retryRemoveError } = await supabaseAdmin.storage
         .from(doc.storage_bucket)
         .remove([doc.storage_key]);
-    } catch {
-      // If removal fails, do not silently free quota
+
+      if (retryRemoveError) {
+        return {
+          error: "No se pudo eliminar el archivo físico del almacenamiento.",
+        };
+      }
+
+      return { data: true };
+    }
+
+    // P0: Physically remove storage object through official Storage API with explicit error check
+    const { error: removeError } = await supabaseAdmin.storage
+      .from(doc.storage_bucket)
+      .remove([doc.storage_key]);
+
+    if (removeError) {
+      // If removal fails, do NOT mark archived and do NOT free quota
       return {
         error: "No se pudo eliminar el archivo físico del almacenamiento.",
       };
     }
 
-    // Mark document archived in database
-    const { error: archiveError } = await supabase.rpc("archive_document", {
-      p_document_id: doc.id,
-    });
+    // P0: Privileged server-only archive RPC invoked ONLY after physical removal confirmed
+    const { error: archiveError } = await supabaseAdmin.rpc(
+      "archive_document_privileged",
+      {
+        p_document_id: doc.id,
+        p_user_id: user.id,
+      }
+    );
 
     if (archiveError) {
       return { error: "No se pudo actualizar el registro de archivo." };

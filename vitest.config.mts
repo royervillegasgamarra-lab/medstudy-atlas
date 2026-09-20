@@ -1,6 +1,15 @@
 import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 
+// Load local env file if available
+if (typeof process.loadEnvFile === "function") {
+  try {
+    process.loadEnvFile(".env.local");
+  } catch {
+    // Ignore if not present
+  }
+}
+
 export default defineConfig({
   plugins: [react()],
   resolve: {
@@ -14,7 +23,9 @@ export default defineConfig({
       "tests/integration/**/*.{test,spec}.{ts,tsx}",
     ],
     env: {
-      NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: "sb_publishable_test_dummy_key",
+      NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY:
+        process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
+        "sb_publishable_test_dummy_key",
     },
   },
 });

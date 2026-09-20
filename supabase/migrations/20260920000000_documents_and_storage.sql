@@ -45,7 +45,7 @@ CREATE TABLE IF NOT EXISTS public.documents (
     storage_key TEXT NOT NULL,
     mime_type TEXT NOT NULL DEFAULT 'application/pdf',
     size_bytes BIGINT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'UPLOADING' CHECK (status IN ('UPLOADING', 'VALIDATING', 'READY', 'REJECTED', 'FAILED')),
+    status TEXT NOT NULL DEFAULT 'UPLOADING' CHECK (status IN ('UPLOADING', 'READY', 'REJECTED', 'FAILED')),
     validation_error_code TEXT,
     sha256_hash TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -171,23 +171,37 @@ BEGIN
     -- P0-5: Concurrency-safe quota serialization per user inside the transaction
     PERFORM pg_advisory_xact_lock(hashtext('doc_quota:' || v_user_id::text));
 
-    -- P0-4: Check active document count quota (counts UPLOADING, VALIDATING, READY)
+    -- P1: Lazy cleanup of stale UPLOADING reservations where upload lease expired (> 2 hours)
+    UPDATE public.documents
+    SET status = 'FAILED',
+        validation_error_code = 'UPLOAD_TIMEOUT'
+    WHERE user_id = v_user_id
+      AND status = 'UPLOADING'
+      AND created_at <= (NOW() - INTERVAL '2 hours');
+
+    -- P0-4 & P1: Check active document count quota (counts READY and unexpired UPLOADING)
     SELECT COUNT(*) INTO v_active_count
     FROM public.documents
     WHERE user_id = v_user_id
       AND archived_at IS NULL
-      AND status IN ('UPLOADING', 'VALIDATING', 'READY');
+      AND (
+          status = 'READY'
+          OR (status = 'UPLOADING' AND created_at > (NOW() - INTERVAL '2 hours'))
+      );
 
     IF v_active_count >= c_max_active_docs THEN
         RAISE EXCEPTION 'Active document quota exceeded (maximum % documents)', c_max_active_docs USING ERRCODE = '23514';
     END IF;
 
-    -- P0-4: Check total storage quota (counts ALL non-archived reservations: UPLOADING, VALIDATING, READY)
+    -- P0-4 & P1: Check total storage quota (counts READY and unexpired UPLOADING)
     SELECT COALESCE(SUM(size_bytes), 0) INTO v_total_bytes
     FROM public.documents
     WHERE user_id = v_user_id
       AND archived_at IS NULL
-      AND status IN ('UPLOADING', 'VALIDATING', 'READY');
+      AND (
+          status = 'READY'
+          OR (status = 'UPLOADING' AND created_at > (NOW() - INTERVAL '2 hours'))
+      );
 
     IF (v_total_bytes + p_size_bytes) > c_max_total_bytes THEN
         RAISE EXCEPTION 'Total storage quota exceeded (maximum 100 MB)' USING ERRCODE = '23514';
@@ -266,8 +280,17 @@ BEGIN
     END IF;
 
     -- Must be in an uploadable state
-    IF v_doc.status NOT IN ('UPLOADING', 'VALIDATING') THEN
+    IF v_doc.status != 'UPLOADING' THEN
         RAISE EXCEPTION 'Document is not in an uploadable state: %', v_doc.status USING ERRCODE = '22023';
+    END IF;
+
+    -- P1: Enforce upload lease window (cannot finalize expired reservation)
+    IF v_doc.created_at <= (NOW() - INTERVAL '2 hours') THEN
+        UPDATE public.documents
+        SET status = 'FAILED',
+            validation_error_code = 'UPLOAD_TIMEOUT'
+        WHERE id = p_document_id;
+        RAISE EXCEPTION 'Upload lease has expired' USING ERRCODE = '22023';
     END IF;
 
     -- P0-4: Actual storage size MUST equal the reserved/declared size
@@ -334,13 +357,17 @@ REVOKE ALL ON FUNCTION public.reject_document_upload_privileged(UUID, UUID, TEXT
 GRANT EXECUTE ON FUNCTION public.reject_document_upload_privileged(UUID, UUID, TEXT, TEXT) TO service_role;
 
 -- ============================================================================
--- 6. Secure RPC: public.archive_document()
--- P0-6: Idempotently marks archived_at. Quota is freed once archived_at is set.
--- Server Action removes the physical storage object via Storage API before calling this RPC.
+-- 6. Privileged Server-Only RPC: public.archive_document_privileged()
+-- P0: Authenticated users CANNOT execute this RPC directly.
+-- Callable ONLY by service_role after trusted server code has verified
+-- user authentication, ownership, and confirmed physical Storage deletion.
 -- ============================================================================
 
-CREATE OR REPLACE FUNCTION public.archive_document(
-    p_document_id UUID
+DROP FUNCTION IF EXISTS public.archive_document(UUID);
+
+CREATE OR REPLACE FUNCTION public.archive_document_privileged(
+    p_document_id UUID,
+    p_user_id UUID
 )
 RETURNS BOOLEAN
 LANGUAGE plpgsql
@@ -348,18 +375,12 @@ SECURITY DEFINER
 SET search_path = ''
 AS $$
 DECLARE
-    v_user_id UUID;
     v_rows_updated INT;
 BEGIN
-    v_user_id := auth.uid();
-    IF v_user_id IS NULL THEN
-        RAISE EXCEPTION 'Not authenticated' USING ERRCODE = '42501';
-    END IF;
-
     UPDATE public.documents
     SET archived_at = COALESCE(archived_at, NOW())
     WHERE id = p_document_id
-      AND user_id = v_user_id;
+      AND user_id = p_user_id;
 
     GET DIAGNOSTICS v_rows_updated = ROW_COUNT;
 
@@ -371,5 +392,5 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION public.archive_document(UUID) FROM PUBLIC, anon;
-GRANT EXECUTE ON FUNCTION public.archive_document(UUID) TO authenticated;
+REVOKE ALL ON FUNCTION public.archive_document_privileged(UUID, UUID) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.archive_document_privileged(UUID, UUID) TO service_role;

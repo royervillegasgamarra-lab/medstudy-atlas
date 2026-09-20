@@ -34,16 +34,22 @@
    - Server generates an exact signed upload authorization via `supabaseAdmin.storage.from('documents').createSignedUploadUrl(storageKey)` for `{user_id}/{doc_id}/source.pdf`.
    - Browser client uploads exclusively using `uploadToSignedUrl` with `upsert: false`.
 
-4. **Total Storage Quota Reservation & Concurrency Safety (`P0-4`, `P0-5`)**:
+4. **Total Storage Quota Reservation, Concurrency Safety & Upload Lease (`P0-4`, `P0-5`, `P1`)**:
    - In `public.request_document_upload` RPC:
      - Enforced per-user transaction advisory locking via `PERFORM pg_advisory_xact_lock(hashtext('doc_quota:' || v_user_id::text));` to serialize concurrent upload requests per user within the database transaction without external distributed infrastructure.
-     - Quota byte calculation sums ALL active reservations (`UPLOADING`, `VALIDATING`, `READY`), preventing the 100 MB bypass where parallel uploads observe 0 bytes.
-     - Active document count check counts all rows in `UPLOADING`, `VALIDATING`, `READY` ($\le 10$).
+     - Lazy cleanup of stale `UPLOADING` reservations older than the 2-hour upload lease window (`status = 'FAILED'`, `validation_error_code = 'UPLOAD_TIMEOUT'`).
+     - Quota byte calculation sums ALL active documents (`status = 'READY'`) and unexpired reservations (`status = 'UPLOADING' AND created_at > NOW() - INTERVAL '2 hours'`), preventing the 100 MB bypass where parallel uploads observe 0 bytes.
+     - Active document count check counts all active rows ($\le 10$).
      - Declared size is recorded on row creation; finalization strictly enforces `actual_size === declared_size`.
 
-5. **Physical Storage Cleanup on Archive (`P0-6`)**:
-   - Archiving a document (`archiveDocument`) physically removes the Storage object through the official Supabase Storage API (`supabaseAdmin.storage.from(bucket).remove([storageKey])`) before setting `archived_at = NOW()` in the database.
-   - Quota is freed only upon successful storage object removal or if the object is already absent. Direct browser Storage `DELETE` is denied.
+5. **Privileged Archive & Explicit Storage API Error Checking (`P0`, `P1`)**:
+   - Replaced user-callable `archive_document(UUID)` with `public.archive_document_privileged(UUID, UUID)` granted strictly to `service_role` and revoked from `PUBLIC`, `anon`, and `authenticated`.
+   - In `archiveDocument` Server Action:
+     - Verifies user authentication and document ownership.
+     - Idempotency: if already archived and physical blob is absent, returns `{ success: true }` cleanly.
+     - Performs physical Storage deletion via `supabaseAdmin.storage.from(bucket).remove([storageKey])`.
+     - Explicitly inspects `{ error: removeError }`. If removal fails, halts transition and does NOT mark archived in the database, ensuring quota is never prematurely released.
+     - Only after confirmed blob deletion, invokes `archive_document_privileged`.
 
 6. **Authoritative Final Validation & 5-Byte Range Optimization (`P0-7`, `P1-1`)**:
    - In `finalizeDocumentUpload`:
@@ -51,7 +57,7 @@
      - Obtains actual object size directly from storage metadata (`supabaseAdmin.storage.from(bucket).info(storageKey)`).
      - Confirms `info.size === doc.size_bytes` and `info.contentType === 'application/pdf'`.
      - Inspects `%PDF-` magic bytes via HTTP Range request (`Range: bytes=0-4`) on an internal signed URL, downloading only 5 bytes instead of 25 MB into server memory.
-     - On validation failure: removes physical object via Storage API, sets `REJECTED` with error code `INVALID_PDF_SIGNATURE`, and never marks `READY`.
+     - On validation failure: explicitly inspects Storage API `.remove()` result; on confirmed removal, sets `REJECTED` with error code `INVALID_PDF_SIGNATURE` or `SIZE_MISMATCH`, and never marks `READY`.
      - On validation success: calls privileged `finalize_document_upload_privileged`.
 
 7. **Database Input Hardening (`P1-2`)**:
@@ -59,14 +65,28 @@
      - `chk_documents_filename_length`: `length(trim(original_filename)) > 0 AND length(trim(original_filename)) <= 255`.
      - `chk_documents_size_positive`: `size_bytes > 0 AND size_bytes <= 26214400`.
      - `chk_documents_mime_type`: `mime_type = 'application/pdf'`.
+     - `chk_documents_status`: simplified to `('UPLOADING', 'READY', 'REJECTED', 'FAILED')` (decorative `VALIDATING` state removed).
    - Validated in `request_document_upload` RPC and enforced by database engine.
 
 8. **In-Database Security Test Suite (pgTAP) & Authoritative Storage Integration Tests (`P1-3`)**:
-   - Updated [`supabase/tests/database/03_documents_rls.sql`](file:///c:/Users/DR_%20CHAPATIN/Documents/GitHub/medstudy-atlas/supabase/tests/database/03_documents_rls.sql): 50 assertions covering table schema, absence of `finalize_token`, anon denials, direct mutation denials, storage.objects select denial, input constraint checks, canonical key format, quota reservation with `UPLOADING` rows, privileged finalization authorization, size mismatch rejection, User A / User B isolation, and archive idempotency. All 178 database tests pass.
-   - Created [`tests/integration/storage-security.test.ts`](file:///c:/Users/DR_%20CHAPATIN/Documents/GitHub/medstudy-atlas/tests/integration/storage-security.test.ts): 5 authoritative integration tests using the real Supabase Storage API verifying direct unauthorized upload denial, exact signed upload success, physical object existence, fake PDF rejection with physical blob cleanup, size mismatch rejection, signed download verification, Bob vs Alice isolation, and physical blob removal on archive.
+   - Updated [`supabase/tests/database/03_documents_rls.sql`](file:///c:/Users/DR_%20CHAPATIN/Documents/GitHub/medstudy-atlas/supabase/tests/database/03_documents_rls.sql): 52 assertions covering table schema, absence of `finalize_token`, anon denials, direct mutation denials, storage.objects select denial, input constraint checks, canonical key format, quota reservation with `UPLOADING` rows, privileged finalization authorization, lease expiration rejection, authenticated denial on `archive_document_privileged`, User A / User B isolation, and archive idempotency. All 180 database tests pass across 3 suites.
+   - Updated [`tests/integration/storage-security.test.ts`](file:///c:/Users/DR_%20CHAPATIN/Documents/GitHub/medstudy-atlas/tests/integration/storage-security.test.ts): 12 authoritative integration tests using the real Supabase Storage API and local Supabase:
+     1. Direct unauthorized Storage upload is strictly denied (P0-3).
+     2. Arbitrary unreserved path upload is denied (P0-3).
+     3. Exact signed upload succeeds, creates physical object, transitions to READY, and authorized download works (P0-1, P0-3, P0-7).
+     4. Invalid PDF is rejected and physical blob is removed from Storage (P0-7, P1-1).
+     5. Declared size mismatch with a REAL uploaded object: rejects and physical blob cleanup succeeds (P0-4, P0-7).
+     6. Authenticated user cannot call archive_document_privileged directly (P0).
+     7. Storage deletion failure on archive does NOT free quota or mark archived (P0).
+     8. Cross-user download authorization denied via application boundary (P0-3).
+     9. Signed upload token reuse-after-delete experiment & lease mitigation (P1).
+     10. Abandoned upload reservation recovery via lazy cleanup (P1).
+     11. Application-level archive retry is idempotent (P1).
+     12. Concurrent quota reservations are serialized via advisory lock (P0-5).
+   - Zero hardcoded privileged credentials: loads `SUPABASE_SECRET_KEY` strictly from environment / `.env.local`.
 
-9. **Complete 25-Scenario Failure Matrix (`P1-4`)**:
-   - Authored [`docs/reports/phase-01c-failure-matrix.md`](file:///c:/Users/DR_%20CHAPATIN/Documents/GitHub/medstudy-atlas/docs/reports/phase-01c-failure-matrix.md) mapping all 25 security scenarios across database, integration, unit, and E2E layers.
+9. **Complete 26-Scenario Failure Matrix (`P1-4`)**:
+   - Authored [`docs/reports/phase-01c-failure-matrix.md`](file:///c:/Users/DR_%20CHAPATIN/Documents/GitHub/medstudy-atlas/docs/reports/phase-01c-failure-matrix.md) mapping all 26 security scenarios across database, integration, unit, and E2E layers.
 
 10. **E2E Browser Verification & PHI Warning (`P1-5`, `P1-6`)**:
     - Added educational-use PHI warning banner in [`src/components/documents/document-uploader.tsx`](file:///c:/Users/DR_%20CHAPATIN/Documents/GitHub/medstudy-atlas/src/components/documents/document-uploader.tsx).

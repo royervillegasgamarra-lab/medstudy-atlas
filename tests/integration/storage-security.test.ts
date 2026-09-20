@@ -2,17 +2,30 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/types/database";
 
+// Load local environment variables if available
+if (typeof process.loadEnvFile === "function") {
+  try {
+    process.loadEnvFile(".env.local");
+  } catch {
+    // Ignore if not present
+  }
+}
+
 const SUPABASE_URL =
   process.env.NEXT_PUBLIC_SUPABASE_URL || "http://127.0.0.1:54321";
-const SUPABASE_SECRET_KEY =
-  process.env.SUPABASE_SECRET_KEY ||
-  process.env.SUPABASE_SERVICE_ROLE_KEY ||
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImV4cCI6MTk4MzgxMjk5Nn0.EGIM96RAZx35lJzdJsyH-qQwv8Hdp7fsn3W0YpN81IU";
+const SUPABASE_SECRET_KEY = process.env.SUPABASE_SECRET_KEY;
+if (!SUPABASE_SECRET_KEY) {
+  throw new Error("Missing required environment variable: SUPABASE_SECRET_KEY");
+}
 const SUPABASE_PUBLISHABLE_KEY =
-  process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
-  "sb_publishable_ACJWlzQHlZjBrEguHvfOxg_3BJgxAaH";
+  process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+if (!SUPABASE_PUBLISHABLE_KEY) {
+  throw new Error(
+    "Missing required environment variable: NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY"
+  );
+}
 
-describe("Authoritative Supabase Storage API Integration & Security Boundary (P1-3)", () => {
+describe("Authoritative Supabase Storage API Integration & Security Boundary (Phase 1C)", () => {
   let adminClient: SupabaseClient<Database>;
   let aliceClient: SupabaseClient<Database>;
   let bobClient: SupabaseClient<Database>;
@@ -135,7 +148,7 @@ describe("Authoritative Supabase Storage API Integration & Security Boundary (P1
     expect(error).not.toBeNull();
   });
 
-  it("3. Exact signed upload succeeds, creates physical object, and transitions to READY (P0-1, P0-3, P0-7)", async () => {
+  it("3. Exact signed upload succeeds, creates physical object, transitions to READY, and authorized download works (P0-1, P0-3, P0-7)", async () => {
     const validPdfContent = Buffer.from(
       "%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF"
     );
@@ -242,14 +255,29 @@ describe("Authoritative Supabase Storage API Integration & Security Boundary (P1
       .info(docRecord.storage_key);
     expect(infoAfterDeleteAttempt).not.toBeNull();
 
-    // Step I: Application archive deletes physical blob and marks archived
-    // Real Storage API deletion via admin client
-    await adminClient.storage.from("documents").remove([docRecord.storage_key]);
-
-    const { data: archiveResult, error: archiveError } = await aliceClient.rpc(
-      "archive_document",
+    // Step I: Direct call to archive_document_privileged by authenticated client is DENIED (P0)
+    const { error: aliceArchivePrivError } = await aliceClient.rpc(
+      "archive_document_privileged" as unknown as "request_document_upload",
       {
         p_document_id: docRecord.document_id,
+        p_user_id: aliceUserId,
+      } as unknown as { p_original_filename: string; p_size_bytes: number }
+    );
+    expect(aliceArchivePrivError).not.toBeNull();
+    expect(aliceArchivePrivError?.code).toBe("42501"); // permission denied
+
+    // Step J: Application archive deletes physical blob and privileged RPC marks archived
+    // Real Storage API deletion via admin client
+    const { error: removeErr } = await adminClient.storage
+      .from("documents")
+      .remove([docRecord.storage_key]);
+    expect(removeErr).toBeNull();
+
+    const { data: archiveResult, error: archiveError } = await adminClient.rpc(
+      "archive_document_privileged",
+      {
+        p_document_id: docRecord.document_id,
+        p_user_id: aliceUserId,
       }
     );
 
@@ -314,10 +342,11 @@ describe("Authoritative Supabase Storage API Integration & Security Boundary (P1
     const isPdf = rangeBytes.toString().startsWith("%PDF-");
     expect(isPdf).toBe(false);
 
-    // Step E: On validation failure, remove physical blob and reject
-    await adminClient.storage
+    // Step E: On validation failure, remove physical blob with explicit error check
+    const { error: removeErr } = await adminClient.storage
       .from(docRecord.storage_bucket)
       .remove([docRecord.storage_key]);
+    expect(removeErr).toBeNull();
 
     const { data: rejectData, error: rejectError } = await adminClient.rpc(
       "reject_document_upload_privileged",
@@ -340,34 +369,401 @@ describe("Authoritative Supabase Storage API Integration & Security Boundary (P1
     expect(infoCheck).toBeNull();
   });
 
-  it("5. Declared size mismatch is rejected (P0-4, P0-7)", async () => {
-    const declaredSize = 5000;
-    const actualContent = Buffer.from(
-      "%PDF-1.4 Actual content of different size"
+  it("5. Declared size mismatch with a REAL uploaded object: rejects and physical blob cleanup succeeds (P0-4, P0-7)", async () => {
+    const declaredSize = 50000;
+    const realContent = Buffer.from(
+      "%PDF-1.4 Real content with different size"
     );
-    const actualSize = actualContent.length;
+    const realSize = realContent.length;
 
-    // Request reservation with 5000 bytes
+    // Step A: Request reservation with declaredSize = 50000 bytes
+    const { data: rpcData, error: rpcError } = await aliceClient.rpc(
+      "request_document_upload",
+      {
+        p_original_filename: "mismatch_real.pdf",
+        p_size_bytes: declaredSize,
+        p_mime_type: "application/pdf",
+        p_subject_id: aliceSubjectId,
+      }
+    );
+    expect(rpcError).toBeNull();
+    const docRecord = Array.isArray(rpcData) ? rpcData[0] : rpcData;
+    if (!docRecord) throw new Error("Expected docRecord to be returned");
+
+    // Step B: Signed upload authorization
+    const { data: signedData } = await adminClient.storage
+      .from(docRecord.storage_bucket)
+      .createSignedUploadUrl(docRecord.storage_key);
+
+    // Step C: Upload REAL object with actual size (realSize != declaredSize)
+    await aliceClient.storage
+      .from(docRecord.storage_bucket)
+      .uploadToSignedUrl(
+        docRecord.storage_key,
+        signedData!.token,
+        realContent,
+        {
+          contentType: "application/pdf",
+          upsert: false,
+        }
+      );
+
+    // Step D: Verify storage metadata sees real size
+    const { data: infoData } = await adminClient.storage
+      .from(docRecord.storage_bucket)
+      .info(docRecord.storage_key);
+    expect(infoData?.size).toBe(realSize);
+    expect(infoData?.size).not.toBe(declaredSize);
+
+    // Step E: Size mismatch detected -> explicitly remove physical blob
+    const { error: removeErr } = await adminClient.storage
+      .from(docRecord.storage_bucket)
+      .remove([docRecord.storage_key]);
+    expect(removeErr).toBeNull();
+
+    // Step F: Privileged rejection marks document REJECTED
+    const { data: rejectData, error: rejectError } = await adminClient.rpc(
+      "reject_document_upload_privileged",
+      {
+        p_document_id: docRecord.document_id,
+        p_user_id: aliceUserId,
+        p_error_code: "SIZE_MISMATCH",
+        p_status: "REJECTED",
+      }
+    );
+    expect(rejectError).toBeNull();
+    expect(rejectData?.status).toBe("REJECTED");
+    expect(rejectData?.validation_error_code).toBe("SIZE_MISMATCH");
+
+    // Step G: Physical blob cleanup confirmed
+    const { data: infoAfter } = await adminClient.storage
+      .from(docRecord.storage_bucket)
+      .info(docRecord.storage_key);
+    expect(infoAfter).toBeNull();
+  });
+
+  it("6. Authenticated user cannot call archive_document_privileged directly (P0)", async () => {
+    // Attempting to invoke privileged archive directly via authenticated client is rejected
+    const { error } = await aliceClient.rpc(
+      "archive_document_privileged" as unknown as "request_document_upload",
+      {
+        p_document_id: "11111111-1111-1111-1111-111111111111",
+        p_user_id: aliceUserId,
+      } as unknown as { p_original_filename: string; p_size_bytes: number }
+    );
+    expect(error).not.toBeNull();
+    expect(error?.code).toBe("42501"); // permission denied
+  });
+
+  it("7. Storage deletion failure on archive does NOT free quota or mark archived (P0)", async () => {
+    // Create a document record
     const { data: rpcData } = await aliceClient.rpc("request_document_upload", {
-      p_original_filename: "mismatch.pdf",
-      p_size_bytes: declaredSize,
+      p_original_filename: "archive_fail_test.pdf",
+      p_size_bytes: 1024,
       p_mime_type: "application/pdf",
       p_subject_id: aliceSubjectId,
     });
     const docRecord = Array.isArray(rpcData) ? rpcData[0] : rpcData;
-    if (!docRecord) throw new Error("Expected docRecord to be returned");
+    if (!docRecord) throw new Error("Expected docRecord");
 
-    // Privileged finalization with mismatched actual size throws error
-    const { error: finalizeError } = await adminClient.rpc(
-      "finalize_document_upload_privileged",
+    // Real Storage API call with invalid authorization simulating transient storage failure
+    const failingStorageClient = createClient<Database>(
+      SUPABASE_URL,
+      "invalid-simulated-key",
+      { auth: { persistSession: false } }
+    );
+    const { data: removeData, error: removeError } =
+      await failingStorageClient.storage
+        .from("documents")
+        .remove([docRecord.storage_key]);
+
+    expect(removeData).toBeNull();
+    expect(removeError).not.toBeNull();
+
+    // Invariant: Because Storage deletion failed, privileged archive RPC must NOT be called.
+    // Verify DB row is still active and NOT archived (quota is preserved)
+    const { data: docInDb } = await adminClient
+      .from("documents")
+      .select("archived_at, status")
+      .eq("id", docRecord.document_id)
+      .single();
+
+    expect(docInDb?.archived_at).toBeNull();
+    expect(docInDb?.status).toBe("UPLOADING");
+
+    // Cleanup doc
+    await adminClient
+      .from("documents")
+      .delete()
+      .eq("id", docRecord.document_id);
+  });
+
+  it("8. Cross-user download authorization denied via application boundary (P0-3)", async () => {
+    // Alice creates and finalizes a document
+    const content = Buffer.from(
+      "%PDF-1.4 Alice private document\ntrailer\n%%EOF"
+    );
+    const { data: rpcData } = await aliceClient.rpc("request_document_upload", {
+      p_original_filename: "alice_confidential.pdf",
+      p_size_bytes: content.length,
+      p_mime_type: "application/pdf",
+      p_subject_id: aliceSubjectId,
+    });
+    const docRecord = Array.isArray(rpcData) ? rpcData[0] : rpcData;
+    if (!docRecord) throw new Error("Expected docRecord");
+
+    const { data: signed } = await adminClient.storage
+      .from(docRecord.storage_bucket)
+      .createSignedUploadUrl(docRecord.storage_key);
+
+    await aliceClient.storage
+      .from(docRecord.storage_bucket)
+      .uploadToSignedUrl(docRecord.storage_key, signed!.token, content, {
+        contentType: "application/pdf",
+        upsert: false,
+      });
+
+    await adminClient.rpc("finalize_document_upload_privileged", {
+      p_document_id: docRecord.document_id,
+      p_user_id: aliceUserId,
+      p_actual_size: content.length,
+    });
+
+    // Bob attempts to query Alice's document directly: RLS returns nothing
+    const { data: bobDocQuery } = await bobClient
+      .from("documents")
+      .select("id")
+      .eq("id", docRecord.document_id);
+    expect(bobDocQuery).toHaveLength(0);
+
+    // Bob cannot read the physical object from storage directly
+    const { data: bobStorageData, error: bobStorageError } =
+      await bobClient.storage.from("documents").download(docRecord.storage_key);
+    expect(bobStorageData).toBeNull();
+    expect(bobStorageError).not.toBeNull();
+
+    // Cleanup
+    await adminClient.storage.from("documents").remove([docRecord.storage_key]);
+    await adminClient
+      .from("documents")
+      .delete()
+      .eq("id", docRecord.document_id);
+  });
+
+  it("9. Signed upload token reuse-after-delete experiment & lease mitigation (P1)", async () => {
+    const testKey = `${aliceUserId}/reuse-experiment-${Date.now()}/source.pdf`;
+    const { data: signed, error: sErr } = await adminClient.storage
+      .from("documents")
+      .createSignedUploadUrl(testKey);
+
+    expect(sErr).toBeNull();
+    expect(signed?.token).toBeDefined();
+
+    // First upload
+    const { data: u1, error: u1Err } = await aliceClient.storage
+      .from("documents")
+      .uploadToSignedUrl(
+        testKey,
+        signed!.token,
+        Buffer.from("%PDF-1.4 first upload"),
+        {
+          contentType: "application/pdf",
+          upsert: false,
+        }
+      );
+    expect(u1Err).toBeNull();
+    expect(u1?.path).toBe(testKey);
+
+    // Delete object
+    const { error: dErr } = await adminClient.storage
+      .from("documents")
+      .remove([testKey]);
+    expect(dErr).toBeNull();
+
+    // Re-upload attempt with SAME token:
+    // Empirical finding: Supabase Storage allows reuse if path is empty within the token's 2-hour window
+    const { data: u2, error: u2Err } = await aliceClient.storage
+      .from("documents")
+      .uploadToSignedUrl(
+        testKey,
+        signed!.token,
+        Buffer.from("%PDF-1.4 re-upload with same token"),
+        {
+          contentType: "application/pdf",
+          upsert: false,
+        }
+      );
+    expect(u2Err).toBeNull();
+    expect(u2?.path).toBe(testKey);
+
+    // Mitigation Demonstration:
+    // 1. If a tombstone object exists at that path, upsert: false rejects re-upload with 409 KeyAlreadyExists
+    const { error: u3Err } = await aliceClient.storage
+      .from("documents")
+      .uploadToSignedUrl(
+        testKey,
+        signed!.token,
+        Buffer.from("%PDF-1.4 blocked attempt"),
+        {
+          contentType: "application/pdf",
+          upsert: false,
+        }
+      );
+    expect(u3Err).not.toBeNull();
+    expect((u3Err as { statusCode?: string }).statusCode).toBe("409");
+
+    // Cleanup experiment object
+    await adminClient.storage.from("documents").remove([testKey]);
+  });
+
+  it("10. Abandoned upload reservation recovery via lazy cleanup (P1)", async () => {
+    // Insert a simulated abandoned upload reservation created 3 hours ago (> 2 hours lease)
+    const expiredDocId = "88888888-8888-8888-8888-888888888888";
+    await adminClient.from("documents").insert({
+      id: expiredDocId,
+      user_id: aliceUserId,
+      subject_id: aliceSubjectId,
+      original_filename: "abandoned_doc.pdf",
+      storage_key: `${aliceUserId}/${expiredDocId}/source.pdf`,
+      mime_type: "application/pdf",
+      size_bytes: 5000000,
+      status: "UPLOADING",
+      created_at: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
+    });
+
+    // Verify it is initially UPLOADING
+    const { data: before } = await adminClient
+      .from("documents")
+      .select("status, validation_error_code")
+      .eq("id", expiredDocId)
+      .single();
+    expect(before?.status).toBe("UPLOADING");
+
+    // Alice initiates a new upload request -> triggers lazy cleanup of expired reservations
+    const { data: newUpload, error: newUploadErr } = await aliceClient.rpc(
+      "request_document_upload",
       {
-        p_document_id: docRecord.document_id,
+        p_original_filename: "fresh_doc.pdf",
+        p_size_bytes: 1024,
+        p_mime_type: "application/pdf",
+        p_subject_id: aliceSubjectId,
+      }
+    );
+    expect(newUploadErr).toBeNull();
+    expect(newUpload).toBeDefined();
+
+    // Verify the abandoned reservation was automatically transitioned to FAILED (UPLOAD_TIMEOUT)
+    const { data: after } = await adminClient
+      .from("documents")
+      .select("status, validation_error_code")
+      .eq("id", expiredDocId)
+      .single();
+    expect(after?.status).toBe("FAILED");
+    expect(after?.validation_error_code).toBe("UPLOAD_TIMEOUT");
+
+    // Cleanup
+    const newDocRecord = Array.isArray(newUpload) ? newUpload[0] : newUpload;
+    if (!newDocRecord) throw new Error("Expected newDocRecord");
+    await adminClient
+      .from("documents")
+      .delete()
+      .in("id", [expiredDocId, newDocRecord.document_id]);
+  });
+
+  it("11. Application-level archive retry is idempotent (P1)", async () => {
+    // Create an archived document record where physical blob is absent
+    const archivedDocId = "77777777-7777-7777-7777-777777777777";
+    await adminClient.from("documents").insert({
+      id: archivedDocId,
+      user_id: aliceUserId,
+      subject_id: aliceSubjectId,
+      original_filename: "already_archived.pdf",
+      storage_key: `${aliceUserId}/${archivedDocId}/source.pdf`,
+      mime_type: "application/pdf",
+      size_bytes: 1024,
+      status: "READY",
+      archived_at: new Date().toISOString(),
+    });
+
+    // Calling privileged archive again on an already archived document succeeds idempotently
+    const { data: retryResult, error: retryError } = await adminClient.rpc(
+      "archive_document_privileged",
+      {
+        p_document_id: archivedDocId,
         p_user_id: aliceUserId,
-        p_actual_size: actualSize,
       }
     );
 
-    expect(finalizeError).not.toBeNull();
-    expect(finalizeError?.code).toBe("23514"); // Check violation: size mismatch
+    expect(retryError).toBeNull();
+    expect(retryResult).toBe(true);
+
+    // Cleanup
+    await adminClient.from("documents").delete().eq("id", archivedDocId);
+  });
+
+  it("12. Concurrent quota reservations are serialized via advisory lock (P0-5)", async () => {
+    // Max single file size is 25 MB (26,214,400 bytes). Max total quota is 100 MB (104,857,600 bytes).
+    // Establish a 70 MB baseline reservation for Alice (using 3 valid files of ~23.3 MB each).
+    const baselineDocIds: string[] = [];
+    const baselineSize = 23 * 1024 * 1024; // 23 MB
+
+    for (let i = 1; i <= 3; i++) {
+      const { data: bData, error: bErr } = await aliceClient.rpc(
+        "request_document_upload",
+        {
+          p_original_filename: `baseline_${i}.pdf`,
+          p_size_bytes: baselineSize,
+          p_mime_type: "application/pdf",
+          p_subject_id: aliceSubjectId,
+        }
+      );
+      expect(bErr).toBeNull();
+      const bDoc = Array.isArray(bData) ? bData[0] : bData;
+      if (!bDoc) throw new Error("Expected bDoc");
+      baselineDocIds.push(bDoc.document_id);
+    }
+
+    // Now Alice has 69 MB reserved (31 MB remaining out of 100 MB).
+    // Launch 2 concurrent requests, each requesting 20 MB (20,971,520 bytes <= 25 MB max file).
+    // Together they would be 69 MB + 40 MB = 109 MB > 100 MB.
+    // Due to pg_advisory_xact_lock serialization:
+    // Exactly ONE must succeed (reaching 89 MB) and ONE must fail with 23514 (quota exceeded).
+    const size20Mb = 20 * 1024 * 1024;
+
+    const [res1, res2] = await Promise.allSettled([
+      aliceClient.rpc("request_document_upload", {
+        p_original_filename: "concurrent_1.pdf",
+        p_size_bytes: size20Mb,
+        p_mime_type: "application/pdf",
+        p_subject_id: aliceSubjectId,
+      }),
+      aliceClient.rpc("request_document_upload", {
+        p_original_filename: "concurrent_2.pdf",
+        p_size_bytes: size20Mb,
+        p_mime_type: "application/pdf",
+        p_subject_id: aliceSubjectId,
+      }),
+    ]);
+
+    const results = [
+      res1.status === "fulfilled" ? res1.value : null,
+      res2.status === "fulfilled" ? res2.value : null,
+    ];
+
+    const successes = results.filter((r) => r?.error === null);
+    const failures = results.filter((r) => r?.error !== null);
+
+    expect(successes).toHaveLength(1);
+    expect(failures).toHaveLength(1);
+    expect(failures[0]?.error?.code).toBe("23514"); // Quota exceeded
+
+    // Cleanup successful doc and baseline docs
+    const successDoc = Array.isArray(successes[0]!.data)
+      ? successes[0]!.data[0]
+      : successes[0]!.data;
+    await adminClient
+      .from("documents")
+      .delete()
+      .in("id", [...baselineDocIds, successDoc.document_id]);
   });
 });

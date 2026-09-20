@@ -202,7 +202,10 @@ export type Database = {
       [_ in never]: never;
     };
     Functions: {
-      archive_document: { Args: { p_document_id: string }; Returns: boolean };
+      archive_document_privileged: {
+        Args: { p_document_id: string; p_user_id: string };
+        Returns: boolean;
+      };
       complete_onboarding: { Args: never; Returns: string };
       finalize_document_upload_privileged: {
         Args: {

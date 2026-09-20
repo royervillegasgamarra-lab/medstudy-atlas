@@ -163,7 +163,7 @@ CREATE TABLE documents (
     storage_key TEXT NOT NULL UNIQUE,
     mime_type TEXT NOT NULL DEFAULT 'application/pdf',
     size_bytes BIGINT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'UPLOADING' CHECK (status IN ('UPLOADING', 'VALIDATING', 'READY', 'REJECTED', 'FAILED')),
+    status TEXT NOT NULL DEFAULT 'UPLOADING' CHECK (status IN ('UPLOADING', 'READY', 'REJECTED', 'FAILED')),
     validation_error_code TEXT,
     sha256_hash TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
