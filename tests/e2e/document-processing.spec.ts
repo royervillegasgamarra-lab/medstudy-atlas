@@ -122,11 +122,15 @@ test.describe("Phase 1D: Secure Document Processing & Provenance UI", () => {
       .single();
 
     if (latestRun?.id) {
-      await supabaseAdmin.rpc("fail_processing_run_privileged", {
-        p_run_id: latestRun.id,
-        p_error_code: "PREFLIGHT_TIMEOUT",
-        p_retryable: true,
-      });
+      await supabaseAdmin
+        .from("document_processing_runs")
+        .update({
+          status: "FAILED_RETRYABLE",
+          error_code: "PREFLIGHT_TIMEOUT",
+          claim_token: null,
+          claimed_by: null,
+        })
+        .eq("id", latestRun.id);
     }
 
     await page.reload();

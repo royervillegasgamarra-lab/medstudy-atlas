@@ -491,6 +491,11 @@ if (Test-Path (Join-Path $repoRoot "package.json")) {
             Set-Content -Path $repoLogFile -Value $fullLogContent -Encoding utf8
         }
 
+        # Synchronize all logs from resultsDir to repoTestResultsDir in case a test runner (e.g. Playwright) wiped test-results
+        Get-ChildItem -Path $resultsDir -Filter "*.log" | ForEach-Object {
+            Copy-Item -Path $_.FullName -Destination (Join-Path $repoTestResultsDir $_.Name) -Force
+        }
+
         # If test:e2e re-generated existing committed screenshots in docs/screenshots, restore them to clean commit state
         $screenshotStatus = git -C $repoRoot status --porcelain docs/screenshots 2>$null
         if ($screenshotStatus) {
