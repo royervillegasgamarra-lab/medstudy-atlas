@@ -66,11 +66,7 @@ $gitDiff = git -C $repoRoot diff "$BaseBranch...HEAD"
 $gitDiff | Out-File -FilePath (Join-Path $stagingDir "git-diff.patch") -Encoding utf8
 
 # repository-tree.txt
-$allRepoFiles = Get-ChildItem -Path $repoRoot -Recurse -File | Where-Object {
-    $_.FullName -notmatch '[\\/](\.git|node_modules|review-output|\.temp|\.branches)[\\/]'
-} | ForEach-Object {
-    $_.FullName.Substring($repoRoot.Length + 1).Replace("\", "/")
-}
+$allRepoFiles = git -C $repoRoot ls-files
 $allRepoFiles | Out-File -FilePath (Join-Path $stagingDir "repository-tree.txt") -Encoding utf8
 
 # Infer PhaseSlug from branch if not provided or default
@@ -88,6 +84,8 @@ if (-not $PhaseSlug -or $PhaseSlug -eq "phase-00a") {
         $PhaseSlug = "phase-01b"
     } elseif ($detectedBranch -match "phase/01c") {
         $PhaseSlug = "phase-01c"
+    } elseif ($detectedBranch -match "phase/01d") {
+        $PhaseSlug = "phase-01d"
     }
 }
 
@@ -100,6 +98,7 @@ $branchMatches = switch -Regex ($PhaseSlug) {
     "01?a" { $currentBranch -match "phase/01a" }
     "01?b" { $currentBranch -match "phase/01b" }
     "01?c" { $currentBranch -match "phase/01c" }
+    "01?d" { $currentBranch -match "phase/01d" }
     default { $true }
 }
 if (-not $branchMatches) {
@@ -119,6 +118,7 @@ $phaseIdentifier = switch -Regex ($PhaseSlug) {
     "01?a" { "1A" }
     "01?b" { "1B" }
     "01?c" { "1C" }
+    "01?d" { "1D" }
     default { $PhaseSlug }
 }
 if ($statusContent -notmatch $phaseIdentifier) {
@@ -141,6 +141,7 @@ $phaseTitle = switch -Regex ($PhaseSlug) {
     "01?a" { "Vertical Slice 1A -- Identity, Auth & RLS Baseline" }
     "01?b" { "Vertical Slice 1B -- Onboarding, Curriculum & Exam Targets" }
     "01?c" { "Vertical Slice 1C -- Document Library & Secure Upload" }
+    "01?d" { "Phase 1D $([char]0x2014) Document Processing / Ingestion" }
     default { "$PhaseSlug -- Local Review Package" }
 }
 
@@ -227,6 +228,22 @@ $reviewCriteria = switch -Regex ($PhaseSlug) {
             '12. [ ] **Zero AI & Cloud Spend**: No text extraction, OCR, embeddings, vector search, or external paid storage introduced ($0.00 cloud spend).'
         )
     }
+    "01?d" {
+        @(
+            '1. [ ] **Subprocess Security Boundary & Stripped Environment**: Application credentials are not inherited through the parser child-process environment. The Python parser runs with a strictly stripped environment (`createSafeParserEnvironment`); zero Supabase secret keys, service-role keys, database URLs, AI keys, or auth tokens are passed to the parser.',
+            '2. [ ] **Structural Preflight (`qpdf` 12.4.1)**: `qpdf --is-encrypted`, `qpdf --check`, and `qpdf --show-npages` detect encrypted PDFs (`PDF_ENCRYPTED`), corrupt PDFs (`PDF_CORRUPT`), zero-page PDFs (`PDF_ZERO_PAGES`), and oversized page counts (`PDF_PAGE_COUNT_EXCEEDED` > 300 pages) before text parsing. Diagnostic output stream bounded to 64 KB per stdout/stderr diagnostic stream (`PREFLIGHT_FAILED`).',
+            '3. [ ] **Native Text Extraction & Provenance (`pypdfium2` 5.13.0)**: Native digital text extracted via PDFium; page dimensions, character counts, and SHA-256 hashes recorded. Pages with >= 50 native characters bypass OCR entirely.',
+            '4. [ ] **Selective Local OCR (`tesseract` 5.5.3)**: Pages with < 50 native characters undergo local Tesseract OCR using strictly `spa+eng` language packs. Render scale capped with pixel limit validation (12M max pixels/page). Max 60 OCR pages enforced per document (`OCR_PAGE_LIMIT`). Text length bounded per page (`TEXT_PAGE_LIMIT`) and per document (`TEXT_DOCUMENT_LIMIT`).',
+            '5. [ ] **Worker Lease Fencing & Concurrency Control**: `claim_next_processing_run` generates fresh `claim_token UUID` and enforces `lease_expires_at`. Privileged persist and fail RPCs require an active non-null lease and claim token matching `status = ''RUNNING'' AND claim_token = p_claim_token AND lease_expires_at > NOW()` (raises 55000 otherwise).',
+            '6. [ ] **Trusted Node Orchestrator Semantic Provenance**: Node layer independently verifies source SHA-256, per-page text SHA-256, Unicode code points, aggregate counters, and pipeline version before persisting.',
+            '7. [ ] **Bounded Parser Output Reads**: Node orchestrator checks file counts, manifest size (<= 64 KB), and page JSON size (<= 1.5 MB) before reading files into memory.',
+            '8. [ ] **Storage Error Classification & Archive Race Closure**: Confirmed missing source classified as `SOURCE_MISSING` (terminal); bucket/network errors classified as `STORAGE_UNAVAILABLE` (retryable). Document archiving terminally cancels active runs and deletes derived pages.',
+            '9. [ ] **Database Schema & Composite Foreign Keys**: `public.document_processing_runs` has `UNIQUE (id, document_id, user_id)`. `public.document_pages` enforces composite FK `(processing_run_id, document_id, user_id)` preventing cross-tenant references.',
+            '10. [ ] **Terminal Retry Semantics & UI Integration**: Max 3 attempts enforced (`FAILED_FINAL` cannot be re-enqueued or claimed); UI displays live badges, "Error no recuperable", "Procesar", and "Reintentar".',
+            '11. [ ] **Automated Test Suites**: 55 pgTAP tests (`04_processing_runs_rls.sql`, 245 total DB tests), 38 unit tests (`parser.test.ts`), 8 provenance tests (`provenance.test.ts`), 17 integration tests (`processing-worker.test.ts`, 186 total Vitest tests), and Playwright E2E tests pass cleanly.',
+            '12. [ ] **Zero Cloud Resources & Paid Services**: Local-First execution; $0.00 cost.'
+        )
+    }
     default {
         @(
             '1. [ ] **Local-First Compliance**: Work matches phase objectives without remote dependencies.',
@@ -306,7 +323,19 @@ $nextStep = switch -Regex ($PhaseSlug) {
             "git merge --squash $currentBranch",
             'git commit -m "feat(phase-01c): implement document library and secure upload boundary"',
             '```',
-            'Then proceed to **Vertical Slice 1D -- Document Ingestion & Text Processing** (`phase/01d-processing`).'
+            'Then proceed to **Vertical Slice 1D -- Secure Document Processing / Ingestion & Page Provenance** (`phase/01d-processing`).'
+        )
+    }
+    "01?d" {
+        @(
+            '## 4. Next Step Upon Approval',
+            "Upon approval of this review package, merge $currentBranch into $BaseBranch locally via squash merge:",
+            '```powershell',
+            "git checkout $BaseBranch",
+            "git merge --squash $currentBranch",
+            'git commit -m "feat(phase-01d): implement secure document processing and page provenance"',
+            '```',
+            'Then proceed to **Vertical Slice 1E -- Deterministic Chunking & Study Pack Generation** (`phase/01e-study-packs`).'
         )
     }
     default {
@@ -398,7 +427,9 @@ if (Test-Path (Join-Path $repoRoot "package.json")) {
         $dockerPaths = @(
             "C:\Users\DR_ CHAPATIN\AppData\Local\Programs\DockerDesktop\resources\bin",
             "$env:LOCALAPPDATA\Programs\DockerDesktop\resources\bin",
-            "$env:ProgramFiles\Docker\Docker\resources\bin"
+            "$env:ProgramFiles\Docker\Docker\resources\bin",
+            "C:\Program Files\Tesseract-OCR",
+            (Join-Path $repoRoot "tools\bin\qpdf\bin")
         )
         foreach ($dp in $dockerPaths) {
             if ((Test-Path $dp) -and ($env:PATH -notlike "*$dp*")) {
@@ -432,6 +463,15 @@ if (Test-Path (Join-Path $repoRoot "package.json")) {
         }
         $checksToRun += @{ Name = "audit"; Cmd = "pnpm audit" }
 
+        if ($PhaseSlug -match "01?d") {
+            $checksToRun += @(
+                @{ Name = "python-version"; Cmd = "python --version" },
+                @{ Name = "qpdf-version"; Cmd = "qpdf --version" },
+                @{ Name = "tesseract-version"; Cmd = "tesseract --version" },
+                @{ Name = "tesseract-langs"; Cmd = "tesseract --list-langs" }
+            )
+        }
+
         $repoTestResultsDir = Join-Path $repoRoot "test-results"
         if (-not (Test-Path $repoTestResultsDir)) {
             New-Item -ItemType Directory -Path $repoTestResultsDir -Force | Out-Null
@@ -449,10 +489,19 @@ if (Test-Path (Join-Path $repoRoot "package.json")) {
             Set-Content -Path $repoLogFile -Value $fullLogContent -Encoding utf8
         }
 
-        # If test:e2e re-generated existing committed screenshots in docs/screenshots, restore them to clean commit state
+        # Synchronize all logs from resultsDir to repoTestResultsDir in case a test runner (e.g. Playwright) wiped test-results
+        Get-ChildItem -Path $resultsDir -Filter "*.log" | ForEach-Object {
+            Copy-Item -Path $_.FullName -Destination (Join-Path $repoTestResultsDir $_.Name) -Force
+        }
+
+        # If test:e2e re-generated existing committed screenshots in docs/screenshots or modified next-env.d.ts, restore them to clean commit state
         $screenshotStatus = git -C $repoRoot status --porcelain docs/screenshots 2>$null
         if ($screenshotStatus) {
             git -C $repoRoot checkout -- docs/screenshots 2>$null
+        }
+        $nextEnvStatus = git -C $repoRoot status --porcelain next-env.d.ts 2>$null
+        if ($nextEnvStatus) {
+            git -C $repoRoot checkout -- next-env.d.ts 2>$null
         }
     }
 
@@ -469,6 +518,15 @@ if (Test-Path (Join-Path $repoRoot "package.json")) {
         @{ Label = "E2E Smoke Tests (`pnpm test:e2e`)"; Key = "e2e"; Mandatory = $true },
         @{ Label = "Dependency Audit (`pnpm audit`)"; Key = "audit"; Mandatory = $false }
     )
+
+    if ($PhaseSlug -match "01?d") {
+        $checkDefinitions += @(
+            @{ Label = 'Python Version (`python --version`)'; Key = "python-version"; Mandatory = $true },
+            @{ Label = 'QPDF Version (`qpdf --version`)'; Key = "qpdf-version"; Mandatory = $true },
+            @{ Label = 'Tesseract Version (`tesseract --version`)'; Key = "tesseract-version"; Mandatory = $true },
+            @{ Label = 'Tesseract Languages (`tesseract --list-langs`)'; Key = "tesseract-langs"; Mandatory = $true }
+        )
+    }
 
     $stagedResultsDir = Join-Path $stagingDir "test-results"
     $gateLines = @()
@@ -730,6 +788,7 @@ if ($PhaseSlug -match "00?c" -or (Test-Path (Join-Path $repoRoot "src")) -or (Te
     Copy-Item -Path (Join-Path $repoRoot ".prettierrc") -Destination $sourceDir -ErrorAction SilentlyContinue
     Copy-Item -Path (Join-Path $repoRoot ".prettierignore") -Destination $sourceDir -ErrorAction SilentlyContinue
     Copy-Item -Path (Join-Path $repoRoot ".env.example") -Destination $sourceDir -ErrorAction SilentlyContinue
+    Copy-Item -Path (Join-Path $repoRoot "requirements-parser.txt") -Destination $sourceDir -ErrorAction SilentlyContinue
     if (Test-Path (Join-Path $repoRoot "src")) {
         Copy-Item -Path (Join-Path $repoRoot "src") -Destination $sourceDir -Recurse -Force
     }
@@ -748,6 +807,19 @@ if ($PhaseSlug -match "00?c" -or (Test-Path (Join-Path $repoRoot "src")) -or (Te
     if (Test-Path (Join-Path $repoRoot "scripts")) {
         Copy-Item -Path (Join-Path $repoRoot "scripts") -Destination $sourceDir -Recurse -Force
     }
+
+    # Clean Python caches, virtualenvs, local env files, and tools from staging
+    Get-ChildItem -Path $stagingDir -Recurse -Directory -Filter "__pycache__" -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    Get-ChildItem -Path $stagingDir -Recurse -File -Include "*.pyc", "*.pyo" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+    if (Test-Path (Join-Path $sourceDir ".venv")) {
+        Remove-Item -Recurse -Force -Path (Join-Path $sourceDir ".venv") -ErrorAction SilentlyContinue
+    }
+    if (Test-Path (Join-Path $sourceDir "tools")) {
+        Remove-Item -Recurse -Force -Path (Join-Path $sourceDir "tools") -ErrorAction SilentlyContinue
+    }
+    if (Test-Path (Join-Path $sourceDir ".env.local")) {
+        Remove-Item -Force -Path (Join-Path $sourceDir ".env.local") -ErrorAction SilentlyContinue
+    }
 }
 
 # 5. Security Audit of Staging Directory
@@ -756,6 +828,10 @@ Write-Host "Running automated security scan on staging files..." -ForegroundColo
 $prohibitedPatterns = @(
     '\.git[\\/]',
     'node_modules[\\/]',
+    '__pycache__',
+    '\.pyc$',
+    '\.venv',
+    'tools[\\/]',
     '\.env(\..+)?$',
     '\.pem$',
     '\.key$',

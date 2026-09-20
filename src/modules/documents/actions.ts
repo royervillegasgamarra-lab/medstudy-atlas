@@ -7,6 +7,7 @@ import {
   getAuthorizedDocumentUrl,
   archiveDocument as archiveDocumentService,
   getDocumentQuotaUsage,
+  retryDocumentProcessing,
 } from "./service";
 import type {
   RequestUploadInput,
@@ -103,5 +104,22 @@ export async function getDocumentQuotaAction(): Promise<
     return { success: false, error: result.error || "Error al obtener cuota." };
   }
 
+  return { success: true, data: result.data };
+}
+
+/**
+ * Server action to retry document processing for a failed processing run.
+ */
+export async function retryDocumentProcessingAction(
+  documentId: string
+): Promise<ActionResult> {
+  const result = await retryDocumentProcessing(documentId);
+
+  if (result.error) {
+    return { success: false, error: result.error };
+  }
+
+  revalidatePath("/app/documents");
+  revalidatePath("/app");
   return { success: true, data: result.data };
 }

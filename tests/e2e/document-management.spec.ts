@@ -116,11 +116,12 @@ test.describe("Phase 1C: Document Library & Secure Upload Boundary", () => {
       page.getByText("¡Documento subido y validado con éxito!")
     ).toBeVisible({ timeout: 15000 });
 
-    // Wait for list to update and verify status READY ("Listo")
     await expect(page.getByText("guia_farmacologia_clinica.pdf")).toBeVisible({
       timeout: 10000,
     });
-    await expect(page.getByText("Listo")).toBeVisible();
+    await expect(
+      page.getByText(/Listo|Pendiente de procesar|Procesado/)
+    ).toBeVisible();
     await expect(
       page.locator("div").filter({ hasText: /^Farmacología$/ })
     ).toBeVisible();

@@ -1,0 +1,6 @@
+# MedStudy Atlas — Phase 1D Isolated Parser Dependencies
+# Pinned exact versions for reproducible processing environment
+
+pypdfium2==5.13.0
+pillow==12.3.0
+pytesseract==0.3.13
