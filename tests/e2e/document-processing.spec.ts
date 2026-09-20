@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
 import path from "path";
 import fs from "fs";
+import crypto from "crypto";
 import { execSync } from "child_process";
 import { createClient } from "@supabase/supabase-js";
 
@@ -108,7 +109,7 @@ test.describe("Phase 1D: Secure Document Processing & Provenance UI", () => {
       caret: "initial",
     });
 
-    // 6. Simulate a failed processing run to test retry UI
+    // 6. Simulate a failed processing run via legitimate fail_processing_run_privileged RPC
     const supabaseAdmin = createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL || "http://127.0.0.1:54321",
       process.env.SUPABASE_SECRET_KEY!
@@ -122,15 +123,28 @@ test.describe("Phase 1D: Secure Document Processing & Provenance UI", () => {
       .single();
 
     if (latestRun?.id) {
+      const simClaimToken = crypto.randomUUID();
       await supabaseAdmin
         .from("document_processing_runs")
         .update({
-          status: "FAILED_RETRYABLE",
-          error_code: "PREFLIGHT_TIMEOUT",
-          claim_token: null,
-          claimed_by: null,
+          status: "RUNNING",
+          claim_token: simClaimToken,
+          claimed_by: "e2e-worker-sim",
+          lease_expires_at: new Date(Date.now() + 300000).toISOString(),
         })
         .eq("id", latestRun.id);
+
+      // Call legitimate fail_processing_run_privileged RPC with matching claim_token
+      const { error: failRpcError } = await supabaseAdmin.rpc(
+        "fail_processing_run_privileged",
+        {
+          p_run_id: latestRun.id,
+          p_claim_token: simClaimToken,
+          p_error_code: "PREFLIGHT_TIMEOUT",
+          p_retryable: true,
+        }
+      );
+      expect(failRpcError).toBeNull();
     }
 
     await page.reload();
@@ -149,6 +163,49 @@ test.describe("Phase 1D: Secure Document Processing & Provenance UI", () => {
 
     // 7. Click retry button and verify status returns to "Pendiente de procesar"
     await retryBtn.click();
+    await expect(
+      page.getByText("Procesamiento reencolado exitosamente.")
+    ).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText("Pendiente de procesar")).toBeVisible();
+  });
+
+  test("Auto-enqueue recovery: READY document without run displays 'Procesar' and transitions to PENDING", async ({
+    page,
+  }) => {
+    await page.goto("/app/documents");
+    await expect(
+      page.getByRole("heading", { name: "Biblioteca de Documentos" })
+    ).toBeVisible({ timeout: 15000 });
+
+    const supabaseAdmin = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL || "http://127.0.0.1:54321",
+      process.env.SUPABASE_SECRET_KEY!
+    );
+
+    // Find the uploaded document and delete its processing run to test recovery UI
+    const { data: doc } = await supabaseAdmin
+      .from("documents")
+      .select("id")
+      .eq("original_filename", "fisiopatologia_cardiaca.pdf")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .single();
+
+    expect(doc?.id).toBeDefined();
+
+    await supabaseAdmin
+      .from("document_processing_runs")
+      .delete()
+      .eq("document_id", doc!.id);
+
+    await page.reload();
+
+    // Verify "Procesar" recovery button is visible
+    const procesarBtn = page.getByRole("button", { name: /Procesar/i });
+    await expect(procesarBtn).toBeVisible({ timeout: 10000 });
+
+    // Click "Procesar" to trigger auto-enqueue recovery
+    await procesarBtn.click();
     await expect(
       page.getByText("Procesamiento reencolado exitosamente.")
     ).toBeVisible({ timeout: 10000 });

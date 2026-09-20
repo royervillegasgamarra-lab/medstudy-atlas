@@ -61,7 +61,7 @@ flowchart TD
 | **Native Text Extraction (`pypdfium2` 5.13.0)** | `IMPLEMENTED` | Native digital text extracted via PDFium textpage interface without launching browser runtimes. Bypasses OCR when native characters $\ge 50$. |
 | **Selective OCR (`tesseract` 5.5.3)** | `IMPLEMENTED` | Local Tesseract invoked strictly with `spa+eng` language packs for pages with $< 50$ native characters. Capped at 60 OCR pages/doc and 12M pixels/page. |
 | **Prompt Injection Defense** | `IMPLEMENTED` | All content classified as `USER_DOCUMENT_UNTRUSTED`. Prompt injection payloads are preserved verbatim as inert text data without executing. |
-| **Subprocess Security Boundary** | `IMPLEMENTED` | `createSafeParserEnvironment()` strips all application secrets (`SUPABASE_*`, `DATABASE_URL`, AI keys, auth tokens). |
+| **Subprocess Security Boundary** | `IMPLEMENTED` | `createSafeParserEnvironment()` strips all application secrets (`SUPABASE_*`, `DATABASE_URL`, AI keys, auth tokens). Note: stripped environment provides credential isolation, not an OS sandbox. Full OS-level sandboxing (e.g. gVisor, Firecracker, or container seccomp) is an explicit production deployment gate. |
 | **Worker Queue & Claim Fencing** | `IMPLEMENTED` | `document_processing_runs` uses PostgreSQL `claim_next_processing_run` (`FOR UPDATE SKIP LOCKED`). Fenced by `claim_token UUID`, `claimed_by TEXT`, and `lease_expires_at TIMESTAMPTZ`. |
 | **Bounded Retry & Terminal Semantics** | `IMPLEMENTED` | Max 3 attempts. `FAILED_RETRYABLE` may be manually re-enqueued; `FAILED_FINAL` cannot be re-enqueued or claimed. UI offers no retry for terminal failures. |
 | **Trusted Provenance Verification** | `IMPLEMENTED` | Trusted Node orchestrator verifies source SHA-256, per-page text SHA-256, Unicode code points, aggregate counters, and pipeline version before persistence. |
@@ -70,7 +70,7 @@ flowchart TD
 | **AI Embeddings & Vector Search** | `DEFERRED` | `pgvector` hybrid search and embeddings generation scheduled for **Vertical Slice 1E & 1F**. Zero AI spend in Phase 1D ($0.00). |
 | **Docling Structural Parser** | `DEFERRED` | Heavyweight PyTorch/layout parsing deferred post-MVP. |
 | **Cloud API OCR Fallback** | `DEFERRED` | Zero external cloud OCR APIs enabled. Local Tesseract `spa+eng` is the sole OCR engine. |
-| **Hard Memory Cap (cgroups / Job Object)** | `DEPLOYMENT GATE` | Operating-system-level hard RSS/memory container cap is an explicit **Deployment Gate** required before public untrusted uploads in production. Currently enforced guards: qpdf preflight, 300-page limit, 12M pixel render limit, 100K char/page limit, 600s total job timeout. |
+| **Hard Memory Cap & OS Sandbox** | `DEPLOYMENT GATE` | Operating-system-level hard RSS/memory container cap and true OS sandboxing (gVisor / Firecracker / seccomp) constitute an explicit **Deployment Gate** required before public untrusted uploads in production. Currently enforced guards: qpdf preflight, 300-page limit, 12M pixel render limit, 100K char/page limit, 600s parser process timeout. |
 
 ---
 
@@ -87,8 +87,8 @@ Centralized in [`src/config/processing-limits.ts`](file:///c:/Users/DR_%20CHAPAT
 | `maxRenderPixelsPerPage` | 12,000,000 pixels | ~3000x4000 resolution at 144 DPI; prevents bitmap memory bombs. |
 | `preflightTimeoutSeconds` | 10 seconds | Fast fail for corrupt, locked, or malformed PDFs. |
 | `ocrPageTimeoutSeconds` | 20 seconds | Hard timeout per OCR page; raises `OCR_TIMEOUT` on hung Tesseract processes. |
-| `totalJobTimeoutSeconds` | 600 seconds (10 min) | Operative hard deadline for native extraction and overall subprocess execution. |
-| `workerLeaseSeconds` | 300 seconds (5 min) | Automatic lease expiration window for crashed workers before reclaiming. |
+| `parserProcessTimeoutSeconds` | 600 seconds (10 min) | Operative hard deadline for native extraction and overall subprocess execution (`totalJobTimeoutSeconds` alias). |
+| `workerLeaseSeconds` | 900 seconds (15 min) | Automatic lease expiration window for crashed workers before reclaiming ($900s > 600s$). |
 | `maxRetries` | 3 attempts | Bounded retry budget before transitioning to `FAILED_FINAL`. |
 | `minNativeCharsForText` | 50 characters | Decision boundary to bypass OCR on digitally authored slides. |
 | `pipelineVersion` | `"1.0.0"` | Canonical version for schema and run compatibility. |

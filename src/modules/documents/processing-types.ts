@@ -69,9 +69,10 @@ export const pageProcessingResultSchema = z.object({
 export type PageProcessingResult = z.infer<typeof pageProcessingResultSchema>;
 
 /**
- * Zod schema for the parser output manifest (output/manifest.json).
+ * Zod schema for successful parser output manifest.
  */
-export const processingManifestSchema = z.object({
+export const processingSuccessManifestSchema = z.object({
+  status: z.literal("SUCCEEDED"),
   pipeline_version: z.string(),
   source_sha256: z.string().length(64),
   page_count: z.number().int().positive().max(300),
@@ -80,10 +81,46 @@ export const processingManifestSchema = z.object({
   ocr_page_count: z.number().int().nonnegative(),
   no_text_page_count: z.number().int().nonnegative(),
   processing_duration_ms: z.number().int().nonnegative(),
-  error_code: z.enum(PROCESSING_ERROR_CODES).nullable().optional(),
-  status: z.enum(["SUCCEEDED", "FAILED"]).default("SUCCEEDED"),
+  error_code: z.null().optional(),
 });
 
+/**
+ * Zod schema for failed parser output manifest.
+ * Allows page_count = 0 and requires a valid error_code.
+ */
+export const processingFailureManifestSchema = z.object({
+  status: z.literal("FAILED"),
+  pipeline_version: z.string().optional(),
+  source_sha256: z.string().length(64).nullable().optional(),
+  page_count: z.number().int().nonnegative().max(300).default(0),
+  structural_warning_count: z
+    .number()
+    .int()
+    .nonnegative()
+    .optional()
+    .default(0),
+  native_text_page_count: z.number().int().nonnegative().optional().default(0),
+  ocr_page_count: z.number().int().nonnegative().optional().default(0),
+  no_text_page_count: z.number().int().nonnegative().optional().default(0),
+  processing_duration_ms: z.number().int().nonnegative().optional().default(0),
+  error_code: z.enum(PROCESSING_ERROR_CODES),
+});
+
+/**
+ * Zod schema for the parser output manifest (output/manifest.json).
+ * Discriminated union on status ("SUCCEEDED" | "FAILED").
+ */
+export const processingManifestSchema = z.discriminatedUnion("status", [
+  processingSuccessManifestSchema,
+  processingFailureManifestSchema,
+]);
+
+export type ProcessingSuccessManifest = z.infer<
+  typeof processingSuccessManifestSchema
+>;
+export type ProcessingFailureManifest = z.infer<
+  typeof processingFailureManifestSchema
+>;
 export type ProcessingManifest = z.infer<typeof processingManifestSchema>;
 
 export interface DocumentProcessingRunRecord {

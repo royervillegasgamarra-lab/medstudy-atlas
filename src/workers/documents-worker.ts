@@ -116,10 +116,21 @@ export function verifyParserProvenance(input: ProvenanceValidationInput): {
       };
     }
 
-    if (page.native_char_count < 0 || page.ocr_char_count < 0) {
+    // Invariant: bounded safe integers for character counts
+    if (
+      !Number.isSafeInteger(page.native_char_count) ||
+      page.native_char_count < 0 ||
+      page.native_char_count > PROCESSING_LIMITS.maxExtractedCharsPerPage ||
+      !Number.isSafeInteger(page.ocr_char_count) ||
+      page.ocr_char_count < 0 ||
+      page.ocr_char_count > PROCESSING_LIMITS.maxExtractedCharsPerPage ||
+      !Number.isSafeInteger(page.char_count) ||
+      page.char_count < 0 ||
+      page.char_count > PROCESSING_LIMITS.maxExtractedCharsPerPage
+    ) {
       return {
         valid: false,
-        error: `Negative character count on page ${page.page_number}`,
+        error: `Character count out of bounds or not a safe integer on page ${page.page_number}`,
       };
     }
 
@@ -131,20 +142,79 @@ export function verifyParserProvenance(input: ProvenanceValidationInput): {
       };
     }
 
-    if (page.classification === "TEXT_BASED" && page.native_char_count === 0) {
-      return {
-        valid: false,
-        error: `TEXT_BASED with zero native chars on page ${page.page_number}`,
-      };
+    // Coherence checks per classification
+    if (page.classification === "TEXT_BASED") {
+      if (page.native_char_count === 0) {
+        return {
+          valid: false,
+          error: `TEXT_BASED with zero native chars on page ${page.page_number}`,
+        };
+      }
+      if (page.ocr_char_count !== 0) {
+        return {
+          valid: false,
+          error: `TEXT_BASED with non-zero ocr chars on page ${page.page_number}`,
+        };
+      }
+      if (page.char_count !== page.native_char_count) {
+        return {
+          valid: false,
+          error: `TEXT_BASED char_count does not match native_char_count on page ${page.page_number}`,
+        };
+      }
     }
-    if (
-      ["NO_TEXT", "IMAGE_ONLY"].includes(page.classification) &&
-      (page.char_count > 0 || page.text_content !== "")
-    ) {
-      return {
-        valid: false,
-        error: `NO_TEXT with non-empty content on page ${page.page_number}`,
-      };
+
+    if (page.classification === "SCANNED") {
+      if (page.ocr_char_count === 0) {
+        return {
+          valid: false,
+          error: `SCANNED with zero ocr chars on page ${page.page_number}`,
+        };
+      }
+      if (page.native_char_count !== 0) {
+        return {
+          valid: false,
+          error: `SCANNED with non-zero native chars on page ${page.page_number}`,
+        };
+      }
+      if (page.char_count !== page.ocr_char_count) {
+        return {
+          valid: false,
+          error: `SCANNED char_count does not match ocr_char_count on page ${page.page_number}`,
+        };
+      }
+    }
+
+    if (page.classification === "MIXED") {
+      if (page.native_char_count === 0 || page.ocr_char_count === 0) {
+        return {
+          valid: false,
+          error: `MIXED requires both native and ocr chars on page ${page.page_number}`,
+        };
+      }
+      if (
+        page.char_count !== page.native_char_count &&
+        page.char_count !== page.ocr_char_count
+      ) {
+        return {
+          valid: false,
+          error: `MIXED char_count is not consistent with source counts on page ${page.page_number}`,
+        };
+      }
+    }
+
+    if (["NO_TEXT", "IMAGE_ONLY"].includes(page.classification)) {
+      if (
+        page.char_count !== 0 ||
+        page.native_char_count !== 0 ||
+        page.ocr_char_count !== 0 ||
+        page.text_content !== ""
+      ) {
+        return {
+          valid: false,
+          error: `NO_TEXT with non-empty content or non-zero counts on page ${page.page_number}`,
+        };
+      }
     }
   }
 
@@ -389,7 +459,7 @@ export async function processNextDocumentJob(
       const timeout = setTimeout(() => {
         child.kill("SIGKILL");
         reject(new Error("PARSER_TIMEOUT"));
-      }, PROCESSING_LIMITS.totalJobTimeoutSeconds * 1000);
+      }, PROCESSING_LIMITS.parserProcessTimeoutSeconds * 1000);
 
       child.on("error", (err) => {
         clearTimeout(timeout);

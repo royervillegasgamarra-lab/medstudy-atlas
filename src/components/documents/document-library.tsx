@@ -82,14 +82,17 @@ export function DocumentLibrary({
             d.id === docId
               ? {
                   ...d,
-                  processing_run: d.processing_run
-                    ? {
-                        ...d.processing_run,
-                        status: "PENDING",
-                        error_code: null,
-                        error_message: null,
-                      }
-                    : null,
+                  processing_run: {
+                    id:
+                      (res.data as { run_id?: string; id?: string })?.run_id ||
+                      (res.data as { run_id?: string; id?: string })?.id ||
+                      d.processing_run?.id ||
+                      "new-run",
+                    status: "PENDING",
+                    error_code: null,
+                    attempt_count: d.processing_run?.attempt_count ?? 0,
+                    page_count: d.processing_run?.page_count ?? null,
+                  },
                 }
               : d
           )

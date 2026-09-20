@@ -281,6 +281,19 @@ BEGIN
         RAISE EXCEPTION 'p_worker_id is required' USING ERRCODE = '22023';
     END IF;
 
+    -- Maintenance: Transition expired RUNNING runs that have exhausted attempts to FAILED_FINAL
+    UPDATE public.document_processing_runs
+    SET status = 'FAILED_FINAL',
+        error_code = 'JOB_RETRY_LIMIT',
+        claimed_by = NULL,
+        claim_token = NULL,
+        lease_expires_at = NULL,
+        finished_at = NOW(),
+        updated_at = NOW()
+    WHERE status = 'RUNNING'
+      AND lease_expires_at < NOW()
+      AND attempt_count >= 3;
+
     -- Generate fresh claim token
     v_claim_token := gen_random_uuid();
 
@@ -292,7 +305,6 @@ BEGIN
       AND d.archived_at IS NULL
       AND (
         (r.status = 'PENDING' AND r.attempt_count < 3)
-        OR (r.status = 'FAILED_RETRYABLE' AND r.attempt_count < 3)
         OR (r.status = 'RUNNING' AND r.lease_expires_at < NOW() AND r.attempt_count < 3)
       )
     ORDER BY r.created_at ASC

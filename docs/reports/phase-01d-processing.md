@@ -85,12 +85,12 @@
 - `src/parsers/document_parser.py` — Python parser CLI for qpdf preflight, PDFium text extraction, and Tesseract OCR with `--config` support.
 - `src/workers/documents-worker.ts` — TypeScript worker orchestrator, claim fencing, bounded reads, semantic provenance verification, and CLI entrypoint.
 - `supabase/migrations/20260920100000_document_processing_runs_and_pages.sql` — Database migration for runs, pages, composite FKs, claim tokens, and privileged RPCs.
-- `supabase/tests/database/04_processing_runs_rls.sql` — 43 pgTAP assertions for processing runs, pages, claim fencing, terminal retry semantics, and lease recovery.
+- `supabase/tests/database/04_processing_runs_rls.sql` — 47 pgTAP assertions for processing runs, pages, claim fencing, terminal retry semantics, and lease recovery.
 - `tests/fixtures/generate_phase_1d_fixtures.py` — Fixture generator for synthetic test PDFs.
-- `tests/unit/parser.test.ts` — Unit test suite for parser subprocess, config validation, and OCR timeout classification (15 tests).
+- `tests/unit/parser.test.ts` — Unit test suite for parser subprocess, config validation, text/page limits, and real monkeypatched OCR timeout classification (20 tests).
 - `tests/unit/provenance.test.ts` — Unit test suite for trusted Node orchestrator semantic provenance verification (8 tests).
-- `tests/integration/processing-worker.test.ts` — Integration test suite for worker, adversarial lease fencing, storage error classification, archive race closure, and retry idempotency (9 tests).
-- `tests/e2e/document-processing.spec.ts` — Playwright E2E test for processing UI lifecycle and retry (2 tests).
+- `tests/integration/processing-worker.test.ts` — Integration test suite for worker, adversarial lease fencing, storage error classification, archive race closure, blank page handling, crashed run maintenance, and retry idempotency (11 tests).
+- `tests/e2e/document-processing.spec.ts` — Playwright E2E test for processing UI lifecycle, legitimate fail RPC retry flow, and auto-enqueue recovery (2 tests).
 - `docs/reports/phase-01d-failure-matrix.md` — 34-scenario security and failure matrix with verified citations.
 - `docs/reports/phase-01d-processing.md` — Standardized execution report.
 
@@ -105,7 +105,7 @@
 - `docs/status.md` — Updated project status snapshot.
 - `docs/architecture/document-pipeline.md` — Completely rewritten to match implemented architecture, distinguishing IMPLEMENTED, DEFERRED, and DEPLOYMENT GATE.
 - `docs/security/threat-model.md` — Updated decompression bomb threat row with honest resource limits and deployment gate markers.
-- `scripts/create-review-package.ps1` — Added `requirements-parser.txt` staging, raw smoke evidence logs, and Phase 1D check definitions.
+- `scripts/create-review-package.ps1` — Added `requirements-parser.txt` staging, raw smoke evidence logs, single-quoted Tesseract labels, `git ls-files` repository tree, and Phase 1D check definitions.
 
 ---
 
@@ -115,7 +115,7 @@
   - Two-tier processing architecture: High-privilege Node.js orchestrator manages DB/Storage and spawns zero-privilege Python parser child.
   - Zero secrets passed to parser: The parser child cannot leak credentials even under adversarial PDF execution.
   - Subprocess preflight via `qpdf` separates structural validation from PDFium parsing.
-  - Claim fencing via `claim_token UUID` and PostgreSQL `FOR UPDATE SKIP LOCKED` guarantees single-worker job claims, lease recovery, and immunity to stale worker writes.
+  - Claim fencing via `claim_token UUID` and PostgreSQL `FOR UPDATE SKIP LOCKED` guarantees single-worker job claims, lease recovery ($900s > 600s$), and immunity to stale worker writes.
   - Semantic provenance verification in trusted Node layer ensures untrusted parser cannot falsify hashes, character counts, or page classifications.
   - Bounded reading of parser output prevents memory exhaustion from untrusted child processes before `readFile()`.
   - Database-enforced composite FK `(processing_run_id, document_id, user_id)` guarantees page ownership integrity.
@@ -126,10 +126,10 @@
 
 ## 4. Security & Compliance Review
 
-- **Subprocess Isolation**: Parser child process has stripped environment; secret keys, tokens, and database credentials are completely absent.
+- **Subprocess Isolation**: Parser child process has stripped environment; secret keys, tokens, and database credentials are completely absent. Note: stripped environment provides process credential isolation, not an OS sandbox; full OS sandboxing is a deployment gate.
 - **Tenant Isolation**: RLS enforces `auth.uid() = user_id` on all tables. Composite FKs enforce tenant boundaries at schema level.
 - **Claim Token Fencing**: Stale workers cannot mutate or overwrite active runs after lease expiration.
-- **Input Sanitization & Resource Budgets**: Hard limits on page count (300), OCR pages (60), page pixels (12M), character counts (100k/page, 3M/doc), and timeouts (preflight 10s, OCR 20s, total job 600s).
+- **Input Sanitization & Resource Budgets**: Hard limits on page count (300), OCR pages (60), page pixels (12M), character counts (100k/page, 3M/doc), and timeouts (preflight 10s, OCR 20s, parser process 600s, worker lease 900s).
 - **Prompt Injection**: Preserved as inert string data; never evaluated as code or system instructions.
 - **Temporary File Security**: Ephemeral directories isolated per job in `os.tmpdir()` and guaranteed to be deleted on completion.
 
@@ -142,12 +142,12 @@
   - `pnpm format:check` -> Exit Code 0 (PASS)
   - `pnpm lint` -> Exit Code 0 (PASS)
   - `pnpm typecheck` -> Exit Code 0 (PASS)
-  - `pnpm test` -> Exit Code 0 (PASS, 155 tests across 14 test files: 119 unit, 36 integration)
+  - `pnpm test` -> Exit Code 0 (PASS, 162 tests across 13 test files: 124 unit, 38 integration)
   - `pnpm db:reset` -> Exit Code 0 (PASS, migrations applied cleanly)
   - `pnpm db:types` -> Exit Code 0 (PASS, database types regenerated)
-  - `pnpm db:test` -> Exit Code 0 (PASS, 233 pgTAP tests across 4 suites: 43 in `04_processing_runs_rls.sql`)
+  - `pnpm db:test` -> Exit Code 0 (PASS, 237 pgTAP tests across 4 suites: 47 in `04_processing_runs_rls.sql`)
   - `pnpm build` -> Exit Code 0 (PASS, production build)
-  - `pnpm test:e2e` -> Exit Code 0 (PASS, 18 Playwright tests across 6 suites)
+  - `pnpm test:e2e` -> Exit Code 0 (PASS, 19 Playwright tests across 6 suites)
   - `pnpm audit` -> Exit Code 0 (PASS, 0 vulnerabilities)
 - **Local Binaries & Smoke Evidence**:
   - `tesseract --version`: `v5.5.3.20260724` (leptonica-1.87.0)

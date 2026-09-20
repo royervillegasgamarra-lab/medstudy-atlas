@@ -3,7 +3,7 @@
 -- for document_processing_runs and document_pages.
 
 BEGIN;
-SELECT plan(43);
+SELECT plan(47);
 
 -- Setup test users
 CREATE EXTENSION IF NOT EXISTS pgtap;
@@ -428,6 +428,12 @@ SELECT is(
     'Failure: Error code is PARSER_TIMEOUT'
 );
 
+-- Claim Semantics: claim_next_processing_run skips FAILED_RETRYABLE runs
+SELECT is_empty(
+    $$ SELECT * FROM public.claim_next_processing_run('worker-test-bob', 300) $$,
+    'Claim Semantics: claim_next_processing_run skips FAILED_RETRYABLE runs'
+);
+
 -- Terminal Retry Semantics:
 -- Simulate attempt 2 and 3 failures to reach FAILED_FINAL
 SELECT public.enqueue_document_processing_privileged('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', '22222222-2222-2222-2222-222222222222', '1.0.0');
@@ -463,6 +469,32 @@ SELECT throws_ok(
 SELECT is_empty(
     $$ SELECT * FROM public.claim_next_processing_run('worker-test-bob', 300) $$,
     'Terminal Semantics: Claim skips FAILED_FINAL runs'
+);
+
+-- Expired RUNNING run with >= 3 attempts transitions to FAILED_FINAL (JOB_RETRY_LIMIT)
+-- Setup an expired crashed run with 3 attempts
+UPDATE public.document_processing_runs
+SET status = 'RUNNING',
+    attempt_count = 3,
+    lease_expires_at = NOW() - INTERVAL '60 seconds'
+WHERE id = (SELECT run_id FROM bob_job_3);
+
+-- Call claim_next_processing_run which runs maintenance
+SELECT is_empty(
+    $$ SELECT * FROM public.claim_next_processing_run('worker-maintenance-test', 300) $$,
+    'Maintenance: No pending runs to claim after maintenance'
+);
+
+SELECT is(
+    (SELECT status FROM public.document_processing_runs WHERE id = (SELECT run_id FROM bob_job_3)),
+    'FAILED_FINAL',
+    'Exhausted Crashed Run: Expired RUNNING run with 3 attempts transitions to FAILED_FINAL'
+);
+
+SELECT is(
+    (SELECT error_code FROM public.document_processing_runs WHERE id = (SELECT run_id FROM bob_job_3)),
+    'JOB_RETRY_LIMIT',
+    'Exhausted Crashed Run: Error code set to JOB_RETRY_LIMIT'
 );
 
 -- ============================================================================

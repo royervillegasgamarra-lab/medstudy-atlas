@@ -284,10 +284,14 @@ describe("Document Parser Subprocess & Schemas", () => {
       );
       expect(manifest.status).toBe("SUCCEEDED");
       expect(manifest.page_count).toBe(1);
+      expect(manifest.no_text_page_count).toBe(1);
+      expect(manifest.native_text_page_count).toBe(0);
+      expect(manifest.ocr_page_count).toBe(0);
 
       const page1: PageProcessingResult = JSON.parse(
         await fs.readFile(path.join(outDir, "pages", "0001.json"), "utf-8")
       );
+      expect(page1.classification).toBe("NO_TEXT");
       expect(page1.text_content.trim()).toBe("");
       expect(page1.char_count).toBe(0);
     });
@@ -349,6 +353,39 @@ describe("Document Parser Subprocess & Schemas", () => {
       expect(manifest.error_code).toBe("PAGE_RENDER_LIMIT");
     });
 
+    it("fails with PARSER_OUTPUT_INVALID when --config is missing", async () => {
+      const inputPdf = path.join(fixturesDir, "valid_text.pdf");
+      const outDir = path.join(testTempDir, "out-missing-config");
+      const tempOcrDir = path.join(testTempDir, "temp-missing-config");
+
+      const args = [
+        parserScript,
+        "--input",
+        inputPdf,
+        "--output",
+        outDir,
+        "--temp",
+        tempOcrDir,
+        "--source-sha256",
+        "mock-sha-256",
+      ];
+
+      const safeEnv = createSafeParserEnvironment();
+      const res = spawnSync(pythonExe, args, {
+        env: safeEnv,
+        encoding: "utf-8",
+      });
+      expect(res.status).not.toBe(0);
+
+      const manifestRaw = await fs.readFile(
+        path.join(outDir, "manifest.json"),
+        "utf-8"
+      );
+      const manifest: ProcessingManifest = JSON.parse(manifestRaw);
+      expect(manifest.status).toBe("FAILED");
+      expect(manifest.error_code).toBe("PARSER_OUTPUT_INVALID");
+    });
+
     it("fails with PARSER_OUTPUT_INVALID when given out-of-range configuration", async () => {
       const { exitCode, outDir } = runParser(
         "valid_text.pdf",
@@ -368,35 +405,137 @@ describe("Document Parser Subprocess & Schemas", () => {
       expect(manifest.error_code).toBe("PARSER_OUTPUT_INVALID");
     });
 
-    it("classifies pytesseract RuntimeError timeout as OCR_TIMEOUT", () => {
-      // Direct Python unit test simulating pytesseract RuntimeError("Tesseract process timeout")
+    it("fails with TEXT_PAGE_LIMIT when page extracted text exceeds maxExtractedCharsPerPage", async () => {
+      const { exitCode, outDir } = runParser(
+        "valid_text.pdf",
+        "page-text-limit",
+        {
+          maxExtractedCharsPerPage: 10,
+        }
+      );
+      expect(exitCode).not.toBe(0);
+
+      const manifestRaw = await fs.readFile(
+        path.join(outDir, "manifest.json"),
+        "utf-8"
+      );
+      const manifest: ProcessingManifest = JSON.parse(manifestRaw);
+      expect(manifest.status).toBe("FAILED");
+      expect(manifest.error_code).toBe("TEXT_PAGE_LIMIT");
+    });
+
+    it("fails with TEXT_DOCUMENT_LIMIT when total extracted text exceeds maxExtractedCharsPerDocument", async () => {
+      const { exitCode, outDir } = runParser(
+        "valid_text.pdf",
+        "doc-text-limit",
+        {
+          maxExtractedCharsPerPage: 100_000,
+          maxExtractedCharsPerDocument: 20,
+        }
+      );
+      expect(exitCode).not.toBe(0);
+
+      const manifestRaw = await fs.readFile(
+        path.join(outDir, "manifest.json"),
+        "utf-8"
+      );
+      const manifest: ProcessingManifest = JSON.parse(manifestRaw);
+      expect(manifest.status).toBe("FAILED");
+      expect(manifest.error_code).toBe("TEXT_DOCUMENT_LIMIT");
+    });
+
+    it("fails with PAGE_LIMIT_EXCEEDED when document exceeds maxPagesPerDocument", async () => {
+      const { exitCode, outDir } = runParser(
+        "valid_text.pdf",
+        "page-count-limit",
+        {
+          maxPagesPerDocument: 1, // valid_text.pdf has 2 pages
+        }
+      );
+      expect(exitCode).not.toBe(0);
+
+      const manifestRaw = await fs.readFile(
+        path.join(outDir, "manifest.json"),
+        "utf-8"
+      );
+      const manifest: ProcessingManifest = JSON.parse(manifestRaw);
+      expect(manifest.status).toBe("FAILED");
+      expect(manifest.error_code).toBe("PAGE_LIMIT_EXCEEDED");
+    });
+
+    it("fails with OCR_PAGE_LIMIT when OCR budget maxOcrPagesPerDocument is exceeded", async () => {
+      const { exitCode, outDir } = runParser(
+        "scanned_image.pdf",
+        "ocr-page-limit",
+        {
+          maxOcrPagesPerDocument: 0,
+        }
+      );
+      expect(exitCode).not.toBe(0);
+
+      const manifestRaw = await fs.readFile(
+        path.join(outDir, "manifest.json"),
+        "utf-8"
+      );
+      const manifest: ProcessingManifest = JSON.parse(manifestRaw);
+      expect(manifest.status).toBe("FAILED");
+      expect(manifest.error_code).toBe("OCR_PAGE_LIMIT");
+    });
+
+    it("classifies pytesseract RuntimeError timeout as OCR_TIMEOUT during DocumentParser.process()", () => {
+      // Real production OCR timeout test: monkeypatch pytesseract.image_to_data during DocumentParser.process()
       const testPythonScript = `
 import sys, json
 from pathlib import Path
+import pytesseract
 from src.parsers.document_parser import DocumentParser
 
+# Monkeypatch pytesseract.image_to_data to raise timeout RuntimeError
+def mock_image_to_data(*args, **kwargs):
+    raise RuntimeError("Tesseract process timeout")
+
+pytesseract.image_to_data = mock_image_to_data
+
 out_dir = Path(sys.argv[1])
+temp_dir = out_dir / "temp"
+config_json = sys.argv[2]
+tesseract_exe = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] != "NONE" else None
+qpdf_exe = sys.argv[4] if len(sys.argv) > 4 and sys.argv[4] != "NONE" else None
+
 parser = DocumentParser(
     input_path=Path("tests/fixtures/documents/scanned_image.pdf"),
     output_dir=out_dir,
-    temp_dir=out_dir / "temp"
+    temp_dir=temp_dir,
+    qpdf_path=qpdf_exe,
+    tesseract_path=tesseract_exe,
+    source_sha256="mock-sha-256",
+    config_json=config_json
 )
 
-# Simulate pytesseract timeout exception handling
-try:
-    raise RuntimeError("Tesseract process timeout")
-except RuntimeError as r_err:
-    if "timeout" in str(r_err).lower():
-        parser.write_failure_manifest("OCR_TIMEOUT", 0)
-        sys.exit(0)
-    parser.write_failure_manifest("OCR_UNAVAILABLE", 0)
-    sys.exit(1)
+exit_code = parser.process()
+sys.exit(exit_code)
 `;
       const outDir = path.join(testTempDir, "ocr-timeout-test");
-      const res = spawnSync(pythonExe, ["-c", testPythonScript, outDir], {
-        encoding: "utf-8",
-      });
-      expect(res.status).toBe(0);
+      const safeEnv = createSafeParserEnvironment();
+      const res = spawnSync(
+        pythonExe,
+        [
+          "-c",
+          testPythonScript,
+          outDir,
+          JSON.stringify(PROCESSING_LIMITS),
+          tesseractExe || "NONE",
+          qpdfExe || "NONE",
+        ],
+        {
+          env: safeEnv,
+          encoding: "utf-8",
+        }
+      );
+      if (res.status === 0 && res.stderr) {
+        console.error(res.stderr);
+      }
+      expect(res.status).not.toBe(0);
 
       const manifestRaw = fsSyncReadFile(path.join(outDir, "manifest.json"));
       const manifest = JSON.parse(manifestRaw);

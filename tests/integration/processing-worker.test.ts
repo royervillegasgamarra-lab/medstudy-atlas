@@ -762,6 +762,16 @@ describe("Document Processing Worker & Isolation Integration (Phase 1D)", () => 
       expect(run1!.status).toBe("FAILED_RETRYABLE");
       expect(run1!.attempt_count).toBe(1);
 
+      // Verify claim_next_processing_run skips FAILED_RETRYABLE runs until explicitly re-enqueued
+      const { data: skippedClaim } = await adminClient.rpc(
+        "claim_next_processing_run",
+        {
+          p_worker_id: "worker-attempt-skip",
+          p_lease_seconds: 300,
+        }
+      );
+      expect((skippedClaim as unknown as unknown[]).length).toBe(0);
+
       // Attempt 2: re-enqueue, claim & fail retryable
       await adminClient.rpc("enqueue_document_processing_privileged", {
         p_document_id: docId,
@@ -839,6 +849,133 @@ describe("Document Processing Worker & Isolation Integration (Phase 1D)", () => 
         }
       );
       expect((emptyClaim as unknown as unknown[]).length).toBe(0);
+    });
+
+    it("processes blank_page.pdf through worker pipeline and records NO_TEXT classification and no_text_page_count = 1", async () => {
+      const fixturePath = path.resolve(
+        process.cwd(),
+        "tests/fixtures/documents/blank_page.pdf"
+      );
+      const fixtureBuffer = await fs.readFile(fixturePath);
+
+      const docId = crypto.randomUUID();
+      const storageKey = `${testUserId}/${docId}.pdf`;
+
+      // Upload to storage
+      await adminClient.storage
+        .from("documents")
+        .upload(storageKey, fixtureBuffer, {
+          contentType: "application/pdf",
+          upsert: true,
+        });
+
+      // Insert document record
+      await adminClient.from("documents").insert({
+        id: docId,
+        user_id: testUserId,
+        subject_id: testSubjectId,
+        original_filename: "blank_page.pdf",
+        storage_bucket: "documents",
+        storage_key: storageKey,
+        size_bytes: fixtureBuffer.length,
+        mime_type: "application/pdf",
+        status: "READY",
+      });
+
+      // Enqueue processing run
+      const { data: enqueueData } = await adminClient.rpc(
+        "enqueue_document_processing_privileged",
+        {
+          p_document_id: docId,
+          p_user_id: testUserId,
+        }
+      );
+      const runId = (enqueueData as unknown as Array<{ run_id: string }>)[0]
+        .run_id;
+
+      // Execute worker job
+      const result = await processNextDocumentJob("integration-worker-blank");
+      expect(result.claimed).toBe(true);
+      expect(result.runId).toBe(runId);
+      expect(result.status).toBe("SUCCEEDED");
+      expect(result.pageCount).toBe(1);
+
+      // Verify processing run record in database
+      const { data: runRecord } = await adminClient
+        .from("document_processing_runs")
+        .select("*")
+        .eq("id", runId)
+        .single();
+
+      expect(runRecord!.status).toBe("SUCCEEDED");
+      expect(runRecord!.page_count).toBe(1);
+      expect(runRecord!.no_text_page_count).toBe(1);
+      expect(runRecord!.native_text_page_count).toBe(0);
+      expect(runRecord!.ocr_page_count).toBe(0);
+
+      // Verify document_pages in database
+      const { data: pages } = await adminClient
+        .from("document_pages")
+        .select("*")
+        .eq("document_id", docId);
+
+      expect(pages!.length).toBe(1);
+      expect(pages![0].page_number).toBe(1);
+      expect(pages![0].classification).toBe("NO_TEXT");
+      expect(pages![0].char_count).toBe(0);
+      expect(pages![0].text_content.trim()).toBe("");
+    });
+
+    it("transitions expired RUNNING run with >= 3 attempts to FAILED_FINAL with JOB_RETRY_LIMIT during claim maintenance", async () => {
+      const docId = crypto.randomUUID();
+      const storageKey = `${testUserId}/${docId}.pdf`;
+
+      await adminClient.from("documents").insert({
+        id: docId,
+        user_id: testUserId,
+        subject_id: testSubjectId,
+        original_filename: "crashed_run.pdf",
+        storage_bucket: "documents",
+        storage_key: storageKey,
+        size_bytes: 1024,
+        mime_type: "application/pdf",
+        status: "READY",
+      });
+
+      const { data: enqueueData } = await adminClient.rpc(
+        "enqueue_document_processing_privileged",
+        {
+          p_document_id: docId,
+          p_user_id: testUserId,
+        }
+      );
+      const runId = (enqueueData as unknown as Array<{ run_id: string }>)[0]
+        .run_id;
+
+      // Simulate a crashed run that was RUNNING, had 3 attempts, and expired
+      await adminClient
+        .from("document_processing_runs")
+        .update({
+          status: "RUNNING",
+          attempt_count: 3,
+          lease_expires_at: new Date(Date.now() - 60000).toISOString(),
+        })
+        .eq("id", runId);
+
+      // Call claim_next_processing_run to trigger maintenance
+      await adminClient.rpc("claim_next_processing_run", {
+        p_worker_id: "worker-maintenance-test",
+        p_lease_seconds: 300,
+      });
+
+      const { data: runRecord } = await adminClient
+        .from("document_processing_runs")
+        .select("status, error_code")
+        .eq("id", runId)
+        .single();
+
+      expect(runRecord!.status).toBe("FAILED_FINAL");
+      expect(runRecord!.error_code).toBe("JOB_RETRY_LIMIT");
     });
   });
 });

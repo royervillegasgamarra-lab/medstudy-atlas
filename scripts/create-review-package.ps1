@@ -66,11 +66,7 @@ $gitDiff = git -C $repoRoot diff "$BaseBranch...HEAD"
 $gitDiff | Out-File -FilePath (Join-Path $stagingDir "git-diff.patch") -Encoding utf8
 
 # repository-tree.txt
-$allRepoFiles = Get-ChildItem -Path $repoRoot -Recurse -File | Where-Object {
-    $_.FullName -notmatch '[\\/](\.git|node_modules|review-output|\.temp|\.branches)[\\/]'
-} | ForEach-Object {
-    $_.FullName.Substring($repoRoot.Length + 1).Replace("\", "/")
-}
+$allRepoFiles = git -C $repoRoot ls-files
 $allRepoFiles | Out-File -FilePath (Join-Path $stagingDir "repository-tree.txt") -Encoding utf8
 
 # Infer PhaseSlug from branch if not provided or default
@@ -244,7 +240,7 @@ $reviewCriteria = switch -Regex ($PhaseSlug) {
             '8. [ ] **Storage Error Classification & Archive Race Closure**: Confirmed missing source classified as `SOURCE_MISSING` (terminal); bucket/network errors classified as `STORAGE_UNAVAILABLE` (retryable). Document archiving terminally cancels active runs and deletes derived pages.',
             '9. [ ] **Database Schema & Composite Foreign Keys**: `public.document_processing_runs` has `UNIQUE (id, document_id, user_id)`. `public.document_pages` enforces composite FK `(processing_run_id, document_id, user_id)` preventing cross-tenant references.',
             '10. [ ] **Terminal Retry Semantics & UI Integration**: Max 3 attempts enforced (`FAILED_FINAL` cannot be re-enqueued or claimed); UI displays live badges, "Error no recuperable", "Procesar", and "Reintentar".',
-            '11. [ ] **Automated Test Suites**: 43 pgTAP tests (`04_processing_runs_rls.sql`), 15 unit tests (`parser.test.ts`), 8 provenance tests (`provenance.test.ts`), 9 integration tests (`processing-worker.test.ts`), and Playwright E2E tests pass cleanly.',
+            '11. [ ] **Automated Test Suites**: 47 pgTAP tests (`04_processing_runs_rls.sql`), 20 unit tests (`parser.test.ts`), 8 provenance tests (`provenance.test.ts`), 11 integration tests (`processing-worker.test.ts`), and Playwright E2E tests pass cleanly.',
             '12. [ ] **Zero Cloud Resources & Paid Services**: Local-First execution; $0.00 cost.'
         )
     }
@@ -519,10 +515,10 @@ if (Test-Path (Join-Path $repoRoot "package.json")) {
 
     if ($PhaseSlug -match "01?d") {
         $checkDefinitions += @(
-            @{ Label = "Python Version (`python --version`)"; Key = "python-version"; Mandatory = $true },
-            @{ Label = "QPDF Version (`qpdf --version`)"; Key = "qpdf-version"; Mandatory = $true },
-            @{ Label = "Tesseract Version (`tesseract --version`)"; Key = "tesseract-version"; Mandatory = $true },
-            @{ Label = "Tesseract Languages (`tesseract --list-langs`)"; Key = "tesseract-langs"; Mandatory = $true }
+            @{ Label = 'Python Version (`python --version`)'; Key = "python-version"; Mandatory = $true },
+            @{ Label = 'QPDF Version (`qpdf --version`)'; Key = "qpdf-version"; Mandatory = $true },
+            @{ Label = 'Tesseract Version (`tesseract --version`)'; Key = "tesseract-version"; Mandatory = $true },
+            @{ Label = 'Tesseract Languages (`tesseract --list-langs`)'; Key = "tesseract-langs"; Mandatory = $true }
         )
     }
 
@@ -805,6 +801,19 @@ if ($PhaseSlug -match "00?c" -or (Test-Path (Join-Path $repoRoot "src")) -or (Te
     if (Test-Path (Join-Path $repoRoot "scripts")) {
         Copy-Item -Path (Join-Path $repoRoot "scripts") -Destination $sourceDir -Recurse -Force
     }
+
+    # Clean Python caches, virtualenvs, local env files, and tools from staging
+    Get-ChildItem -Path $stagingDir -Recurse -Directory -Filter "__pycache__" -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    Get-ChildItem -Path $stagingDir -Recurse -File -Include "*.pyc", "*.pyo" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+    if (Test-Path (Join-Path $sourceDir ".venv")) {
+        Remove-Item -Recurse -Force -Path (Join-Path $sourceDir ".venv") -ErrorAction SilentlyContinue
+    }
+    if (Test-Path (Join-Path $sourceDir "tools")) {
+        Remove-Item -Recurse -Force -Path (Join-Path $sourceDir "tools") -ErrorAction SilentlyContinue
+    }
+    if (Test-Path (Join-Path $sourceDir ".env.local")) {
+        Remove-Item -Force -Path (Join-Path $sourceDir ".env.local") -ErrorAction SilentlyContinue
+    }
 }
 
 # 5. Security Audit of Staging Directory
@@ -813,6 +822,10 @@ Write-Host "Running automated security scan on staging files..." -ForegroundColo
 $prohibitedPatterns = @(
     '\.git[\\/]',
     'node_modules[\\/]',
+    '__pycache__',
+    '\.pyc$',
+    '\.venv',
+    'tools[\\/]',
     '\.env(\..+)?$',
     '\.pem$',
     '\.key$',

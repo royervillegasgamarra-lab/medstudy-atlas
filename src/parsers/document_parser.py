@@ -117,7 +117,9 @@ class DocumentParser:
         self.pipeline_version = DEFAULT_PIPELINE_VERSION
 
         if not config_json:
-            return
+            sys.stderr.write("Error: --config argument is required for document parser invocation\n")
+            self.write_failure_manifest("PARSER_OUTPUT_INVALID", 0)
+            sys.exit(1)
 
         try:
             cfg = json.loads(config_json)
@@ -137,12 +139,12 @@ class DocumentParser:
             # Validate parameter ranges
             if not (1 <= self.max_pages_per_document <= 1000):
                 raise ValueError("maxPagesPerDocument out of range [1, 1000]")
-            if not (1 <= self.max_ocr_pages_per_document <= 500):
-                raise ValueError("maxOcrPagesPerDocument out of range [1, 500]")
-            if not (1000 <= self.max_extracted_chars_per_page <= 1_000_000):
-                raise ValueError("maxExtractedCharsPerPage out of range [1000, 1000000]")
-            if not (10_000 <= self.max_extracted_chars_per_document <= 50_000_000):
-                raise ValueError("maxExtractedCharsPerDocument out of range [10000, 50000000]")
+            if not (0 <= self.max_ocr_pages_per_document <= 500):
+                raise ValueError("maxOcrPagesPerDocument out of range [0, 500]")
+            if not (10 <= self.max_extracted_chars_per_page <= 1_000_000):
+                raise ValueError("maxExtractedCharsPerPage out of range [10, 1000000]")
+            if not (10 <= self.max_extracted_chars_per_document <= 50_000_000):
+                raise ValueError("maxExtractedCharsPerDocument out of range [10, 50000000]")
             if not (1_000_000 <= self.max_render_pixels_per_page <= 50_000_000):
                 raise ValueError("maxRenderPixelsPerPage out of range [1000000, 50000000]")
             if not (1 <= self.preflight_timeout_seconds <= 120):
@@ -273,6 +275,7 @@ class DocumentParser:
             sys.exit(1)
 
         total_extracted_chars = 0
+        ocr_attempts = 0
         native_text_pages = 0
         ocr_pages = 0
         no_text_pages = 0
@@ -309,11 +312,11 @@ class DocumentParser:
                 native_text_pages += 1
             else:
                 # Scanned or image-heavy page requires selective OCR
-                if ocr_pages >= self.max_ocr_pages_per_document:
+                if ocr_attempts >= self.max_ocr_pages_per_document:
                     self.write_failure_manifest("OCR_PAGE_LIMIT", warning_count)
                     sys.exit(1)
 
-                ocr_pages += 1
+                ocr_attempts += 1
                 temp_image_path = self.temp_dir / f"page_{page_number}_{int(time.time()*1000)}.png"
 
                 try:
@@ -356,12 +359,13 @@ class DocumentParser:
                     if confidences:
                         ocr_confidence = round(sum(confidences) / len(confidences), 2)
 
-                    # Determine hybrid or scanned classification
+                    # Determine hybrid, scanned, or no-text classification
                     if ocr_char_count >= 20 and native_char_count == 0:
                         classification = "SCANNED"
                         extraction_method = "OCR"
                         final_text = normalized_ocr_text
                         final_char_count = ocr_char_count
+                        ocr_pages += 1
                     elif ocr_char_count >= 20 and native_char_count > 0:
                         classification = "MIXED"
                         extraction_method = "HYBRID"
@@ -371,11 +375,13 @@ class DocumentParser:
                         else:
                             final_text = normalized_native_text
                             final_char_count = native_char_count
+                        ocr_pages += 1
                     elif native_char_count > 0:
                         classification = "TEXT_BASED"
                         extraction_method = "NATIVE"
                         final_text = normalized_native_text
                         final_char_count = native_char_count
+                        native_text_pages += 1
                     else:
                         classification = "NO_TEXT"
                         extraction_method = "NONE"
@@ -404,12 +410,12 @@ class DocumentParser:
 
             # Validate per-page character bounds
             if final_char_count > self.max_extracted_chars_per_page:
-                self.write_failure_manifest("PAGE_LIMIT_EXCEEDED", warning_count)
+                self.write_failure_manifest("TEXT_PAGE_LIMIT", warning_count)
                 sys.exit(1)
 
             total_extracted_chars += final_char_count
             if total_extracted_chars > self.max_extracted_chars_per_document:
-                self.write_failure_manifest("PAGE_LIMIT_EXCEEDED", warning_count)
+                self.write_failure_manifest("TEXT_DOCUMENT_LIMIT", warning_count)
                 sys.exit(1)
 
             # Page provenance output
