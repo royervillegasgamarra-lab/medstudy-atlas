@@ -10,10 +10,15 @@ if (typeof process.loadEnvFile === "function") {
   }
 }
 
+import path from "path";
+
 export default defineConfig({
   plugins: [react()],
   resolve: {
     tsconfigPaths: true,
+    alias: {
+      "server-only": path.resolve(process.cwd(), "tests/mocks/server-only.ts"),
+    },
   },
   test: {
     environment: "jsdom",

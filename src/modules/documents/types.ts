@@ -3,7 +3,8 @@
  * Phase 1C: Document Library & Secure Upload.
  */
 
-export type DocumentStatus = "UPLOADING" | "READY" | "REJECTED" | "FAILED";
+export type DocumentStatus =
+  "UPLOADING" | "CLEANUP_PENDING" | "READY" | "REJECTED" | "FAILED";
 
 export interface DocumentRecord {
   id: string;
@@ -41,8 +42,6 @@ export interface RequestUploadResult {
   documentId: string;
   storageBucket: string;
   storageKey: string;
-  signedUploadUrl: string;
-  signedUploadToken: string;
 }
 
 export interface FinalizeUploadInput {

@@ -7,7 +7,7 @@ import {
   getAuthorizedDocumentUrl,
   archiveDocument as archiveDocumentService,
 } from "./service";
-import type { RequestUploadInput } from "./types";
+import type { RequestUploadInput, RequestUploadResult } from "./types";
 
 export interface ActionResult<T = unknown> {
   success: boolean;
@@ -17,19 +17,11 @@ export interface ActionResult<T = unknown> {
 
 /**
  * Server action to request document upload authorization and create initial record.
- * P0-3: Returns exact signed upload URL and token for browser uploadToSignedUrl.
+ * P0: Returns documentId, storageBucket, and storageKey for direct authenticated upload.
  */
 export async function requestDocumentUploadAction(
   input: RequestUploadInput
-): Promise<
-  ActionResult<{
-    documentId: string;
-    storageBucket: string;
-    storageKey: string;
-    signedUploadUrl: string;
-    signedUploadToken: string;
-  }>
-> {
+): Promise<ActionResult<RequestUploadResult>> {
   const result = await requestDocumentUpload(input);
 
   if (result.error || !result.data) {

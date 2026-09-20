@@ -206,12 +206,11 @@ export type Database = {
         Args: { p_document_id: string; p_user_id: string };
         Returns: boolean;
       };
-      complete_onboarding: { Args: never; Returns: string };
-      finalize_document_upload_privileged: {
+      complete_document_cleanup_privileged: {
         Args: {
-          p_actual_size: number;
           p_document_id: string;
-          p_sha256?: string;
+          p_error_code: string;
+          p_status: string;
           p_user_id: string;
         };
         Returns: {
@@ -238,11 +237,12 @@ export type Database = {
           isSetofReturn: false;
         };
       };
-      reject_document_upload_privileged: {
+      complete_onboarding: { Args: never; Returns: string };
+      finalize_document_upload_privileged: {
         Args: {
+          p_actual_size: number;
           p_document_id: string;
-          p_error_code: string;
-          p_status?: string;
+          p_sha256?: string;
           p_user_id: string;
         };
         Returns: {
@@ -281,6 +281,32 @@ export type Database = {
           storage_bucket: string;
           storage_key: string;
         }[];
+      };
+      start_document_cleanup_privileged: {
+        Args: { p_document_id: string; p_user_id: string };
+        Returns: {
+          archived_at: string | null;
+          created_at: string;
+          id: string;
+          mime_type: string;
+          original_filename: string;
+          sha256_hash: string | null;
+          size_bytes: number;
+          status: string;
+          storage_bucket: string;
+          storage_key: string;
+          storage_provider: string;
+          subject_id: string | null;
+          updated_at: string;
+          user_id: string;
+          validation_error_code: string | null;
+        };
+        SetofOptions: {
+          from: "*";
+          to: "documents";
+          isOneToOne: true;
+          isSetofReturn: false;
+        };
       };
     };
     Enums: {

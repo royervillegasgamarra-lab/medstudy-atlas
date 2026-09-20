@@ -120,15 +120,14 @@ export function DocumentUploader({
         return;
       }
 
-      const { documentId, storageBucket, storageKey, signedUploadToken } =
-        authRes.data;
+      const { documentId, storageBucket, storageKey } = authRes.data;
 
-      // Step 2: Upload to exact signed upload URL (upsert: false)
+      // Step 2: Upload to exact reserved path via direct authenticated upload (upsert: false)
       setStep("UPLOADING_STORAGE");
       const supabase = createClient();
       const { error: uploadError } = await supabase.storage
         .from(storageBucket)
-        .uploadToSignedUrl(storageKey, signedUploadToken, file, {
+        .upload(storageKey, file, {
           contentType: "application/pdf",
           upsert: false,
         });

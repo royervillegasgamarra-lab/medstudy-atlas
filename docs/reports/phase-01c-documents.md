@@ -21,82 +21,89 @@
    - Authored [`src/lib/supabase/admin.ts`](file:///c:/Users/DR_%20CHAPATIN/Documents/GitHub/medstudy-atlas/src/lib/supabase/admin.ts) guarded with `import "server-only"`. Instantiates a singleton `supabaseAdmin` client with session persistence and auto-refresh disabled (`persistSession: false`, `autoRefreshToken: false`).
    - Updated [`.env.example`](file:///c:/Users/DR_%20CHAPATIN/Documents/GitHub/medstudy-atlas/.env.example) to include `SUPABASE_SECRET_KEY=your-supabase-secret-key` (name only, no real secrets).
 
-2. **Removal of Authenticated Finalization Bypass (`P0-1`) & Token Elimination**:
-   - Completely removed `finalize_token` from database schema, RPC signatures, domain types, and service methods.
-   - Replaced user-callable finalization with privileged server-only RPCs:
-     - `public.finalize_document_upload_privileged`: Callable ONLY by `service_role` (revoked from `PUBLIC`, `anon`, `authenticated`). Validates document belongs to user, is in `UPLOADING` or `VALIDATING` status, and verifies that `actual_size === reserved_size`. Transitions status to `READY`.
-     - `public.reject_document_upload_privileged`: Callable ONLY by `service_role`. Marks status `REJECTED` and records `validation_error_code`.
-   - Authenticated browser users cannot invoke the `READY` transition directly under any circumstances.
+2. **Removal of Reusable Signed-Upload Capability via Reservation-Backed Storage RLS (`P0`)**:
+   - Eliminated reusable signed upload tokens (`uploadToSignedUrl`) which previously permitted token reuse after physical object deletion.
+   - Replaced with direct authenticated upload governed strictly by a narrow reservation-backed Storage `INSERT` RLS policy on `storage.objects`:
+     ```sql
+     CREATE POLICY "Allow authenticated upload to exact reserved document"
+     ON storage.objects FOR INSERT TO authenticated
+     WITH CHECK (
+         bucket_id = 'documents'
+         AND EXISTS (
+             SELECT 1 FROM public.documents d
+             WHERE d.user_id = auth.uid()
+               AND d.storage_bucket = bucket_id
+               AND d.storage_key = storage.objects.name
+               AND d.status = 'UPLOADING'
+               AND d.archived_at IS NULL
+               AND d.created_at > (NOW() - INTERVAL '2 hours')
+         )
+     );
+     ```
+   - Direct `SELECT`, `UPDATE`, and `DELETE` on `storage.objects` are denied.
+   - As soon as a document transitions to `CLEANUP_PENDING`, `READY`, `REJECTED`, `FAILED`, or `archived_at IS NOT NULL`, Storage RLS immediately rejects any upload to that storage key.
 
-3. **Exact-Path Signed Uploads & Storage Mutation Denial (`P0-3`)**:
-   - Removed all direct mutation policies on `storage.objects` for `authenticated` users (`INSERT`, `UPDATE`, `DELETE`) and direct `SELECT`.
-   - Direct client upload attempts to unreserved or arbitrary paths (`{user_id}/arbitrary.pdf`) are denied with 403 / AccessDenied.
-   - Server generates an exact signed upload authorization via `supabaseAdmin.storage.from('documents').createSignedUploadUrl(storageKey)` for `{user_id}/{doc_id}/source.pdf`.
-   - Browser client uploads exclusively using `uploadToSignedUrl` with `upsert: false`.
+3. **Safe Two-Step Cleanup Lifecycle & Privileged Cleanup RPCs (`P0`)**:
+   - Introduced `CLEANUP_PENDING` document status:
+     `UPLOADING` → `CLEANUP_PENDING` → physical Storage `remove()` → `REJECTED` or `FAILED`.
+   - While in `CLEANUP_PENDING`:
+     - Storage RLS denies browser upload (`status != 'UPLOADING'`).
+     - Quota remains reserved (counts as 25 MB).
+     - If physical Storage `remove()` fails, status remains `CLEANUP_PENDING` (quota is NOT released, preventing orphaned blobs).
+     - Only upon confirmed physical deletion (or 404) does status transition to `REJECTED` or `FAILED`.
+   - Privileged server-only cleanup RPCs:
+     - `public.start_document_cleanup_privileged(UUID, UUID)`: transitions `UPLOADING` to `CLEANUP_PENDING`.
+     - `public.complete_document_cleanup_privileged(UUID, UUID, TEXT, TEXT)`: transitions `CLEANUP_PENDING` to target status (`REJECTED`/`FAILED`).
+     - Both granted strictly to `service_role` and revoked from `PUBLIC`, `anon`, and `authenticated`.
 
-4. **Total Storage Quota Reservation, Concurrency Safety & Upload Lease (`P0-4`, `P0-5`, `P1`)**:
-   - In `public.request_document_upload` RPC:
-     - Enforced per-user transaction advisory locking via `PERFORM pg_advisory_xact_lock(hashtext('doc_quota:' || v_user_id::text));` to serialize concurrent upload requests per user within the database transaction without external distributed infrastructure.
-     - Lazy cleanup of stale `UPLOADING` reservations older than the 2-hour upload lease window (`status = 'FAILED'`, `validation_error_code = 'UPLOAD_TIMEOUT'`).
-     - Quota byte calculation sums ALL active documents (`status = 'READY'`) and unexpired reservations (`status = 'UPLOADING' AND created_at > NOW() - INTERVAL '2 hours'`), preventing the 100 MB bypass where parallel uploads observe 0 bytes.
-     - Active document count check counts all active rows ($\le 10$).
-     - Declared size is recorded on row creation; finalization strictly enforces `actual_size === declared_size`.
+4. **Physical Cleanup of Abandoned Uploads (`P0`)**:
+   - Stale rows are never marked `FAILED` based on elapsed time alone in SQL.
+   - In `requestDocumentUpload`, the application layer performs lazy physical cleanup of expired `UPLOADING` reservations (> 2 hours): it transitions them to `CLEANUP_PENDING`, invokes physical Storage `remove()`, and only on confirmed deletion transitions to `FAILED` (`UPLOAD_TIMEOUT`).
 
-5. **Privileged Archive & Explicit Storage API Error Checking (`P0`, `P1`)**:
-   - Replaced user-callable `archive_document(UUID)` with `public.archive_document_privileged(UUID, UUID)` granted strictly to `service_role` and revoked from `PUBLIC`, `anon`, and `authenticated`.
-   - In `archiveDocument` Server Action:
-     - Verifies user authentication and document ownership.
-     - Idempotency: if already archived and physical blob is absent, returns `{ success: true }` cleanly.
-     - Performs physical Storage deletion via `supabaseAdmin.storage.from(bucket).remove([storageKey])`.
-     - Explicitly inspects `{ error: removeError }`. If removal fails, halts transition and does NOT mark archived in the database, ensuring quota is never prematurely released.
-     - Only after confirmed blob deletion, invokes `archive_document_privileged`.
+5. **Worst-Case In-Flight Storage Accounting (`P0`)**:
+   - In-flight upload accounting reserves the worst-case file size (25 MB = 26,214,400 bytes) for all active `UPLOADING` and `CLEANUP_PENDING` rows when checking against total storage quota (100 MB).
+   - Once a document reaches `READY`, its verified actual `size_bytes` is counted.
+   - Prevents quota bypass where a user declares 1 byte but uploads 25 MB.
+   - Concurrency is serialized per user via `pg_advisory_xact_lock`.
 
-6. **Authoritative Final Validation & 5-Byte Range Optimization (`P0-7`, `P1-1`)**:
-   - In `finalizeDocumentUpload`:
-     - Verifies user authentication and document ownership.
-     - Obtains actual object size directly from storage metadata (`supabaseAdmin.storage.from(bucket).info(storageKey)`).
-     - Confirms `info.size === doc.size_bytes` and `info.contentType === 'application/pdf'`.
-     - Inspects `%PDF-` magic bytes via HTTP Range request (`Range: bytes=0-4`) on an internal signed URL, downloading only 5 bytes instead of 25 MB into server memory.
-     - On validation failure: explicitly inspects Storage API `.remove()` result; on confirmed removal, sets `REJECTED` with error code `INVALID_PDF_SIGNATURE` or `SIZE_MISMATCH`, and never marks `READY`.
-     - On validation success: calls privileged `finalize_document_upload_privileged`.
+6. **Storage Error Differentiation (`P0`)**:
+   - Transient Storage errors (5xx, timeouts, network issues) are differentiated from confirmed missing objects (404).
+   - In `finalizeDocumentUpload`: transient errors return a recoverable validation error without rejecting the document, deleting blobs, or releasing quota.
+   - In `archiveDocument`: already-archived retry distinguishes 404 from 5xx before concluding physical absence.
 
-7. **Database Input Hardening (`P1-2`)**:
-   - Added database-level check constraints on `public.documents`:
-     - `chk_documents_filename_length`: `length(trim(original_filename)) > 0 AND length(trim(original_filename)) <= 255`.
-     - `chk_documents_size_positive`: `size_bytes > 0 AND size_bytes <= 26214400`.
-     - `chk_documents_mime_type`: `mime_type = 'application/pdf'`.
-     - `chk_documents_status`: simplified to `('UPLOADING', 'READY', 'REJECTED', 'FAILED')` (decorative `VALIDATING` state removed).
-   - Validated in `request_document_upload` RPC and enforced by database engine.
+7. **Bounded Range Read for PDF Validation (`P1`)**:
+   - PDF magic bytes validation reads the first 5 bytes via HTTP Range request (`Range: bytes=0-4`).
+   - Requires HTTP 206 Partial Content, buffer `byteLength <= 5`, and a 5000ms timeout (`AbortSignal.timeout(5000)`).
+   - If the server returns HTTP 200 (attempting full 25 MB download) or times out, fails safely as a transient validation error.
 
-8. **In-Database Security Test Suite (pgTAP) & Authoritative Storage Integration Tests (`P1-3`)**:
-   - Updated [`supabase/tests/database/03_documents_rls.sql`](file:///c:/Users/DR_%20CHAPATIN/Documents/GitHub/medstudy-atlas/supabase/tests/database/03_documents_rls.sql): 52 assertions covering table schema, absence of `finalize_token`, anon denials, direct mutation denials, storage.objects select denial, input constraint checks, canonical key format, quota reservation with `UPLOADING` rows, privileged finalization authorization, lease expiration rejection, authenticated denial on `archive_document_privileged`, User A / User B isolation, and archive idempotency. All 180 database tests pass across 3 suites.
-   - Updated [`tests/integration/storage-security.test.ts`](file:///c:/Users/DR_%20CHAPATIN/Documents/GitHub/medstudy-atlas/tests/integration/storage-security.test.ts): 12 authoritative integration tests using the real Supabase Storage API and local Supabase:
+8. **Privileged Server-Only Finalization and Archive (`P0`, `P1`)**:
+   - `finalize_document_upload_privileged`: callable ONLY by `service_role`.
+   - `archive_document_privileged`: callable ONLY by `service_role`.
+   - All privileged RPC results are explicitly inspected with error handling.
+
+9. **Authoritative In-Database & Integration Test Suites (`P0`, `P1`)**:
+   - `supabase/tests/database/03_documents_rls.sql`: 62 pgTAP assertions covering Storage RLS, `CLEANUP_PENDING`, worst-case in-flight accounting, and privileged cleanup RPC denials. Total 190 database tests pass.
+   - `tests/integration/storage-security.test.ts`: 20 comprehensive integration tests covering all required scenarios:
      1. Direct unauthorized Storage upload is strictly denied (P0-3).
      2. Arbitrary unreserved path upload is denied (P0-3).
-     3. Exact signed upload succeeds, creates physical object, transitions to READY, and authorized download works (P0-1, P0-3, P0-7).
-     4. Invalid PDF is rejected and physical blob is removed from Storage (P0-7, P1-1).
-     5. Declared size mismatch with a REAL uploaded object: rejects and physical blob cleanup succeeds (P0-4, P0-7).
-     6. Authenticated user cannot call archive_document_privileged directly (P0).
-     7. Storage deletion failure on archive does NOT free quota or mark archived (P0).
-     8. Cross-user download authorization denied via application boundary (P0-3).
-     9. Signed upload token reuse-after-delete experiment & lease mitigation (P1).
-     10. Abandoned upload reservation recovery via lazy cleanup (P1).
-     11. Application-level archive retry is idempotent (P1).
-     12. Concurrent quota reservations are serialized via advisory lock (P0-5).
-   - Zero hardcoded privileged credentials: loads `SUPABASE_SECRET_KEY` strictly from environment / `.env.local`.
-
-9. **Complete 26-Scenario Failure Matrix (`P1-4`)**:
-   - Authored [`docs/reports/phase-01c-failure-matrix.md`](file:///c:/Users/DR_%20CHAPATIN/Documents/GitHub/medstudy-atlas/docs/reports/phase-01c-failure-matrix.md) mapping all 26 security scenarios across database, integration, unit, and E2E layers.
-
-10. **E2E Browser Verification & PHI Warning (`P1-5`, `P1-6`)**:
-    - Added educational-use PHI warning banner in [`src/components/documents/document-uploader.tsx`](file:///c:/Users/DR_%20CHAPATIN/Documents/GitHub/medstudy-atlas/src/components/documents/document-uploader.tsx).
-    - Updated [`tests/e2e/document-management.spec.ts`](file:///c:/Users/DR_%20CHAPATIN/Documents/GitHub/medstudy-atlas/tests/e2e/document-management.spec.ts) with real automated coverage for:
-      - PHI warning banner visibility.
-      - Negative test: fake PDF container rejection in UI.
-      - Positive test: valid PDF upload transitioning to `READY` ("Listo").
-      - User-content XSS regression with hostile filename payload.
-      - Authorized signed download button verification.
-      - Document archival and UI quota update.
+     3. Exact reserved upload succeeds, creates physical object, transitions to READY, authorized download works (P0).
+     4. Re-upload to SAME storage key after delete is DENIED by Storage RLS (proves token reuse impossible) (P0).
+     5. Upload to storage key with status CLEANUP_PENDING is DENIED by Storage RLS (P0).
+     6. Upload to storage key with status READY is DENIED by Storage RLS (P0).
+     7. Upload to storage key with status REJECTED is DENIED by Storage RLS (P0).
+     8. Upload to storage key with status FAILED is DENIED by Storage RLS (P0).
+     9. Upload to storage key with archived_at IS NOT NULL is DENIED by Storage RLS (P0).
+     10. Upload to storage key with reservation > 2 hours old is DENIED by Storage RLS (P0).
+     11. Two-step cleanup lifecycle: UPLOADING → CLEANUP_PENDING → remove() → REJECTED (P0).
+     12. Two-step cleanup lifecycle: UPLOADING → CLEANUP_PENDING → remove() → FAILED (P0).
+     13. If Storage remove() fails during cleanup, status remains CLEANUP_PENDING and quota remains reserved (P0).
+     14. Stale upload lazy cleanup physically deletes object before marking FAILED (P0).
+     15. Worst-case in-flight quota: 4 active UPLOADING rows (25 MB each) reject 5th upload even if declared 1 byte (P0).
+     16. Storage 5xx error during finalizeDocumentUpload returns transient error without rejecting or deleting blob (P0).
+     17. Bounded range read enforces HTTP 206, byteLength <= 5, and timeout; HTTP 200 fails safely (P1).
+     18. Authenticated user cannot call any privileged RPC directly (finalize, archive, start_cleanup, complete_cleanup) (P0).
+     19. Storage deletion failure on archive does NOT free quota or mark archived (P0).
+     20. Cross-user download authorization denied via application boundary (P0).
 
 ---
 

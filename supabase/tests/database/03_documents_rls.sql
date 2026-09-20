@@ -1,5 +1,5 @@
 BEGIN;
-SELECT plan(52);
+SELECT plan(62);
 
 -- ============================================================================
 -- 1. Schema, Table & Column Structure
@@ -117,6 +117,20 @@ SELECT throws_ok(
     'Anon: EXECUTE denied on archive_document_privileged'
 );
 
+SELECT throws_ok(
+    $$ SELECT * FROM public.start_document_cleanup_privileged('11111111-1111-1111-1111-111111111111', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa') $$,
+    '42501',
+    NULL,
+    'Anon: EXECUTE denied on start_document_cleanup_privileged'
+);
+
+SELECT throws_ok(
+    $$ SELECT * FROM public.complete_document_cleanup_privileged('11111111-1111-1111-1111-111111111111', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'REJECTED', 'TEST') $$,
+    '42501',
+    NULL,
+    'Anon: EXECUTE denied on complete_document_cleanup_privileged'
+);
+
 -- ============================================================================
 -- 4. Authenticated Role: Least-Privilege Denials (P0-1, P0-3)
 -- ============================================================================
@@ -159,6 +173,21 @@ SELECT throws_ok(
     '42501',
     NULL,
     'Authenticated: EXECUTE denied on archive_document_privileged'
+);
+
+-- P0: Authenticated cannot execute privileged cleanup RPCs
+SELECT throws_ok(
+    $$ SELECT * FROM public.start_document_cleanup_privileged('11111111-1111-1111-1111-111111111111', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa') $$,
+    '42501',
+    NULL,
+    'Authenticated: EXECUTE denied on start_document_cleanup_privileged'
+);
+
+SELECT throws_ok(
+    $$ SELECT * FROM public.complete_document_cleanup_privileged('11111111-1111-1111-1111-111111111111', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'REJECTED', 'TEST') $$,
+    '42501',
+    NULL,
+    'Authenticated: EXECUTE denied on complete_document_cleanup_privileged'
 );
 
 -- P0-3: Direct storage.objects mutation and select policies are removed
@@ -369,6 +398,97 @@ SELECT results_eq(
 SELECT ok(
     (SELECT public.archive_document_privileged((SELECT doc_id FROM test_doc_context LIMIT 1), 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa')),
     'Archive: Idempotent repeat call succeeds'
+);
+
+-- ============================================================================
+-- 11. Storage RLS & Privileged Cleanup Lifecycle (P0)
+-- ============================================================================
+
+-- Create a fresh UPLOADING reservation for User A
+DO $$
+BEGIN
+    INSERT INTO public.documents (
+        id, user_id, original_filename, storage_provider, storage_bucket, storage_key, mime_type, size_bytes, status
+    ) VALUES (
+        '33333333-3333-3333-3333-333333333333',
+        'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+        'cleanup_test.pdf',
+        'supabase',
+        'documents',
+        'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/33333333-3333-3333-3333-333333333333/source.pdf',
+        'application/pdf',
+        1024,
+        'UPLOADING'
+    );
+END $$;
+
+-- Switch to authenticated User A
+SET LOCAL ROLE authenticated;
+SET LOCAL "request.jwt.claims" = '{"sub": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"}';
+
+-- User A can INSERT to exact reserved storage_key while in UPLOADING
+SELECT lives_ok(
+    $$ INSERT INTO storage.objects (bucket_id, name, owner)
+       VALUES ('documents', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/33333333-3333-3333-3333-333333333333/source.pdf', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa') $$,
+    'Storage RLS: User A can INSERT to exact reserved storage_key in UPLOADING status'
+);
+
+-- User A CANNOT INSERT to unreserved storage_key
+SELECT throws_ok(
+    $$ INSERT INTO storage.objects (bucket_id, name, owner)
+       VALUES ('documents', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/unreserved/source.pdf', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa') $$,
+    '42501',
+    NULL,
+    'Storage RLS: User A cannot INSERT to unreserved storage_key'
+);
+
+-- Service role transitions document to CLEANUP_PENDING
+SET LOCAL ROLE service_role;
+SELECT results_eq(
+    $$ SELECT status FROM public.start_document_cleanup_privileged(
+           '33333333-3333-3333-3333-333333333333',
+           'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+       ) $$,
+    $$ VALUES ('CLEANUP_PENDING') $$,
+    'Privileged cleanup: start_document_cleanup_privileged transitions UPLOADING to CLEANUP_PENDING'
+);
+
+-- Switch to authenticated User A: Storage RLS now DENIES insert
+SET LOCAL ROLE authenticated;
+SET LOCAL "request.jwt.claims" = '{"sub": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"}';
+
+SELECT throws_ok(
+    $$ INSERT INTO storage.objects (bucket_id, name, owner)
+       VALUES ('documents', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/33333333-3333-3333-3333-333333333333/source.pdf', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa') $$,
+    '42501',
+    NULL,
+    'Storage RLS: Denies INSERT when document status is CLEANUP_PENDING'
+);
+
+-- Service role completes cleanup to REJECTED
+SET LOCAL ROLE service_role;
+SELECT results_eq(
+    $$ SELECT status FROM public.complete_document_cleanup_privileged(
+           '33333333-3333-3333-3333-333333333333',
+           'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+           'REJECTED',
+           'TEST_ERROR'
+       ) $$,
+    $$ VALUES ('REJECTED') $$,
+    'Privileged cleanup: complete_document_cleanup_privileged transitions CLEANUP_PENDING to REJECTED'
+);
+
+-- complete_document_cleanup_privileged fails if document is not in CLEANUP_PENDING
+SELECT throws_ok(
+    $$ SELECT * FROM public.complete_document_cleanup_privileged(
+           (SELECT doc_id FROM test_doc_context LIMIT 1),
+           'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+           'FAILED',
+           'TEST_ERROR'
+       ) $$,
+    '22023',
+    NULL,
+    'Privileged cleanup: complete_document_cleanup_privileged rejects document not in CLEANUP_PENDING'
 );
 
 SELECT * FROM finish();
