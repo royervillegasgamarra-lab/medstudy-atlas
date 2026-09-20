@@ -51,7 +51,7 @@ DEFAULT_PIPELINE_VERSION = "1.0.0"
 def run_bounded_cmd(cmd: List[str], timeout_sec: int, max_bytes: int = 65536) -> Tuple[int, str, str]:
     """
     Executes a child process with a hard wall-clock timeout and bounded stream buffers (max_bytes)
-    to prevent memory exhaustion from verbose or adversarial diagnostic output.
+    to prevent memory exhaustion from verbose or adversarial diagnostic output (64 KB per stdout/stderr diagnostic stream).
     Raises:
       subprocess.TimeoutExpired: if process does not terminate within timeout_sec
       ValueError: if stdout or stderr stream exceeds max_bytes
@@ -403,7 +403,7 @@ class DocumentParser:
             else:
                 # Scanned or image-heavy page requires selective OCR
                 if ocr_attempts >= self.max_ocr_pages_per_document:
-                    self.write_failure_manifest("PARSER_RESOURCE_LIMIT", warning_count)
+                    self.write_failure_manifest("OCR_PAGE_LIMIT", warning_count)
                     sys.exit(1)
 
                 ocr_attempts += 1
@@ -477,6 +477,16 @@ class DocumentParser:
                         final_char_count = 0
                         no_text_pages += 1
 
+                except pytesseract.TesseractNotFoundError:
+                    self.write_failure_manifest("OCR_UNAVAILABLE", warning_count)
+                    sys.exit(1)
+                except pytesseract.TesseractError as t_err:
+                    err_msg = str(t_err).lower()
+                    if any(p in err_msg for p in ("failed loading language", "error opening data file", "couldn't load any languages", "tessdata")):
+                        self.write_failure_manifest("OCR_UNAVAILABLE", warning_count)
+                    else:
+                        self.write_failure_manifest("OCR_FAILED", warning_count)
+                    sys.exit(1)
                 except subprocess.TimeoutExpired:
                     self.write_failure_manifest("OCR_TIMEOUT", warning_count)
                     sys.exit(1)
@@ -484,10 +494,10 @@ class DocumentParser:
                     if "timeout" in str(r_err).lower():
                         self.write_failure_manifest("OCR_TIMEOUT", warning_count)
                         sys.exit(1)
-                    self.write_failure_manifest("OCR_UNAVAILABLE", warning_count)
+                    self.write_failure_manifest("OCR_FAILED", warning_count)
                     sys.exit(1)
                 except Exception:
-                    self.write_failure_manifest("OCR_UNAVAILABLE", warning_count)
+                    self.write_failure_manifest("OCR_FAILED", warning_count)
                     sys.exit(1)
                 finally:
                     if temp_image_path.exists():
@@ -498,12 +508,12 @@ class DocumentParser:
 
             # Validate per-page character bounds
             if final_char_count > self.max_extracted_chars_per_page:
-                self.write_failure_manifest("PARSER_RESOURCE_LIMIT", warning_count)
+                self.write_failure_manifest("TEXT_PAGE_LIMIT", warning_count)
                 sys.exit(1)
 
             total_extracted_chars += final_char_count
             if total_extracted_chars > self.max_extracted_chars_per_document:
-                self.write_failure_manifest("PARSER_RESOURCE_LIMIT", warning_count)
+                self.write_failure_manifest("TEXT_DOCUMENT_LIMIT", warning_count)
                 sys.exit(1)
 
             # Page provenance output

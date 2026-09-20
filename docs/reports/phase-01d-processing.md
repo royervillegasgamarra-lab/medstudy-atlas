@@ -26,7 +26,7 @@
    - Evaluates structural integrity via `qpdf --check`: structurally corrupt PDFs (exit code 2) are rejected with `PDF_CORRUPT`. Warnings (exit code 3) are recorded in `structural_warning_count` without failing compliant documents.
    - Checks page count via `qpdf --show-npages`: zero-page files reject with `PDF_ZERO_PAGES`; documents exceeding `maxPagesPerDocument` (300 pages) reject with `PDF_PAGE_COUNT_EXCEEDED`.
    - Preflight is bounded by a 10-second timeout; exceeding files fail with `PREFLIGHT_TIMEOUT`.
-   - Diagnostic output is capped at 64 KB via `run_bounded_cmd`; memory-exhaustion attacks kill child process and fail with `PREFLIGHT_FAILED`.
+   - Diagnostic output is capped at 64 KB per stdout/stderr diagnostic stream via `run_bounded_cmd`; memory-exhaustion attacks kill child process and fail with `PREFLIGHT_FAILED`.
 
 3. **Native Text Extraction & Page Provenance (`pypdfium2` 5.13.0)**:
    - Extracts native textpage stream without browser or Node-canvas.
@@ -41,8 +41,10 @@
    - Renders page to image in memory at controlled scale (144 DPI) with strict pixel limit validation (`PAGE_PIXEL_AREA_EXCEEDED`).
    - Spawns Tesseract strictly with arguments array (`pytesseract.image_to_data(..., lang="spa+eng", timeout=20)`).
    - Only Spanish (`spa`) and English (`eng`) language packs are invoked.
-   - OCR page count is bounded by `maxOcrPagesPerDocument` (60 pages); exceeding pages reject with `PARSER_RESOURCE_LIMIT`.
+   - OCR page count is bounded by `maxOcrPagesPerDocument` (60 pages); exceeding pages reject with `OCR_PAGE_LIMIT`.
    - Pytesseract timeouts (`RuntimeError("Tesseract process timeout")`) are classified cleanly as `OCR_TIMEOUT`.
+   - Unavailable Tesseract executable or missing languages are classified as `OCR_UNAVAILABLE`.
+   - Non-timeout execution failures are classified as `OCR_FAILED`.
    - Temporary rasterized images are deleted immediately after OCR extraction.
 
 5. **Trusted Node Orchestrator Semantic Provenance Verification (`src/workers/documents-worker.ts`)**:
@@ -54,12 +56,12 @@
 6. **Worker Lease Fencing & Concurrency Control (`claim_token UUID`)**:
    - `document_processing_runs` tracks `claimed_by TEXT`, `claim_token UUID`, and `lease_expires_at TIMESTAMPTZ`.
    - `claim_next_processing_run(p_worker_id, p_lease_seconds)` uses `FOR UPDATE SKIP LOCKED`, generates a fresh `claim_token = gen_random_uuid()`, sets `lease_expires_at = NOW() + INTERVAL` (default 900s, range 1–3600s), and recovers expired leases (`lease_expires_at < NOW()`).
-   - `persist_processing_run_results_privileged` and `fail_processing_run_privileged` require `status = 'RUNNING' AND claim_token = p_claim_token AND (lease_expires_at IS NULL OR lease_expires_at > NOW())`. Expired leases immediately revoke write authority and raise SQL exception 55000 even if no competing worker has reclaimed the row.
+   - `persist_processing_run_results_privileged` and `fail_processing_run_privileged` require `status = 'RUNNING' AND claim_token = p_claim_token AND lease_expires_at IS NOT NULL AND lease_expires_at > NOW()`. A missing or expired lease immediately revokes write authority and raises SQL exception 55000 even if no competing worker has reclaimed the row.
 
 7. **Bounded Retries & Terminal Semantics**:
    - Max 3 attempts enforced (`attempt_count >= maxRetries`).
    - Terminal failure status `FAILED_FINAL` cannot be re-enqueued or claimed.
-   - Non-retryable errors (`PDF_ENCRYPTED`, `PDF_CORRUPT`, `PDF_ZERO_PAGES`, `PDF_PAGE_COUNT_EXCEEDED`, `PREFLIGHT_FAILED`, `PAGE_DIMENSION_EXCEEDED`, `PAGE_PIXEL_AREA_EXCEEDED`, `PARSER_RESOURCE_LIMIT`, `PARSER_INTERNAL_ERROR`, `OCR_UNAVAILABLE`, `OCR_FAILED`, `PARSER_OUTPUT_INVALID`, `DOCUMENT_ARCHIVED`, `SOURCE_MISSING`, `WORKER_INTERNAL_ERROR`) transition immediately to `FAILED_FINAL`.
+   - Non-retryable errors (`PDF_ENCRYPTED`, `PDF_CORRUPT`, `PDF_ZERO_PAGES`, `PDF_PAGE_COUNT_EXCEEDED`, `PREFLIGHT_FAILED`, `PAGE_DIMENSION_EXCEEDED`, `PAGE_PIXEL_AREA_EXCEEDED`, `OCR_PAGE_LIMIT`, `TEXT_PAGE_LIMIT`, `TEXT_DOCUMENT_LIMIT`, `PARSER_INTERNAL_ERROR`, `OCR_UNAVAILABLE`, `OCR_FAILED`, `PARSER_OUTPUT_INVALID`, `DOCUMENT_ARCHIVED`, `SOURCE_MISSING`, `WORKER_INTERNAL_ERROR`) transition immediately to `FAILED_FINAL`.
    - Hard child process timeouts (`-1`) are classified immediately as `PARSER_TIMEOUT` (`p_retryable: true`) before manifest inspection via `classifyParserOutcome`.
    - UI renders "Error no recuperable" badge for `FAILED_FINAL` and restricts "Reintentar" button strictly to `FAILED_RETRYABLE`.
    - "Procesar" button rendered for `READY` documents without runs (auto-enqueue failure recovery).
@@ -75,7 +77,7 @@
 10. **Database Schema, Composite Foreign Keys & RLS (`20260920100000_document_processing_runs_and_pages.sql`)**:
     - `document_processing_runs`: `UNIQUE (id, document_id, user_id)` constraint.
     - `document_pages`: Composite foreign key `(processing_run_id, document_id, user_id) REFERENCES document_processing_runs(id, document_id, user_id) ON DELETE CASCADE`.
-    - Cryptographically prevents cross-tenant or mismatched page insertions at the schema level.
+    - Database-enforced composite foreign key prevents mismatched processing_run_id/document_id/user_id references at the schema level.
     - RLS: `SELECT` permitted only to `auth.uid() = user_id`. All direct `INSERT`, `UPDATE`, `DELETE` operations are REVOKED from `authenticated` and `anon`.
 
 ---
@@ -85,18 +87,18 @@
 ### Important Files Created
 - `requirements-parser.txt` — Pinned Python dependencies (`pypdfium2==5.13.0`, `pillow==12.3.0`, `pytesseract==0.3.13`).
 - `src/config/processing-limits.ts` — Centralized processing limits, dimension bounds (5000 pt), and resource budgets.
-- `src/modules/documents/processing-types.ts` — Zod schemas, domain types, 13 parser error codes, and 7 worker/database error codes (20 total).
-- `src/parsers/document_parser.py` — Python parser CLI for qpdf preflight (64 KB cap), PDFium text extraction, and Tesseract OCR with `--config` support.
+- `src/modules/documents/processing-types.ts` — Zod schemas, domain types, 15 parser error codes, and 7 worker/database error codes (22 total).
+- `src/parsers/document_parser.py` — Python parser CLI for qpdf preflight (64 KB per stream cap), PDFium text extraction, and Tesseract OCR with `--config` support.
 - `src/workers/documents-worker.ts` — TypeScript worker orchestrator, claim fencing, write revocation, bounded reads, `classifyParserOutcome`, semantic provenance verification, and bounded temp cleanup.
 - `supabase/migrations/20260920100000_document_processing_runs_and_pages.sql` — Database migration for runs, pages, composite FKs, claim tokens, lease bounds, write revocation, and privileged RPCs.
-- `supabase/tests/database/04_processing_runs_rls.sql` — 54 pgTAP assertions for processing runs, pages, claim fencing, terminal retry semantics, lease bounds, and expired/null lease write revocation.
+- `supabase/tests/database/04_processing_runs_rls.sql` — 55 pgTAP assertions for processing runs, pages, claim fencing, terminal retry semantics, lease bounds, and expired/null lease write revocation.
 - `tests/fixtures/generate_phase_1d_fixtures.py` — Fixture generator for synthetic test PDFs.
 - `tests/fixtures/mock_corrupt_parser.py` — Fixture parser for corrupt page JSON test ([PROC-29]).
-- `tests/unit/parser.test.ts` — Unit test suite for parser subprocess, config validation, dimension/pixel limits, `classifyParserOutcome`, and monkeypatched OCR timeout classification (36 tests).
+- `tests/unit/parser.test.ts` — Unit test suite for parser subprocess, config validation, dimension/pixel limits, `classifyParserOutcome`, and monkeypatched OCR timeout/error classification (38 tests).
 - `tests/unit/provenance.test.ts` — Unit test suite for trusted Node orchestrator semantic provenance verification (8 tests).
 - `tests/integration/processing-worker.test.ts` — Integration test suite for worker, adversarial lease fencing, write revocation, storage error classification, archive race closure, blank page handling, crashed run maintenance, and retry idempotency (17 tests).
 - `tests/e2e/document-processing.spec.ts` — Playwright E2E test for processing UI lifecycle, legitimate retry flow on failed run, and auto-enqueue recovery (2 tests).
-- `docs/reports/phase-01d-failure-matrix.md` — 37-scenario security and failure matrix with verified citations and complete 20-code error taxonomy.
+- `docs/reports/phase-01d-failure-matrix.md` — 37-scenario security and failure matrix with verified citations and complete 22-code error taxonomy.
 - `docs/reports/phase-01d-processing.md` — Standardized execution report.
 
 ### Important Files Modified
@@ -118,8 +120,8 @@
 
 - **Architecture Decisions**:
   - Two-tier processing architecture: High-privilege Node.js orchestrator manages DB/Storage and spawns unprivileged Python parser child whose environment does not inherit application credentials.
-  - Zero secrets passed to parser: The parser child cannot leak credentials even under adversarial PDF execution. Application credentials are not inherited through the parser child-process environment.
-  - Subprocess preflight via `qpdf` separates structural validation from PDFium parsing, with diagnostic output strictly bounded to 64 KB.
+  - Zero secrets passed to parser: Application credentials are not inherited through the parser child-process environment.
+  - Subprocess preflight via `qpdf` separates structural validation from PDFium parsing, with diagnostic output strictly bounded to 64 KB per stdout/stderr diagnostic stream.
   - Claim fencing via `claim_token UUID` and PostgreSQL `FOR UPDATE SKIP LOCKED` guarantees single-worker job claims, lease recovery ($900s > 600s$), and immediate write revocation on expired leases.
   - Semantic provenance verification in trusted Node layer ensures untrusted parser cannot falsify hashes, character counts, or page classifications.
   - Bounded reading of parser output prevents memory exhaustion from untrusted child processes before `readFile()`.
@@ -147,10 +149,10 @@
   - `pnpm format:check` -> Exit Code 0 (PASS)
   - `pnpm lint` -> Exit Code 0 (PASS)
   - `pnpm typecheck` -> Exit Code 0 (PASS)
-  - `pnpm test` -> Exit Code 0 (PASS, 184 tests across 13 test files: 140 unit, 44 integration)
+  - `pnpm test` -> Exit Code 0 (PASS, 186 tests across 13 test files: 142 unit, 44 integration)
   - `pnpm db:reset` -> Exit Code 0 (PASS, migrations applied cleanly)
   - `pnpm db:types` -> Exit Code 0 (PASS, database types regenerated)
-  - `pnpm db:test` -> Exit Code 0 (PASS, 244 pgTAP tests across 4 suites: 54 in `04_processing_runs_rls.sql`)
+  - `pnpm db:test` -> Exit Code 0 (PASS, 245 pgTAP tests across 4 suites: 55 in `04_processing_runs_rls.sql`)
   - `pnpm build` -> Exit Code 0 (PASS, production build)
   - `pnpm test:e2e` -> Exit Code 0 (PASS, 18 Playwright tests across 6 suites)
   - `pnpm audit` -> Exit Code 0 (PASS, 0 vulnerabilities)

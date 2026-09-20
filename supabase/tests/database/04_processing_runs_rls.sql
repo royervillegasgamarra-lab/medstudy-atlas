@@ -3,7 +3,7 @@
 -- for document_processing_runs and document_pages.
 
 BEGIN;
-SELECT plan(54);
+SELECT plan(55);
 
 -- Setup test users
 CREATE EXTENSION IF NOT EXISTS pgtap;
@@ -237,6 +237,13 @@ SELECT throws_ok(
     '22023',
     NULL,
     'Claim: Lease seconds > 3600 rejected'
+);
+
+SELECT throws_ok(
+    $$ SELECT * FROM public.claim_next_processing_run('worker-test-bounds', NULL) $$,
+    '22023',
+    NULL,
+    'Claim: Lease seconds NULL rejected'
 );
 
 -- ============================================================================

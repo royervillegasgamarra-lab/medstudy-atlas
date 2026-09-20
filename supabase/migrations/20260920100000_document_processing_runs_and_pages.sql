@@ -281,7 +281,7 @@ BEGIN
         RAISE EXCEPTION 'p_worker_id is required' USING ERRCODE = '22023';
     END IF;
 
-    IF p_lease_seconds < 1 OR p_lease_seconds > 3600 THEN
+    IF p_lease_seconds IS NULL OR p_lease_seconds < 1 OR p_lease_seconds > 3600 THEN
         RAISE EXCEPTION 'Lease seconds must be between 1 and 3600' USING ERRCODE = '22023';
     END IF;
 
