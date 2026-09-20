@@ -15,6 +15,8 @@ import {
 import {
   processingManifestSchema,
   pageProcessingResultSchema,
+  PROCESSING_ERROR_CODES,
+  PARSER_REPORTED_ERROR_CODES,
   type ProcessingManifest,
   type PageProcessingResult,
 } from "@/modules/documents/processing-types";
@@ -268,7 +270,33 @@ describe("Document Parser Subprocess & Schemas", () => {
       }
     });
 
-    it("rejects unknown error codes in failure manifest as PARSER_OUTPUT_INVALID", () => {
+    it("includes JOB_RETRY_LIMIT in PROCESSING_ERROR_CODES but rejects it from parser manifest", () => {
+      // JOB_RETRY_LIMIT is a database/worker maintenance error code, not a parser code
+      expect(PROCESSING_ERROR_CODES).toContain("JOB_RETRY_LIMIT");
+      expect(PROCESSING_ERROR_CODES.length).toBe(20);
+      expect(PARSER_REPORTED_ERROR_CODES.length).toBe(13);
+      expect(
+        (PARSER_REPORTED_ERROR_CODES as readonly string[]).includes(
+          "JOB_RETRY_LIMIT"
+        )
+      ).toBe(false);
+
+      // If parser emits JOB_RETRY_LIMIT, classifyParserOutcome rejects it as PARSER_OUTPUT_INVALID
+      const outcome = classifyParserOutcome({
+        exitCode: 1,
+        manifestExists: true,
+        manifestSize: 200,
+        manifestData: {
+          status: "FAILED",
+          error_code: "JOB_RETRY_LIMIT",
+        } as ParserManifestCandidate,
+      });
+      expect(outcome.status).toBe("FAILED");
+      expect(outcome.errorCode).toBe("PARSER_OUTPUT_INVALID");
+      expect(outcome.isRetryable).toBe(false);
+    });
+
+    it("[PROC-28] rejects unknown error codes in failure manifest as PARSER_OUTPUT_INVALID", () => {
       const outcome = classifyParserOutcome({
         exitCode: 1,
         manifestExists: true,
@@ -277,6 +305,20 @@ describe("Document Parser Subprocess & Schemas", () => {
           status: "FAILED",
           error_code: "BOGUS_ERROR_CODE",
         } as ParserManifestCandidate,
+      });
+      expect(outcome.status).toBe("FAILED");
+      expect(outcome.errorCode).toBe("PARSER_OUTPUT_INVALID");
+      expect(outcome.isRetryable).toBe(false);
+    });
+
+    it("[PROC-28] classifies manifest with schema violations as PARSER_OUTPUT_INVALID", () => {
+      const outcome = classifyParserOutcome({
+        exitCode: 1,
+        manifestExists: true,
+        manifestSize: 200,
+        manifestData: {
+          random_field: 123,
+        } as unknown as ParserManifestCandidate,
       });
       expect(outcome.status).toBe("FAILED");
       expect(outcome.errorCode).toBe("PARSER_OUTPUT_INVALID");
@@ -841,6 +883,187 @@ sys.exit(exit_code)
       const manifestRaw = fsSyncReadFile(path.join(outDir, "manifest.json"));
       const manifest = JSON.parse(manifestRaw);
       expect(manifest.error_code).toBe("OCR_TIMEOUT");
+      expect(manifest.status).toBe("FAILED");
+    });
+
+    it("[PROC-11] fails with PDF_ZERO_PAGES when preflight detects zero pages in document", () => {
+      const testPythonScript = `
+import sys
+from pathlib import Path
+import src.parsers.document_parser as dp
+from src.parsers.document_parser import DocumentParser
+
+orig_run_bounded = dp.run_bounded_cmd
+def mock_run_bounded(cmd, *args, **kwargs):
+    if "--show-npages" in cmd:
+        return 0, "0", ""
+    return orig_run_bounded(cmd, *args, **kwargs)
+
+dp.run_bounded_cmd = mock_run_bounded
+
+out_dir = Path(sys.argv[1])
+temp_dir = out_dir / "temp"
+config_json = sys.argv[2]
+qpdf_exe = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] != "NONE" else None
+
+parser = DocumentParser(
+    input_path=Path("tests/fixtures/documents/valid_text.pdf"),
+    output_dir=out_dir,
+    temp_dir=temp_dir,
+    qpdf_path=qpdf_exe,
+    source_sha256="mock-sha-256",
+    config_json=config_json
+)
+exit_code = parser.process()
+sys.exit(exit_code)
+`;
+      const outDir = path.join(testTempDir, "proc-11-zero-pages");
+      const safeEnv = createSafeParserEnvironment();
+      const res = spawnSync(
+        pythonExe,
+        [
+          "-c",
+          testPythonScript,
+          outDir,
+          JSON.stringify(PROCESSING_LIMITS),
+          qpdfExe || "NONE",
+        ],
+        {
+          env: safeEnv,
+          encoding: "utf-8",
+        }
+      );
+      expect(res.status).not.toBe(0);
+
+      const manifestRaw = fsSyncReadFile(path.join(outDir, "manifest.json"));
+      const manifest = JSON.parse(manifestRaw);
+      expect(manifest.error_code).toBe("PDF_ZERO_PAGES");
+      expect(manifest.status).toBe("FAILED");
+      expect(manifest.page_count).toBe(0);
+    });
+
+    it("[PROC-24] fails with PREFLIGHT_TIMEOUT when qpdf preflight command times out", () => {
+      const testPythonScript = `
+import sys, subprocess
+from pathlib import Path
+import src.parsers.document_parser as dp
+from src.parsers.document_parser import DocumentParser
+
+def mock_run_bounded(cmd, *args, **kwargs):
+    raise subprocess.TimeoutExpired(cmd, 10)
+
+dp.run_bounded_cmd = mock_run_bounded
+
+out_dir = Path(sys.argv[1])
+temp_dir = out_dir / "temp"
+config_json = sys.argv[2]
+qpdf_exe = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] != "NONE" else None
+
+parser = DocumentParser(
+    input_path=Path("tests/fixtures/documents/valid_text.pdf"),
+    output_dir=out_dir,
+    temp_dir=temp_dir,
+    qpdf_path=qpdf_exe,
+    source_sha256="mock-sha-256",
+    config_json=config_json
+)
+exit_code = parser.process()
+sys.exit(exit_code)
+`;
+      const outDir = path.join(testTempDir, "proc-24-preflight-timeout");
+      const safeEnv = createSafeParserEnvironment();
+      const res = spawnSync(
+        pythonExe,
+        [
+          "-c",
+          testPythonScript,
+          outDir,
+          JSON.stringify(PROCESSING_LIMITS),
+          qpdfExe || "NONE",
+        ],
+        {
+          env: safeEnv,
+          encoding: "utf-8",
+        }
+      );
+      expect(res.status).not.toBe(0);
+
+      const manifestRaw = fsSyncReadFile(path.join(outDir, "manifest.json"));
+      const manifest = JSON.parse(manifestRaw);
+      expect(manifest.error_code).toBe("PREFLIGHT_TIMEOUT");
+      expect(manifest.status).toBe("FAILED");
+    });
+
+    it("[PROC-34] run_bounded_cmd raises ValueError on stream > 64KB and preflight emits PREFLIGHT_FAILED", () => {
+      // 1. Direct test of run_bounded_cmd raising ValueError on > 64KB stdout
+      const directTestScript = `
+import sys
+from src.parsers.document_parser import run_bounded_cmd
+
+cmd = [sys.executable, "-c", "import sys; sys.stdout.write('A' * 70000)"]
+try:
+    run_bounded_cmd(cmd, timeout_sec=5, max_bytes=65536)
+    print("FAILED_TO_RAISE")
+    sys.exit(0)
+except ValueError:
+    print("RAISED_VALUE_ERROR")
+    sys.exit(42)
+`;
+      const directRes = spawnSync(pythonExe, ["-c", directTestScript], {
+        env: createSafeParserEnvironment(),
+        encoding: "utf-8",
+      });
+      expect(directRes.status).toBe(42);
+      expect(directRes.stdout).toContain("RAISED_VALUE_ERROR");
+
+      // 2. Parser integration test: preflight catches ValueError from run_bounded_cmd and emits PREFLIGHT_FAILED
+      const parserTestScript = `
+import sys
+from pathlib import Path
+import src.parsers.document_parser as dp
+from src.parsers.document_parser import DocumentParser
+
+def mock_run_bounded(cmd, *args, **kwargs):
+    raise ValueError("Diagnostic output exceeded limit of 65536 bytes")
+
+dp.run_bounded_cmd = mock_run_bounded
+
+out_dir = Path(sys.argv[1])
+temp_dir = out_dir / "temp"
+config_json = sys.argv[2]
+qpdf_exe = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] != "NONE" else None
+
+parser = DocumentParser(
+    input_path=Path("tests/fixtures/documents/valid_text.pdf"),
+    output_dir=out_dir,
+    temp_dir=temp_dir,
+    qpdf_path=qpdf_exe,
+    source_sha256="mock-sha-256",
+    config_json=config_json
+)
+exit_code = parser.process()
+sys.exit(exit_code)
+`;
+      const outDir = path.join(testTempDir, "proc-34-preflight-overflow");
+      const res = spawnSync(
+        pythonExe,
+        [
+          "-c",
+          parserTestScript,
+          outDir,
+          JSON.stringify(PROCESSING_LIMITS),
+          qpdfExe || "NONE",
+        ],
+        {
+          env: createSafeParserEnvironment(),
+          encoding: "utf-8",
+        }
+      );
+      expect(res.status).not.toBe(0);
+
+      const manifestRaw = fsSyncReadFile(path.join(outDir, "manifest.json"));
+      const manifest = JSON.parse(manifestRaw);
+      expect(manifest.error_code).toBe("PREFLIGHT_FAILED");
       expect(manifest.status).toBe("FAILED");
     });
   });

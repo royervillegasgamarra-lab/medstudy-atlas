@@ -403,9 +403,9 @@ BEGIN
             USING ERRCODE = '22023';
     END IF;
 
-    -- Lease expiration check: write authority is revoked once lease expires
-    IF v_run.lease_expires_at IS NOT NULL AND v_run.lease_expires_at <= NOW() THEN
-        RAISE EXCEPTION 'Processing run lease has expired' USING ERRCODE = '55000';
+    -- Active lease check: write authority requires an active, non-expired lease
+    IF v_run.lease_expires_at IS NULL OR v_run.lease_expires_at <= NOW() THEN
+        RAISE EXCEPTION 'Processing run lease is missing or expired; write authority revoked.' USING ERRCODE = '55000';
     END IF;
 
     -- Parent document must still be READY and unarchived
@@ -560,9 +560,9 @@ BEGIN
             USING ERRCODE = '22023';
     END IF;
 
-    -- Lease expiration check: write authority is revoked once lease expires
-    IF v_run.lease_expires_at IS NOT NULL AND v_run.lease_expires_at <= NOW() THEN
-        RAISE EXCEPTION 'Processing run lease has expired' USING ERRCODE = '55000';
+    -- Active lease check: write authority requires an active, non-expired lease
+    IF v_run.lease_expires_at IS NULL OR v_run.lease_expires_at <= NOW() THEN
+        RAISE EXCEPTION 'Processing run lease is missing or expired; write authority revoked.' USING ERRCODE = '55000';
     END IF;
 
     IF p_retryable AND v_run.attempt_count < 3 THEN

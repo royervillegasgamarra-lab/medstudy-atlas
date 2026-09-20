@@ -33,6 +33,7 @@ export const PROCESSING_ERROR_CODES = [
   "PARSER_OUTPUT_INVALID",
   "WORKER_INTERNAL_ERROR",
   "DOCUMENT_ARCHIVED",
+  "JOB_RETRY_LIMIT",
 ] as const;
 
 export type ProcessingErrorCode = (typeof PROCESSING_ERROR_CODES)[number];

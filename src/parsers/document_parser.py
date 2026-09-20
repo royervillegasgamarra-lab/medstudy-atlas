@@ -15,7 +15,7 @@ SECURITY INVARIANTS:
 - Bounded resource budgets enforced before expensive operations.
 - Render pixel limits enforced prior to bitmap rasterization.
 - Prompt injection text is extracted as inert USER_DOCUMENT_UNTRUSTED data.
-- Temporary files guaranteed removed in finally blocks.
+- Best-effort bounded cleanup on every exit path, with operational warning on residual failure.
 """
 
 import argparse

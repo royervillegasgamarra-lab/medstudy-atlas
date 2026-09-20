@@ -46,7 +46,7 @@ flowchart TD
         S --> T{"Provenance Valid?"}
         T -->|No| U["fail_processing_run_privileged\n(PARSER_OUTPUT_INVALID, non-retryable)"]
         T -->|Yes| V["persist_processing_run_results_privileged\n- Requires active claim_token\n- Verifies doc is READY & unarchived\n- Inserts document_pages with composite FK\n- Status: SUCCEEDED"]
-        V --> W["Guaranteed Temp Directory Deletion\n(finally block)"]
+        V --> W["Best-Effort Bounded Temp Cleanup\n(finally block)"]
         U --> W
     end
 ```
@@ -62,7 +62,7 @@ flowchart TD
 | **Selective OCR (`tesseract` 5.5.3)** | `IMPLEMENTED` | Local Tesseract invoked strictly with `spa+eng` language packs for pages with $< 50$ native characters. Capped at 60 OCR pages/doc (`PARSER_RESOURCE_LIMIT`) and 12M pixels/page. |
 | **Prompt Injection Defense** | `IMPLEMENTED` | All content classified as `USER_DOCUMENT_UNTRUSTED`. Prompt injection payloads are preserved verbatim as inert text data without executing. |
 | **Subprocess Security Boundary** | `IMPLEMENTED` | Application credentials are not inherited through the parser child-process environment. `createSafeParserEnvironment()` strips all application secrets (`SUPABASE_*`, `DATABASE_URL`, AI keys, auth tokens). Note: stripped environment provides credential isolation, not an OS sandbox. Full OS-level sandboxing (e.g. gVisor, Firecracker, or container seccomp) is an explicit production deployment gate. |
-| **Worker Queue & Claim Fencing** | `IMPLEMENTED` | `document_processing_runs` uses PostgreSQL `claim_next_processing_run` (`FOR UPDATE SKIP LOCKED`). Fenced by `claim_token UUID`, `claimed_by TEXT`, and `lease_expires_at TIMESTAMPTZ` (default 900s, bounds 1-3600s). Expired leases (`lease_expires_at <= NOW()`) immediately revoke write authority on persist/fail (raises 55000). |
+| **Worker Queue & Claim Fencing** | `IMPLEMENTED` | `document_processing_runs` uses PostgreSQL `claim_next_processing_run` (`FOR UPDATE SKIP LOCKED`). Fenced by `claim_token UUID`, `claimed_by TEXT`, and `lease_expires_at TIMESTAMPTZ` (default 900s, bounds 1-3600s). Expired leases (`lease_expires_at <= NOW()`) or missing leases (`lease_expires_at IS NULL`) immediately revoke write authority on persist/fail (raises 55000). |
 | **Bounded Retry & Terminal Semantics** | `IMPLEMENTED` | Max 3 attempts. `FAILED_RETRYABLE` may be manually re-enqueued; `FAILED_FINAL` cannot be re-enqueued or claimed. UI offers no retry for terminal failures. Hard parser timeouts (`-1`) classified as `PARSER_TIMEOUT` with `p_retryable: true` before manifest check. |
 | **Trusted Provenance Verification** | `IMPLEMENTED` | Trusted Node orchestrator verifies source SHA-256, per-page text SHA-256, Unicode code points, aggregate counters, and pipeline version before persistence. |
 | **Archive Race Closure** | `IMPLEMENTED` | `archive_document_privileged` marks active runs `FAILED_FINAL` (`DOCUMENT_ARCHIVED`) and deletes `document_pages`. Stale worker persist is denied on archived documents. |

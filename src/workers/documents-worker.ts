@@ -48,7 +48,14 @@ export interface WorkerRunResult {
   status?: "SUCCEEDED" | "FAILED";
   errorCode?: ProcessingErrorCode;
   pageCount?: number;
+  transitionCommitted?: boolean;
   error?: string;
+}
+
+export interface FailProcessingRunResult {
+  transitionCommitted: boolean;
+  error?: string;
+  fencedOrExpired?: boolean;
 }
 
 export interface ProvenanceValidationInput {
@@ -488,6 +495,72 @@ async function cleanupJobTempDir(
 }
 
 /**
+ * Safely invokes fail_processing_run_privileged RPC and inspects error.
+ * Ensures the worker never reports that a DB transition succeeded when it failed.
+ * Detects claim fencing, expired/missing lease write revocation (error 55000), or archived documents.
+ */
+export async function failActiveProcessingRun(
+  job: WorkerJobClaim,
+  errorCode: ProcessingErrorCode,
+  isRetryable: boolean
+): Promise<FailProcessingRunResult> {
+  try {
+    const { error: failRpcError } = await supabaseAdmin.rpc(
+      "fail_processing_run_privileged",
+      {
+        p_run_id: job.run_id,
+        p_claim_token: job.claim_token,
+        p_error_code: errorCode,
+        p_retryable: isRetryable,
+      }
+    );
+
+    if (failRpcError) {
+      const isFencedOrExpired =
+        failRpcError.code === "55000" ||
+        failRpcError.message?.includes("claim token") ||
+        failRpcError.message?.includes("lease");
+
+      return {
+        transitionCommitted: false,
+        error: failRpcError.message,
+        fencedOrExpired: isFencedOrExpired,
+      };
+    }
+
+    return { transitionCommitted: true };
+  } catch (err) {
+    return {
+      transitionCommitted: false,
+      error: err instanceof Error ? err.message : String(err),
+      fencedOrExpired: false,
+    };
+  }
+}
+
+function buildFailedRunResult(
+  job: WorkerJobClaim,
+  errorCode: ProcessingErrorCode,
+  failRes: FailProcessingRunResult
+): WorkerRunResult {
+  return {
+    claimed: true,
+    runId: job.run_id,
+    documentId: job.document_id,
+    status: "FAILED",
+    errorCode,
+    transitionCommitted: failRes.transitionCommitted,
+    ...(failRes.transitionCommitted
+      ? {}
+      : {
+          error: failRes.fencedOrExpired
+            ? "Fencing or lease expiration prevented mutating run state in database"
+            : "Database transition to failed state could not be committed",
+        }),
+  };
+}
+
+/**
  * Claims and processes a single document processing job with claim token fencing and semantic provenance verification.
  */
 export async function processNextDocumentJob(
@@ -515,7 +588,7 @@ export async function processNextDocumentJob(
 
   const job = (claims as unknown as WorkerJobClaim[])[0];
 
-  // Guaranteed temp working directory for this run: <tmpdir>/medstudy-atlas-proc/<run_id>/
+  // Best-effort bounded cleanup on every exit path, with operational warning on residual failure
   const jobTempDir = path.join(os.tmpdir(), "medstudy-atlas-proc", job.run_id);
   const inputPdfPath = path.join(jobTempDir, "input.pdf");
   const outputDir = path.join(jobTempDir, "output");
@@ -536,20 +609,12 @@ export async function processNextDocumentJob(
         : "STORAGE_UNAVAILABLE";
       const isRetryable = !isConfirmedMissing;
 
-      await supabaseAdmin.rpc("fail_processing_run_privileged", {
-        p_run_id: job.run_id,
-        p_claim_token: job.claim_token,
-        p_error_code: errorCode,
-        p_retryable: isRetryable,
-      });
-
-      return {
-        claimed: true,
-        runId: job.run_id,
-        documentId: job.document_id,
-        status: "FAILED",
+      const failRes = await failActiveProcessingRun(
+        job,
         errorCode,
-      };
+        isRetryable
+      );
+      return buildFailedRunResult(job, errorCode, failRes);
     }
 
     const pdfBuffer = Buffer.from(await pdfBlob.arrayBuffer());
@@ -563,10 +628,9 @@ export async function processNextDocumentJob(
 
     // 4. Invoke Python parser subprocess with stripped environment
     const pythonExe = resolvePythonExecutable();
-    const parserScript = path.resolve(
-      process.cwd(),
-      "src/parsers/document_parser.py"
-    );
+    const parserScript = process.env.MEDSTUDY_PARSER_SCRIPT
+      ? path.resolve(process.cwd(), process.env.MEDSTUDY_PARSER_SCRIPT)
+      : path.resolve(process.cwd(), "src/parsers/document_parser.py");
     const qpdfExe = resolveQpdfExecutable();
     const tesseractExe = resolveTesseractExecutable();
 
@@ -599,7 +663,7 @@ export async function processNextDocumentJob(
           const child = spawn(pythonExe, args, {
             env: safeEnv,
             shell: false,
-            stdio: ["ignore", "pipe", "pipe"],
+            stdio: ["ignore", "ignore", "ignore"],
           });
 
           const timeout = setTimeout(() => {
@@ -622,20 +686,12 @@ export async function processNextDocumentJob(
     // 5. Hard parser timeout check: immediately classify as PARSER_TIMEOUT with p_retryable: true
     // Do NOT inspect manifest.json on hard process timeout.
     if (parserExitCode === -1) {
-      await supabaseAdmin.rpc("fail_processing_run_privileged", {
-        p_run_id: job.run_id,
-        p_claim_token: job.claim_token,
-        p_error_code: "PARSER_TIMEOUT",
-        p_retryable: true,
-      });
-
-      return {
-        claimed: true,
-        runId: job.run_id,
-        documentId: job.document_id,
-        status: "FAILED",
-        errorCode: "PARSER_TIMEOUT",
-      };
+      const failRes = await failActiveProcessingRun(
+        job,
+        "PARSER_TIMEOUT",
+        true
+      );
+      return buildFailedRunResult(job, "PARSER_TIMEOUT", failRes);
     }
 
     // 6. Inspect and bound parser output manifest
@@ -662,38 +718,22 @@ export async function processNextDocumentJob(
 
     if (outcome.status === "FAILED") {
       const errorCode = outcome.errorCode || "PARSER_OUTPUT_INVALID";
-      await supabaseAdmin.rpc("fail_processing_run_privileged", {
-        p_run_id: job.run_id,
-        p_claim_token: job.claim_token,
-        p_error_code: errorCode,
-        p_retryable: outcome.isRetryable,
-      });
-
-      return {
-        claimed: true,
-        runId: job.run_id,
-        documentId: job.document_id,
-        status: "FAILED",
+      const failRes = await failActiveProcessingRun(
+        job,
         errorCode,
-      };
+        outcome.isRetryable
+      );
+      return buildFailedRunResult(job, errorCode, failRes);
     }
 
     // Narrow manifestData to ProcessingSuccessManifest
     if (!manifestData || manifestData.status !== "SUCCEEDED") {
-      await supabaseAdmin.rpc("fail_processing_run_privileged", {
-        p_run_id: job.run_id,
-        p_claim_token: job.claim_token,
-        p_error_code: "PARSER_OUTPUT_INVALID",
-        p_retryable: false,
-      });
-
-      return {
-        claimed: true,
-        runId: job.run_id,
-        documentId: job.document_id,
-        status: "FAILED",
-        errorCode: "PARSER_OUTPUT_INVALID",
-      };
+      const failRes = await failActiveProcessingRun(
+        job,
+        "PARSER_OUTPUT_INVALID",
+        false
+      );
+      return buildFailedRunResult(job, "PARSER_OUTPUT_INVALID", failRes);
     }
 
     const successManifest = manifestData;
@@ -703,20 +743,12 @@ export async function processNextDocumentJob(
       successManifest.page_count <= 0 ||
       successManifest.page_count > PROCESSING_LIMITS.maxPagesPerDocument
     ) {
-      await supabaseAdmin.rpc("fail_processing_run_privileged", {
-        p_run_id: job.run_id,
-        p_claim_token: job.claim_token,
-        p_error_code: "PARSER_OUTPUT_INVALID",
-        p_retryable: false,
-      });
-
-      return {
-        claimed: true,
-        runId: job.run_id,
-        documentId: job.document_id,
-        status: "FAILED",
-        errorCode: "PARSER_OUTPUT_INVALID",
-      };
+      const failRes = await failActiveProcessingRun(
+        job,
+        "PARSER_OUTPUT_INVALID",
+        false
+      );
+      return buildFailedRunResult(job, "PARSER_OUTPUT_INVALID", failRes);
     }
 
     // Check pages directory contents: exactly page_count files, no unexpected files
@@ -729,20 +761,12 @@ export async function processNextDocumentJob(
     }
 
     if (pageFiles.length !== successManifest.page_count) {
-      await supabaseAdmin.rpc("fail_processing_run_privileged", {
-        p_run_id: job.run_id,
-        p_claim_token: job.claim_token,
-        p_error_code: "PARSER_OUTPUT_INVALID",
-        p_retryable: false,
-      });
-
-      return {
-        claimed: true,
-        runId: job.run_id,
-        documentId: job.document_id,
-        status: "FAILED",
-        errorCode: "PARSER_OUTPUT_INVALID",
-      };
+      const failRes = await failActiveProcessingRun(
+        job,
+        "PARSER_OUTPUT_INVALID",
+        false
+      );
+      return buildFailedRunResult(job, "PARSER_OUTPUT_INVALID", failRes);
     }
 
     // 6. Trusted Provenance Verification: Read and validate each page result file
@@ -755,20 +779,12 @@ export async function processNextDocumentJob(
       // Bound page JSON size: maximum 1.5 MB per page
       const pageStat = await fs.stat(pageFilePath).catch(() => null);
       if (!pageStat || pageStat.size > 1.5 * 1024 * 1024) {
-        await supabaseAdmin.rpc("fail_processing_run_privileged", {
-          p_run_id: job.run_id,
-          p_claim_token: job.claim_token,
-          p_error_code: "PARSER_OUTPUT_INVALID",
-          p_retryable: false,
-        });
-
-        return {
-          claimed: true,
-          runId: job.run_id,
-          documentId: job.document_id,
-          status: "FAILED",
-          errorCode: "PARSER_OUTPUT_INVALID",
-        };
+        const failRes = await failActiveProcessingRun(
+          job,
+          "PARSER_OUTPUT_INVALID",
+          false
+        );
+        return buildFailedRunResult(job, "PARSER_OUTPUT_INVALID", failRes);
       }
 
       try {
@@ -776,20 +792,12 @@ export async function processNextDocumentJob(
         const pageObj = pageProcessingResultSchema.parse(JSON.parse(rawPage));
         pagesList.push(pageObj);
       } catch {
-        await supabaseAdmin.rpc("fail_processing_run_privileged", {
-          p_run_id: job.run_id,
-          p_claim_token: job.claim_token,
-          p_error_code: "PARSER_OUTPUT_INVALID",
-          p_retryable: false,
-        });
-
-        return {
-          claimed: true,
-          runId: job.run_id,
-          documentId: job.document_id,
-          status: "FAILED",
-          errorCode: "PARSER_OUTPUT_INVALID",
-        };
+        const failRes = await failActiveProcessingRun(
+          job,
+          "PARSER_OUTPUT_INVALID",
+          false
+        );
+        return buildFailedRunResult(job, "PARSER_OUTPUT_INVALID", failRes);
       }
     }
 
@@ -802,20 +810,12 @@ export async function processNextDocumentJob(
     });
 
     if (!provenance.valid) {
-      await supabaseAdmin.rpc("fail_processing_run_privileged", {
-        p_run_id: job.run_id,
-        p_claim_token: job.claim_token,
-        p_error_code: "PARSER_OUTPUT_INVALID",
-        p_retryable: false,
-      });
-
-      return {
-        claimed: true,
-        runId: job.run_id,
-        documentId: job.document_id,
-        status: "FAILED",
-        errorCode: "PARSER_OUTPUT_INVALID",
-      };
+      const failRes = await failActiveProcessingRun(
+        job,
+        "PARSER_OUTPUT_INVALID",
+        false
+      );
+      return buildFailedRunResult(job, "PARSER_OUTPUT_INVALID", failRes);
     }
 
     // 8. Atomically persist results with active claim token and transition run to SUCCEEDED
@@ -830,20 +830,12 @@ export async function processNextDocumentJob(
     );
 
     if (persistError) {
-      await supabaseAdmin.rpc("fail_processing_run_privileged", {
-        p_run_id: job.run_id,
-        p_claim_token: job.claim_token,
-        p_error_code: "WORKER_INTERNAL_ERROR",
-        p_retryable: true,
-      });
-
-      return {
-        claimed: true,
-        runId: job.run_id,
-        documentId: job.document_id,
-        status: "FAILED",
-        errorCode: "WORKER_INTERNAL_ERROR",
-      };
+      const failRes = await failActiveProcessingRun(
+        job,
+        "WORKER_INTERNAL_ERROR",
+        true
+      );
+      return buildFailedRunResult(job, "WORKER_INTERNAL_ERROR", failRes);
     }
 
     return {
@@ -854,7 +846,7 @@ export async function processNextDocumentJob(
       pageCount: successManifest.page_count,
     };
   } finally {
-    // Guaranteed cleanup of temporary working directory on success and failure
+    // Best-effort bounded cleanup on every exit path, with operational warning on residual failure
     await cleanupJobTempDir(jobTempDir, job.run_id);
   }
 }

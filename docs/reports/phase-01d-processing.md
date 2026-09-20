@@ -18,7 +18,7 @@
    - Implemented `createSafeParserEnvironment()` which strictly filters environment variables passed to the Python child process.
    - Child process receives NO `SUPABASE_SECRET_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `DATABASE_URL`, `OPENAI_API_KEY`, or user auth tokens.
    - Operating system variables (`PATH`, `SystemRoot`, `TEMP`, `LANG`) are retained.
-   - Input and output directories are isolated per job in `os.tmpdir()/medstudy-atlas-proc/{run_id}-{random_id}` and guaranteed to be deleted in a `finally` block with bounded retries (100ms, 200ms, 400ms) on Windows file-locking.
+   - Input and output directories are isolated per job in `os.tmpdir()/medstudy-atlas-proc/{run_id}-{random_id}` and cleaned up via best-effort bounded cleanup on every exit path with bounded retries (100ms, 200ms, 400ms) and operational warning on residual Windows file-locking.
    - Centralized processing limits (`src/config/processing-limits.ts`) are serialized and passed explicitly to the parser subprocess via the `--config <json>` CLI argument.
 
 2. **Structural Preflight & Integrity Enforcement (`qpdf` 12.4.1)**:
@@ -85,17 +85,18 @@
 ### Important Files Created
 - `requirements-parser.txt` — Pinned Python dependencies (`pypdfium2==5.13.0`, `pillow==12.3.0`, `pytesseract==0.3.13`).
 - `src/config/processing-limits.ts` — Centralized processing limits, dimension bounds (5000 pt), and resource budgets.
-- `src/modules/documents/processing-types.ts` — Zod schemas, domain types, 13 parser error codes, and 6 worker error codes (19 total).
+- `src/modules/documents/processing-types.ts` — Zod schemas, domain types, 13 parser error codes, and 7 worker/database error codes (20 total).
 - `src/parsers/document_parser.py` — Python parser CLI for qpdf preflight (64 KB cap), PDFium text extraction, and Tesseract OCR with `--config` support.
 - `src/workers/documents-worker.ts` — TypeScript worker orchestrator, claim fencing, write revocation, bounded reads, `classifyParserOutcome`, semantic provenance verification, and bounded temp cleanup.
 - `supabase/migrations/20260920100000_document_processing_runs_and_pages.sql` — Database migration for runs, pages, composite FKs, claim tokens, lease bounds, write revocation, and privileged RPCs.
-- `supabase/tests/database/04_processing_runs_rls.sql` — 51 pgTAP assertions for processing runs, pages, claim fencing, terminal retry semantics, lease bounds, and expired lease write revocation.
+- `supabase/tests/database/04_processing_runs_rls.sql` — 54 pgTAP assertions for processing runs, pages, claim fencing, terminal retry semantics, lease bounds, and expired/null lease write revocation.
 - `tests/fixtures/generate_phase_1d_fixtures.py` — Fixture generator for synthetic test PDFs.
-- `tests/unit/parser.test.ts` — Unit test suite for parser subprocess, config validation, dimension/pixel limits, `classifyParserOutcome`, and monkeypatched OCR timeout classification (31 tests).
+- `tests/fixtures/mock_corrupt_parser.py` — Fixture parser for corrupt page JSON test ([PROC-29]).
+- `tests/unit/parser.test.ts` — Unit test suite for parser subprocess, config validation, dimension/pixel limits, `classifyParserOutcome`, and monkeypatched OCR timeout classification (36 tests).
 - `tests/unit/provenance.test.ts` — Unit test suite for trusted Node orchestrator semantic provenance verification (8 tests).
-- `tests/integration/processing-worker.test.ts` — Integration test suite for worker, adversarial lease fencing, write revocation, storage error classification, archive race closure, blank page handling, crashed run maintenance, and retry idempotency (14 tests).
+- `tests/integration/processing-worker.test.ts` — Integration test suite for worker, adversarial lease fencing, write revocation, storage error classification, archive race closure, blank page handling, crashed run maintenance, and retry idempotency (17 tests).
 - `tests/e2e/document-processing.spec.ts` — Playwright E2E test for processing UI lifecycle, legitimate retry flow on failed run, and auto-enqueue recovery (2 tests).
-- `docs/reports/phase-01d-failure-matrix.md` — 37-scenario security and failure matrix with verified citations and complete 19-code error taxonomy.
+- `docs/reports/phase-01d-failure-matrix.md` — 37-scenario security and failure matrix with verified citations and complete 20-code error taxonomy.
 - `docs/reports/phase-01d-processing.md` — Standardized execution report.
 
 ### Important Files Modified
@@ -116,7 +117,7 @@
 ## 3. Architecture & Subsystem Impact
 
 - **Architecture Decisions**:
-  - Two-tier processing architecture: High-privilege Node.js orchestrator manages DB/Storage and spawns zero-privilege Python parser child.
+  - Two-tier processing architecture: High-privilege Node.js orchestrator manages DB/Storage and spawns unprivileged Python parser child whose environment does not inherit application credentials.
   - Zero secrets passed to parser: The parser child cannot leak credentials even under adversarial PDF execution. Application credentials are not inherited through the parser child-process environment.
   - Subprocess preflight via `qpdf` separates structural validation from PDFium parsing, with diagnostic output strictly bounded to 64 KB.
   - Claim fencing via `claim_token UUID` and PostgreSQL `FOR UPDATE SKIP LOCKED` guarantees single-worker job claims, lease recovery ($900s > 600s$), and immediate write revocation on expired leases.
@@ -132,10 +133,10 @@
 
 - **Subprocess Isolation**: Application credentials are not inherited through the parser child-process environment. `createSafeParserEnvironment()` strips all application secrets (`SUPABASE_*`, `DATABASE_URL`, AI keys, auth tokens). Note: stripped environment provides process credential isolation, not an OS sandbox; full OS sandboxing is a deployment gate.
 - **Tenant Isolation**: RLS enforces `auth.uid() = user_id` on all tables. Composite FKs enforce tenant boundaries at schema level.
-- **Claim Token Fencing & Write Revocation**: Stale workers cannot mutate or overwrite active runs after lease expiration. `persist_processing_run_results_privileged` and `fail_processing_run_privileged` reject expired leases with SQL exception 55000.
+- **Claim Token Fencing & Write Revocation**: Stale workers cannot mutate or overwrite active runs after lease expiration. `persist_processing_run_results_privileged` and `fail_processing_run_privileged` reject expired or null leases with SQL exception 55000.
 - **Input Sanitization & Resource Budgets**: Hard limits on page count (300), single-axis dimension (5000 pt), page pixels (12M), OCR pages (60), character counts (100k/page, 3M/doc), and timeouts (preflight 10s, OCR 20s, parser process 600s, worker lease 900s).
 - **Prompt Injection**: Preserved as inert string data; never evaluated as code or system instructions.
-- **Temporary File Security**: Ephemeral directories isolated per job in `os.tmpdir()` and deleted with bounded retries on completion. Windows locking residual risk logged cleanly without failing the job.
+- **Temporary File Security**: Ephemeral directories isolated per job in `os.tmpdir()` and cleaned up via best-effort bounded cleanup on every exit path with bounded retries; residual Windows locking logged as operational warning.
 
 ---
 
@@ -146,10 +147,10 @@
   - `pnpm format:check` -> Exit Code 0 (PASS)
   - `pnpm lint` -> Exit Code 0 (PASS)
   - `pnpm typecheck` -> Exit Code 0 (PASS)
-  - `pnpm test` -> Exit Code 0 (PASS, 176 tests across 13 test files: 135 unit, 41 integration)
+  - `pnpm test` -> Exit Code 0 (PASS, 184 tests across 13 test files: 140 unit, 44 integration)
   - `pnpm db:reset` -> Exit Code 0 (PASS, migrations applied cleanly)
   - `pnpm db:types` -> Exit Code 0 (PASS, database types regenerated)
-  - `pnpm db:test` -> Exit Code 0 (PASS, 241 pgTAP tests across 4 suites: 51 in `04_processing_runs_rls.sql`)
+  - `pnpm db:test` -> Exit Code 0 (PASS, 244 pgTAP tests across 4 suites: 54 in `04_processing_runs_rls.sql`)
   - `pnpm build` -> Exit Code 0 (PASS, production build)
   - `pnpm test:e2e` -> Exit Code 0 (PASS, 18 Playwright tests across 6 suites)
   - `pnpm audit` -> Exit Code 0 (PASS, 0 vulnerabilities)

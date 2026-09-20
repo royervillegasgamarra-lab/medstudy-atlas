@@ -10,6 +10,8 @@ import {
   processNextDocumentJob,
   createSafeParserEnvironment,
   resolvePythonExecutable,
+  failActiveProcessingRun,
+  type WorkerJobClaim,
 } from "@/workers/documents-worker";
 
 // Load local environment variables if available
@@ -457,7 +459,7 @@ describe("Document Processing Worker & Isolation Integration (Phase 1D)", () => 
     });
   });
 
-  describe("Guaranteed Temp Directory Cleanup", () => {
+  describe("Best-Effort Bounded Temp Directory Cleanup", () => {
     it("ensures no temporary files remain on the filesystem after successful and failed processing", async () => {
       const baseTempDir = path.join(os.tmpdir(), "medstudy-atlas-proc");
 
@@ -1136,9 +1138,7 @@ describe("Document Processing Worker & Isolation Integration (Phase 1D)", () => 
         }
       );
       expect(persistError).toBeDefined();
-      expect(persistError?.message).toContain(
-        "Processing run lease has expired"
-      );
+      expect(persistError?.message).toContain("lease is missing or expired");
 
       // Attempt to fail run with expired lease -> MUST be rejected (code 55000)
       const { error: failError } = await adminClient.rpc(
@@ -1151,7 +1151,207 @@ describe("Document Processing Worker & Isolation Integration (Phase 1D)", () => 
         }
       );
       expect(failError).toBeDefined();
-      expect(failError?.message).toContain("Processing run lease has expired");
+      expect(failError?.message).toContain("lease is missing or expired");
+    });
+
+    it("revokes write authority when lease_expires_at is NULL", async () => {
+      const docId = crypto.randomUUID();
+      const storageKey = `${testUserId}/${docId}.pdf`;
+
+      await adminClient.from("documents").insert({
+        id: docId,
+        user_id: testUserId,
+        subject_id: testSubjectId,
+        original_filename: "null_lease_test.pdf",
+        storage_bucket: "documents",
+        storage_key: storageKey,
+        size_bytes: 1024,
+        mime_type: "application/pdf",
+        status: "READY",
+      });
+
+      const { data: enqueueData } = await adminClient.rpc(
+        "enqueue_document_processing_privileged",
+        { p_document_id: docId, p_user_id: testUserId }
+      );
+      const runId = (enqueueData as unknown as Array<{ run_id: string }>)[0]
+        .run_id;
+
+      const claimToken = crypto.randomUUID();
+      await adminClient
+        .from("document_processing_runs")
+        .update({
+          status: "RUNNING",
+          claimed_by: "worker-null-lease-test",
+          claim_token: claimToken,
+          lease_expires_at: null,
+        })
+        .eq("id", runId);
+
+      // Attempt to persist results with NULL lease -> MUST be rejected (code 55000)
+      const { error: persistError } = await adminClient.rpc(
+        "persist_processing_run_results_privileged",
+        {
+          p_run_id: runId,
+          p_claim_token: claimToken,
+          p_manifest: { page_count: 0 },
+          p_pages: [],
+        }
+      );
+      expect(persistError).toBeDefined();
+      expect(persistError?.message).toContain("lease is missing or expired");
+
+      // Attempt to fail run with NULL lease -> MUST be rejected (code 55000)
+      const { error: failError } = await adminClient.rpc(
+        "fail_processing_run_privileged",
+        {
+          p_run_id: runId,
+          p_claim_token: claimToken,
+          p_error_code: "PARSER_TIMEOUT",
+          p_retryable: true,
+        }
+      );
+      expect(failError).toBeDefined();
+      expect(failError?.message).toContain("lease is missing or expired");
+
+      // Clean up test run so it does not linger in queue
+      await adminClient
+        .from("document_processing_runs")
+        .update({ status: "FAILED_FINAL", error_code: "WORKER_INTERNAL_ERROR" })
+        .eq("id", runId);
+    });
+
+    it("failActiveProcessingRun gracefully handles fenced or expired claims without throwing unhandled exceptions", async () => {
+      const docId = crypto.randomUUID();
+      const storageKey = `${testUserId}/${docId}.pdf`;
+
+      await adminClient.from("documents").insert({
+        id: docId,
+        user_id: testUserId,
+        subject_id: testSubjectId,
+        original_filename: "fenced_fail_helper_test.pdf",
+        storage_bucket: "documents",
+        storage_key: storageKey,
+        size_bytes: 1024,
+        mime_type: "application/pdf",
+        status: "READY",
+      });
+
+      const { data: enqueueData } = await adminClient.rpc(
+        "enqueue_document_processing_privileged",
+        { p_document_id: docId, p_user_id: testUserId }
+      );
+      const runId = (enqueueData as unknown as Array<{ run_id: string }>)[0]
+        .run_id;
+
+      const claimToken = crypto.randomUUID();
+      await adminClient
+        .from("document_processing_runs")
+        .update({
+          status: "RUNNING",
+          claimed_by: "worker-fenced-test",
+          claim_token: claimToken,
+          lease_expires_at: new Date(Date.now() - 5000).toISOString(),
+        })
+        .eq("id", runId);
+
+      const job: WorkerJobClaim = {
+        run_id: runId,
+        document_id: docId,
+        user_id: testUserId,
+        pipeline_version: "1.0.0",
+        claim_token: claimToken,
+        storage_bucket: "documents",
+        storage_key: storageKey,
+        original_filename: "fenced_fail_helper_test.pdf",
+        size_bytes: 1024,
+        attempt_count: 1,
+      };
+
+      // Call failActiveProcessingRun with expired lease
+      const result = await failActiveProcessingRun(job, "PARSER_TIMEOUT", true);
+
+      // Must report transitionCommitted: false and fencedOrExpired: true without throwing
+      expect(result.transitionCommitted).toBe(false);
+      expect(result.fencedOrExpired).toBe(true);
+      expect(result.error).toBeDefined();
+
+      // Clean up test run
+      await adminClient
+        .from("document_processing_runs")
+        .update({ status: "FAILED_FINAL", error_code: "WORKER_INTERNAL_ERROR" })
+        .eq("id", runId);
+    });
+
+    it("[PROC-29] transitions run to FAILED_FINAL with PARSER_OUTPUT_INVALID and inserts zero pages when page JSON is corrupt", async () => {
+      // Ensure deterministic queue state
+      await adminClient
+        .from("document_processing_runs")
+        .update({ status: "FAILED_FINAL", error_code: "WORKER_INTERNAL_ERROR" })
+        .in("status", ["PENDING", "RUNNING"]);
+      const fixturePath = path.resolve(
+        process.cwd(),
+        "tests/fixtures/documents/valid_text.pdf"
+      );
+      const fixtureBuffer = await fs.readFile(fixturePath);
+
+      const docId = crypto.randomUUID();
+      const storageKey = `${testUserId}/${docId}.pdf`;
+
+      // Upload valid PDF
+      await adminClient.storage
+        .from("documents")
+        .upload(storageKey, fixtureBuffer, {
+          contentType: "application/pdf",
+          upsert: true,
+        });
+
+      await adminClient.from("documents").insert({
+        id: docId,
+        user_id: testUserId,
+        subject_id: testSubjectId,
+        original_filename: "corrupt_page_json_test.pdf",
+        storage_bucket: "documents",
+        storage_key: storageKey,
+        size_bytes: fixtureBuffer.length,
+        mime_type: "application/pdf",
+        status: "READY",
+      });
+
+      await adminClient.rpc("enqueue_document_processing_privileged", {
+        p_document_id: docId,
+        p_user_id: testUserId,
+      });
+
+      // Use mock corrupt parser script that emits a corrupted 0002.json
+      process.env.MEDSTUDY_PARSER_SCRIPT =
+        "tests/fixtures/mock_corrupt_parser.py";
+
+      try {
+        const res = await processNextDocumentJob("worker-proc-29-test");
+        expect(res.claimed).toBe(true);
+        expect(res.status).toBe("FAILED");
+        expect(res.errorCode).toBe("PARSER_OUTPUT_INVALID");
+
+        // Verify run record in database: FAILED_FINAL with PARSER_OUTPUT_INVALID
+        const { data: runRecord } = await adminClient
+          .from("document_processing_runs")
+          .select("status, error_code")
+          .eq("id", res.runId!)
+          .single();
+        expect(runRecord!.status).toBe("FAILED_FINAL");
+        expect(runRecord!.error_code).toBe("PARSER_OUTPUT_INVALID");
+
+        // Verify no partial pages inserted into document_pages
+        const { data: pages } = await adminClient
+          .from("document_pages")
+          .select("id")
+          .eq("document_id", docId);
+        expect(pages!.length).toBe(0);
+      } finally {
+        delete process.env.MEDSTUDY_PARSER_SCRIPT;
+        await adminClient.storage.from("documents").remove([storageKey]);
+      }
     });
   });
 });

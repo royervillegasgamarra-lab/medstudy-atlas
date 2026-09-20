@@ -3,7 +3,7 @@
 -- for document_processing_runs and document_pages.
 
 BEGIN;
-SELECT plan(51);
+SELECT plan(54);
 
 -- Setup test users
 CREATE EXTENSION IF NOT EXISTS pgtap;
@@ -452,6 +452,41 @@ SELECT throws_ok(
     'Write Revocation: Fail rejected with expired lease even without competitor claim'
 );
 
+-- Set lease_expires_at to NULL to test rejection of missing lease
+UPDATE public.document_processing_runs
+SET lease_expires_at = NULL
+WHERE id = (SELECT run_id FROM bob_job);
+
+-- Persist throws 55000 due to NULL lease
+SELECT throws_ok(
+    $$
+    SELECT public.persist_processing_run_results_privileged(
+        (SELECT run_id FROM bob_job),
+        (SELECT claim_token FROM bob_job),
+        '{"page_count": 0}'::jsonb,
+        '[]'::jsonb
+    )
+    $$,
+    '55000',
+    NULL,
+    'Write Revocation: Persist rejected when lease_expires_at is NULL'
+);
+
+-- Fail throws 55000 due to NULL lease
+SELECT throws_ok(
+    $$
+    SELECT public.fail_processing_run_privileged(
+        (SELECT run_id FROM bob_job),
+        (SELECT claim_token FROM bob_job),
+        'PARSER_TIMEOUT',
+        true
+    )
+    $$,
+    '55000',
+    NULL,
+    'Write Revocation: Fail rejected when lease_expires_at is NULL'
+);
+
 -- Restore active lease so subsequent fail and retry tests continue cleanly
 UPDATE public.document_processing_runs
 SET lease_expires_at = NOW() + INTERVAL '300 seconds'
@@ -572,6 +607,52 @@ SELECT is(
     (SELECT COUNT(*) FROM public.document_pages WHERE document_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'),
     0::bigint,
     'Archive: All document pages deleted on archive'
+);
+
+-- ============================================================================
+-- 9. Composite Foreign Key Tampering Integrity
+-- ============================================================================
+
+-- Attempting to insert a document_page with mismatched cross-tenant document_id on processing_run
+SELECT throws_ok(
+    $$
+    INSERT INTO public.document_pages (
+        processing_run_id,
+        document_id,
+        user_id,
+        page_number,
+        classification,
+        extraction_method,
+        text_content,
+        char_count,
+        native_char_count,
+        ocr_char_count,
+        ocr_confidence,
+        width_points,
+        height_points,
+        rotation_degrees,
+        text_sha256
+    ) VALUES (
+        (SELECT run_id FROM bob_job_3),
+        'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', -- Alice's document_id on Bob's run
+        '22222222-2222-2222-2222-222222222222', -- Bob's user_id
+        1,
+        'TEXT_BASED',
+        'NATIVE',
+        'tampered',
+        8,
+        8,
+        0,
+        NULL,
+        612.0,
+        792.0,
+        0,
+        'hash123'
+    )
+    $$,
+    '23503',
+    NULL,
+    'Composite FK: Tampered cross-tenant document_id on processing_run rejected with foreign key violation 23503'
 );
 
 SELECT * FROM finish();
