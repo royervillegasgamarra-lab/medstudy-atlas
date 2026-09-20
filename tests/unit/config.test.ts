@@ -11,7 +11,7 @@ describe("Application Configuration & Configurable Assumptions", () => {
     expect(APP_CONFIG.name).toBe("MedStudy Atlas");
     expect(APP_CONFIG.tagline).toBe("Adaptive medical learning workspace");
     expect(APP_CONFIG.version).toBe("0.1.0");
-    expect(APP_CONFIG.phase).toContain("Phase 1B");
+    expect(APP_CONFIG.phase).toContain("Phase 1C");
   });
 
   it("maintains verified business assumptions", () => {
@@ -19,11 +19,15 @@ describe("Application Configuration & Configurable Assumptions", () => {
     expect(BUSINESS_ASSUMPTIONS.targetGrossMargin).toBe(0.7);
   });
 
-  it("specifies safe upload limits", () => {
+  it("specifies safe upload limits and document quotas", () => {
     expect(UPLOAD_LIMITS.maxFileSizeBytes).toBe(25 * 1024 * 1024);
+    expect(UPLOAD_LIMITS.maxActiveDocumentsPerUser).toBe(10);
+    expect(UPLOAD_LIMITS.maxTotalDocumentBytesPerUser).toBe(100 * 1024 * 1024);
     expect(UPLOAD_LIMITS.maxPagesFree).toBe(40);
     expect(UPLOAD_LIMITS.maxPagesPro).toBe(100);
     expect(UPLOAD_LIMITS.allowedMimeTypes).toContain("application/pdf");
+    expect(UPLOAD_LIMITS.signedUrlTtlSeconds).toBe(300);
+    expect(UPLOAD_LIMITS.pdfMagicBytes).toBe("%PDF-");
   });
 
   it("specifies cognitive learning assumptions", () => {

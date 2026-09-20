@@ -4,20 +4,24 @@ import {
   getActiveSubjects,
   getUpcomingExamTargets,
 } from "@/modules/curriculum";
+import { getUserDocuments } from "@/modules/documents";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { formatExamDate, getRemainingDays } from "@/lib/date-utils";
 import { SubjectManager } from "@/components/curriculum/subject-manager";
 import { ExamManager } from "@/components/curriculum/exam-manager";
+import { Files, ArrowRight } from "lucide-react";
 
 export default async function AppDashboardPage() {
   const profile = await getCurrentProfile();
   const subjectsRes = await getActiveSubjects();
   const examsRes = await getUpcomingExamTargets();
+  const docsRes = await getUserDocuments();
 
   const subjects = subjectsRes.data || [];
   const exams = examsRes.data || [];
+  const documents = docsRes.data || [];
 
   const studentName = profile?.full_name || "Colega Médico";
   const studentSchool = profile?.medical_school || "Facultad no especificada";
@@ -105,6 +109,41 @@ export default async function AppDashboardPage() {
           </CardContent>
         </Card>
       )}
+
+      {/* Document Library Quick Banner */}
+      <Card className="border-border bg-card shadow-xs">
+        <CardContent className="p-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center text-primary shrink-0">
+              <Files className="w-5 h-5" />
+            </div>
+            <div className="space-y-0.5">
+              <h2 className="text-base font-semibold text-foreground flex items-center gap-2">
+                Biblioteca de Documentos
+                <Badge variant="outline" className="text-xs">
+                  {documents.length}{" "}
+                  {documents.length === 1 ? "archivo" : "archivos"}
+                </Badge>
+              </h2>
+              <p className="text-xs text-muted-foreground">
+                Syllabus y diapositivas en PDF con almacenamiento seguro y
+                privado.
+              </p>
+            </div>
+          </div>
+
+          <Link href="/app/documents">
+            <Button
+              size="sm"
+              variant="outline"
+              className="gap-1.5 w-full sm:w-auto"
+            >
+              Ir a Documentos
+              <ArrowRight className="w-3.5 h-3.5" />
+            </Button>
+          </Link>
+        </CardContent>
+      </Card>
 
       {/* Subjects Section */}
       <SubjectManager initialSubjects={subjects} />

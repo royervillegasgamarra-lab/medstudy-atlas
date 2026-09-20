@@ -43,6 +43,12 @@ export default async function AppLayout({
                 Panel de Estudio
               </Link>
               <Link
+                href="/app/documents"
+                className="text-muted-foreground hover:text-foreground transition-colors"
+              >
+                Documentos
+              </Link>
+              <Link
                 href="/app/profile"
                 className="text-muted-foreground hover:text-foreground transition-colors"
               >

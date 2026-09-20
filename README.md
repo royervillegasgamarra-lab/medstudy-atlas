@@ -7,8 +7,8 @@ Adaptive medical learning workspace engineered with evidence-based cognitive lea
 MedStudy Atlas is designed to help medical students in Peru and Latin America master high-volume, complex curricula efficiently and retain clinical knowledge long-term.
 
 - **Target Audience**: Medical students in Peru and Latin America.
-- **Current Status**: **Phase 1B — Onboarding, Curriculum & Exam Targets COMPLETE (IN REVIEW)** (Local-First; Onboarding wizard, Subject-first curriculum model, Exam target countdowns with deterministic Peru calendar dates, server-enforced onboarding RPC, pgTAP database tests, and two-user isolation operational locally, $0.00 cost).
-- **Next Checkpoint**: **Vertical Slice 1C — Document Library & Private/Secure Storage** (`phase/01c-documents`).
+- **Current Status**: **Phase 1C — Document Library & Secure Upload COMPLETE (IN REVIEW)** (Local-First; Private Supabase Storage bucket, canonical storage keys `{user_id}/{doc_id}/source.pdf`, storage RLS isolation, server-side `%PDF-` container validation, short-lived signed URLs, centralized upload quotas, soft-delete archival, and mobile-first document library UI operational locally, $0.00 cost).
+- **Next Checkpoint**: **Vertical Slice 1D — Document Ingestion & Text Processing** (`phase/01d-processing`).
 
 ---
 

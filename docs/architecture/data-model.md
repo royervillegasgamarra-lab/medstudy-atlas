@@ -155,17 +155,26 @@ CREATE TABLE exam_targets (
 ```sql
 CREATE TABLE documents (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL REFERENCES user_profiles(id) ON DELETE CASCADE,
-    subject_id UUID REFERENCES subjects(id),
-    title TEXT NOT NULL,
-    storage_path TEXT NOT NULL,
-    file_size_bytes BIGINT NOT NULL,
-    page_count INT,
-    mime_type TEXT NOT NULL,
-    status TEXT NOT NULL CHECK (status IN ('PENDING', 'PROCESSING', 'READY', 'FAILED')),
-    failure_reason TEXT,
-    sha256_hash TEXT NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    subject_id UUID,
+    original_filename TEXT NOT NULL,
+    storage_provider TEXT NOT NULL DEFAULT 'supabase',
+    storage_bucket TEXT NOT NULL DEFAULT 'documents',
+    storage_key TEXT NOT NULL UNIQUE,
+    mime_type TEXT NOT NULL DEFAULT 'application/pdf',
+    size_bytes BIGINT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'UPLOADING' CHECK (status IN ('UPLOADING', 'CLEANUP_PENDING', 'READY', 'REJECTED', 'FAILED')),
+    validation_error_code TEXT,
+    sha256_hash TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    archived_at TIMESTAMPTZ,
+    CONSTRAINT fk_documents_subject_owner FOREIGN KEY (subject_id, user_id)
+        REFERENCES subjects(id, user_id)
+        ON DELETE SET NULL (subject_id),
+    CONSTRAINT chk_documents_filename_length CHECK (length(trim(original_filename)) > 0 AND length(trim(original_filename)) <= 255),
+    CONSTRAINT chk_documents_size_positive CHECK (size_bytes > 0 AND size_bytes <= 26214400),
+    CONSTRAINT chk_documents_mime_type CHECK (mime_type = 'application/pdf')
 );
 
 CREATE TABLE document_pages (

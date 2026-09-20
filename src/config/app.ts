@@ -6,7 +6,7 @@
 export const APP_CONFIG = {
   name: "MedStudy Atlas",
   tagline: "Adaptive medical learning workspace",
-  phase: "Phase 1B — Onboarding, Curriculum & Exam Targets",
+  phase: "Phase 1C — Document Library & Secure Upload",
   version: "0.1.0",
   description:
     "Commercial, adaptive medical-learning SaaS platform for medical students in Peru and Latin America.",
@@ -22,12 +22,20 @@ export const BUSINESS_ASSUMPTIONS = {
 export const UPLOAD_LIMITS = {
   /** Maximum file size in bytes for uploaded study PDFs (25 MB) */
   maxFileSizeBytes: 25 * 1024 * 1024,
+  /** Maximum active documents per user for Free tier MVP */
+  maxActiveDocumentsPerUser: 10,
+  /** Maximum total storage in bytes per user for Free tier MVP (100 MB) */
+  maxTotalDocumentBytesPerUser: 100 * 1024 * 1024,
   /** Maximum page count for Free tier */
   maxPagesFree: 40,
   /** Maximum page count for PRO tier */
   maxPagesPro: 100,
   /** Supported document MIME types */
   allowedMimeTypes: ["application/pdf"] as const,
+  /** Short-lived signed URL TTL in seconds (5 minutes) */
+  signedUrlTtlSeconds: 300,
+  /** PDF magic bytes signature (%PDF-) */
+  pdfMagicBytes: "%PDF-",
 } as const;
 
 export const LEARNING_ASSUMPTIONS = {

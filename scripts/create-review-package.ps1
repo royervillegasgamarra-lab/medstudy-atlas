@@ -86,6 +86,8 @@ if (-not $PhaseSlug -or $PhaseSlug -eq "phase-00a") {
         $PhaseSlug = "phase-01a"
     } elseif ($detectedBranch -match "phase/01b") {
         $PhaseSlug = "phase-01b"
+    } elseif ($detectedBranch -match "phase/01c") {
+        $PhaseSlug = "phase-01c"
     }
 }
 
@@ -97,6 +99,7 @@ $branchMatches = switch -Regex ($PhaseSlug) {
     "00?c" { $currentBranch -match "phase/00c" }
     "01?a" { $currentBranch -match "phase/01a" }
     "01?b" { $currentBranch -match "phase/01b" }
+    "01?c" { $currentBranch -match "phase/01c" }
     default { $true }
 }
 if (-not $branchMatches) {
@@ -115,6 +118,7 @@ $phaseIdentifier = switch -Regex ($PhaseSlug) {
     "00?c" { "0C" }
     "01?a" { "1A" }
     "01?b" { "1B" }
+    "01?c" { "1C" }
     default { $PhaseSlug }
 }
 if ($statusContent -notmatch $phaseIdentifier) {
@@ -136,6 +140,7 @@ $phaseTitle = switch -Regex ($PhaseSlug) {
     "00?c" { "Phase 0C -- Engineering Baseline" }
     "01?a" { "Vertical Slice 1A -- Identity, Auth & RLS Baseline" }
     "01?b" { "Vertical Slice 1B -- Onboarding, Curriculum & Exam Targets" }
+    "01?c" { "Vertical Slice 1C -- Document Library & Secure Upload" }
     default { "$PhaseSlug -- Local Review Package" }
 }
 
@@ -204,6 +209,22 @@ $reviewCriteria = switch -Regex ($PhaseSlug) {
             '10. [ ] **Automated Tests**: Unit tests, database tests, and Playwright E2E tests (onboarding lifecycle, management, two-user isolation) pass cleanly.',
             '11. [ ] **Course Hierarchy Simplification**: Documented explicitly; Course entity deferred to post-MVP.',
             '12. [ ] **Zero Cloud Resources & Paid Services**: Local-First execution; $0.00 cost.'
+        )
+    }
+    "01?c" {
+        @(
+            '1. [ ] **Reservation-Backed Storage RLS & Direct Authenticated Upload**: Private Supabase Storage bucket (`documents`, `public = false`), canonical object keys (`{user_id}/{doc_id}/source.pdf`), direct client-to-storage upload via authenticated `upload()` with `upsert: false`. Storage INSERT RLS strictly validates active UPLOADING reservation owned by `auth.uid()` with matching key. Reusable signed upload capability eliminated. Broad `storage.objects` permissions removed.',
+            '2. [ ] **Privileged Finalization Boundary & Safe Two-Step Cleanup**: Authenticated browser cannot invoke `READY` transition directly. Finalization is strictly executed by trusted server code calling `finalize_document_upload_privileged` (callable ONLY by `service_role`). Safe two-step cleanup (UPLOADING -> CLEANUP_PENDING -> physical remove -> REJECTED/FAILED) ensures quota safety under transient failures.',
+            '3. [ ] **Container-Level File Validation & Bounded Range Read**: Server-side inspection of `%PDF-` magic bytes via HTTP Range request on internal signed URL (HTTP 206, byteLength <= 5, timeout), avoiding 25 MB memory downloads. Non-PDFs rejected and physically deleted.',
+            '4. [ ] **Metadata & Composite Foreign Key**: `public.documents` table with composite foreign key `(subject_id, user_id) REFERENCES public.subjects(id, user_id)` and input check constraints.',
+            '5. [ ] **Centralized & Concurrency-Safe Quotas**: 25MB max file size, 10 active documents, 100MB total active storage (counting `READY`, `CLEANUP_PENDING`, and unexpired `UPLOADING` reservations within 2-hour lease). Concurrency serialized per user via `pg_advisory_xact_lock`. Declared size must equal actual size.',
+            '6. [ ] **Privileged Archive & Physical Storage Cleanup**: Archiving physically deletes storage object via official Storage API with explicit error inspection before calling `archive_document_privileged` (service_role only). Quota freed only on confirmed blob removal.',
+            '7. [ ] **Short-Lived Signed Download URLs**: Authorized downloads use signed URLs with 300s TTL. Direct public URLs and direct storage SELECT are denied.',
+            '8. [ ] **Document Library UI & PHI Warning**: Mobile-first responsive library at `/app/documents`, drag-and-drop uploader with mandatory educational-use PHI warning banner, quota progress bar, and soft-delete archive with confirmation.',
+            '9. [ ] **In-Database Security Matrix (pgTAP)**: 62 pgTAP tests in `03_documents_rls.sql` verify table schema, absence of `finalize_token`, anon denials, direct mutation denials, input constraints, quota limits, lease expiration, authenticated archive denial, two-user isolation, storage INSERT RLS policy, and archive idempotency.',
+            '10. [ ] **Authoritative Storage API Integration Tests**: 27 authoritative integration tests in `tests/integration/storage-security.test.ts` verify direct upload denial without reservation, reservation-backed upload success, fake PDF rejection with physical blob cleanup, size mismatch rejection with real object, authenticated archive denial, storage error handling, cross-user download denial, token reuse prevention, abandoned upload recovery, CLEANUP_PENDING recovery, archive idempotency, adversarial archive/upload TOCTOU race prevention, real concurrent quota serialization, real size-mismatch physical cleanup, DB cleanup completion failure recovery, and Storage 404 error classification (NoSuchKey vs NoSuchBucket vs ambiguous 404).',
+            '11. [ ] **E2E & Browser Verification (Playwright)**: E2E tests verify onboarding-to-upload flow, fake PDF rejection in UI, valid PDF READY, user-content XSS regression, mobile & desktop rendering, and archival.',
+            '12. [ ] **Zero AI & Cloud Spend**: No text extraction, OCR, embeddings, vector search, or external paid storage introduced ($0.00 cloud spend).'
         )
     }
     default {
@@ -276,6 +297,18 @@ $nextStep = switch -Regex ($PhaseSlug) {
             'Then proceed to **Vertical Slice 1C -- Document Library & Secure Upload** (`phase/01c-documents`).'
         )
     }
+    "01?c" {
+        @(
+            '## 4. Next Step Upon Approval',
+            "Upon approval of this review package, merge $currentBranch into $BaseBranch locally via squash merge:",
+            '```powershell',
+            "git checkout $BaseBranch",
+            "git merge --squash $currentBranch",
+            'git commit -m "feat(phase-01c): implement document library and secure upload boundary"',
+            '```',
+            'Then proceed to **Vertical Slice 1D -- Document Ingestion & Text Processing** (`phase/01d-processing`).'
+        )
+    }
     default {
         @(
             '## 4. Next Step Upon Approval',
@@ -305,13 +338,14 @@ $reviewLines = @(
     '',
     '## 2. Package Contents',
     '- `REVIEW.md` -- This review guide and summary.',
-    "- `execution-report.md` -- The standardized $phaseTitle Execution Report.",
+    ('- `execution-report.md` -- The standardized ' + $phaseTitle + ' Execution Report.'),
+    ('- `failure-matrix.md` -- The ' + $phaseTitle + ' Failure Matrix.'),
     '- `status.md` -- Current project status and subsystem states.',
     '- `test-results.md` -- Verification and test suite execution status.',
-    "- `changed-files.txt` -- List of all files changed relative to $BaseBranch.",
+    ('- `changed-files.txt` -- List of all files changed relative to ' + $BaseBranch + '.'),
     '- `git-status.txt` -- Exact git status snapshot at package generation.',
-    "- `git-log.txt` -- Commit history of the phase branch against $BaseBranch.",
-    "- `git-diff.patch` -- Unified diff patch showing all code/doc modifications.",
+    ('- `git-log.txt` -- Commit history of the phase branch against ' + $BaseBranch + '.'),
+    ('- `git-diff.patch` -- Unified diff patch showing all code/doc modifications.'),
     '- `repository-tree.txt` -- Full file tree of the repository.',
     '- `governance/` -- Core governance policies, CI policy, and project charter.',
     '- `agents/` -- Workspace invariant rules and agent skills (`.agents/`).',
@@ -328,13 +362,19 @@ $reviewLines += $nextStep
 $reviewLines | Out-File -FilePath (Join-Path $stagingDir "REVIEW.md") -Encoding utf8
 
 # execution-report.md
-$matchedReports = Get-ChildItem -Path (Join-Path $repoRoot "docs/reports") -Filter "$PhaseSlug-*.md" -ErrorAction SilentlyContinue
+$matchedReports = Get-ChildItem -Path (Join-Path $repoRoot "docs/reports") -Filter "$PhaseSlug-*.md" -ErrorAction SilentlyContinue | Where-Object { $_.Name -notmatch 'failure-matrix' }
 if ($matchedReports -and $matchedReports.Count -gt 0) {
     Copy-Item -Path $matchedReports[0].FullName -Destination (Join-Path $stagingDir "execution-report.md")
 } else {
     Write-Host "ERROR: Review package generation ABORTED!" -ForegroundColor Red
     Write-Host "Expected execution report not found for phase: $PhaseSlug in docs/reports/" -ForegroundColor Red
     throw "Review package generation aborted: Expected phase execution report (docs/reports/$PhaseSlug-*.md) missing. Falling back to an older phase report is strictly prohibited."
+}
+
+# failure-matrix.md
+$matchedMatrix = Get-ChildItem -Path (Join-Path $repoRoot "docs/reports") -Filter "$PhaseSlug-failure-matrix.md" -ErrorAction SilentlyContinue
+if ($matchedMatrix -and $matchedMatrix.Count -gt 0) {
+    Copy-Item -Path $matchedMatrix[0].FullName -Destination (Join-Path $stagingDir "failure-matrix.md")
 }
 
 # status.md
