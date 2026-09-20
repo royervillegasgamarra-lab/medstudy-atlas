@@ -167,22 +167,8 @@ test.describe("Phase 1D: Secure Document Processing & Provenance UI", () => {
       page.getByText("Procesamiento reencolado exitosamente.")
     ).toBeVisible({ timeout: 10000 });
     await expect(page.getByText("Pendiente de procesar")).toBeVisible();
-  });
 
-  test("Auto-enqueue recovery: READY document without run displays 'Procesar' and transitions to PENDING", async ({
-    page,
-  }) => {
-    await page.goto("/app/documents");
-    await expect(
-      page.getByRole("heading", { name: "Biblioteca de Documentos" })
-    ).toBeVisible({ timeout: 15000 });
-
-    const supabaseAdmin = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL || "http://127.0.0.1:54321",
-      process.env.SUPABASE_SECRET_KEY!
-    );
-
-    // Find the uploaded document and delete its processing run to test recovery UI
+    // 8. Auto-enqueue recovery: delete processing run for this document to verify "Procesar" recovery UI
     const { data: doc } = await supabaseAdmin
       .from("documents")
       .select("id")

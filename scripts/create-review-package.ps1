@@ -427,7 +427,9 @@ if (Test-Path (Join-Path $repoRoot "package.json")) {
         $dockerPaths = @(
             "C:\Users\DR_ CHAPATIN\AppData\Local\Programs\DockerDesktop\resources\bin",
             "$env:LOCALAPPDATA\Programs\DockerDesktop\resources\bin",
-            "$env:ProgramFiles\Docker\Docker\resources\bin"
+            "$env:ProgramFiles\Docker\Docker\resources\bin",
+            "C:\Program Files\Tesseract-OCR",
+            (Join-Path $repoRoot "tools\bin\qpdf\bin")
         )
         foreach ($dp in $dockerPaths) {
             if ((Test-Path $dp) -and ($env:PATH -notlike "*$dp*")) {

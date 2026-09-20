@@ -147,7 +147,7 @@
   - `pnpm db:types` -> Exit Code 0 (PASS, database types regenerated)
   - `pnpm db:test` -> Exit Code 0 (PASS, 237 pgTAP tests across 4 suites: 47 in `04_processing_runs_rls.sql`)
   - `pnpm build` -> Exit Code 0 (PASS, production build)
-  - `pnpm test:e2e` -> Exit Code 0 (PASS, 19 Playwright tests across 6 suites)
+  - `pnpm test:e2e` -> Exit Code 0 (PASS, 18 Playwright tests across 6 suites)
   - `pnpm audit` -> Exit Code 0 (PASS, 0 vulnerabilities)
 - **Local Binaries & Smoke Evidence**:
   - `tesseract --version`: `v5.5.3.20260724` (leptonica-1.87.0)

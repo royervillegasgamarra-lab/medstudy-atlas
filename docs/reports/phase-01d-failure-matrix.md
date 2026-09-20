@@ -53,5 +53,5 @@
 - **Unit Test Suite (`tests/unit/`)**: 124 unit tests passing across 11 suites (20 in `parser.test.ts`, 8 in `provenance.test.ts`).
 - **Integration Test Suite (`tests/integration/`)**: 38 tests passing across 2 suites (11 in `processing-worker.test.ts`, 27 in `storage-security.test.ts`).
 - **Vitest Total (`pnpm test`)**: 162 tests passing across 13 test files.
-- **End-to-End Suite (`tests/e2e/`)**: 19 Playwright tests passing across 6 suites (including `document-processing.spec.ts`).
+- **End-to-End Suite (`tests/e2e/`)**: 18 Playwright tests passing across 6 suites (including `document-processing.spec.ts`).
 - **Zero Secrets**: Automated audit confirms no secrets, tokens, or credentials committed.
