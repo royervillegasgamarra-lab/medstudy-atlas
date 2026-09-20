@@ -155,6 +155,46 @@ export async function requestDocumentUpload(
       return { error: "No autenticado." };
     }
 
+    // P0: Lazy physical cleanup of any CLEANUP_PENDING rows for this user
+    const { data: pendingCleanupDocs } = await supabaseAdmin
+      .from("documents")
+      .select("id, storage_bucket, storage_key, validation_error_code")
+      .eq("user_id", user.id)
+      .eq("status", "CLEANUP_PENDING")
+      .is("archived_at", null);
+
+    if (pendingCleanupDocs && pendingCleanupDocs.length > 0) {
+      for (const pending of pendingCleanupDocs) {
+        try {
+          const { error: removeErr } = await supabaseAdmin.storage
+            .from(pending.storage_bucket)
+            .remove([pending.storage_key]);
+
+          if (!removeErr) {
+            const targetStatus = pending.validation_error_code
+              ? "REJECTED"
+              : "FAILED";
+            const targetErrorCode =
+              pending.validation_error_code || "CLEANUP_RECOVERED";
+            const { error: completeErr } = await supabaseAdmin.rpc(
+              "complete_document_cleanup_privileged",
+              {
+                p_document_id: pending.id,
+                p_user_id: user.id,
+                p_status: targetStatus,
+                p_error_code: targetErrorCode,
+              }
+            );
+            if (completeErr) {
+              // Remains in CLEANUP_PENDING if RPC fails
+            }
+          }
+        } catch {
+          // Leave in CLEANUP_PENDING if physical removal fails
+        }
+      }
+    }
+
     // P0: Lazy physical cleanup of stale UPLOADING reservations (> 2 hours)
     const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
     const { data: staleDocs } = await supabaseAdmin
@@ -168,22 +208,34 @@ export async function requestDocumentUpload(
     if (staleDocs && staleDocs.length > 0) {
       for (const stale of staleDocs) {
         try {
-          await supabaseAdmin.rpc("start_document_cleanup_privileged", {
-            p_document_id: stale.id,
-            p_user_id: user.id,
-          });
+          const { error: startErr } = await supabaseAdmin.rpc(
+            "start_document_cleanup_privileged",
+            {
+              p_document_id: stale.id,
+              p_user_id: user.id,
+            }
+          );
+          if (startErr) {
+            continue;
+          }
 
           const { error: removeErr } = await supabaseAdmin.storage
             .from(stale.storage_bucket)
             .remove([stale.storage_key]);
 
           if (!removeErr) {
-            await supabaseAdmin.rpc("complete_document_cleanup_privileged", {
-              p_document_id: stale.id,
-              p_user_id: user.id,
-              p_status: "FAILED",
-              p_error_code: "UPLOAD_TIMEOUT",
-            });
+            const { error: completeErr } = await supabaseAdmin.rpc(
+              "complete_document_cleanup_privileged",
+              {
+                p_document_id: stale.id,
+                p_user_id: user.id,
+                p_status: "FAILED",
+                p_error_code: "UPLOAD_TIMEOUT",
+              }
+            );
+            if (completeErr) {
+              // Remains in CLEANUP_PENDING if RPC fails
+            }
           }
         } catch {
           // Leave in CLEANUP_PENDING if physical removal fails

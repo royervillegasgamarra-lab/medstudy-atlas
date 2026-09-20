@@ -7,8 +7,8 @@
 - **Review Package**: `review-output/phase-01c-review.zip`
 - **Review Target**: Phase 1C committed checkpoint on `phase/01c-documents`
 - **Canonical Commit SHA**: Exact commit SHA is captured in `review-output/phase-01c-review.zip` (`REVIEW.md` and `test-results/*.log`).
-- **LOCAL HEAD SHA BEFORE REPORT**: `d41a304`
-- **Objective**: Implement secure document library, private Supabase Storage bucket, exact-path signed upload authorization, privileged server-only finalization, concurrency-safe quota serialization, 5-byte range container validation, physical storage deletion on archive, and mobile-first document library UI with local-first isolation and $0.00 cloud spend.
+- **LOCAL HEAD SHA BEFORE REPORT**: `7e47c70`
+- **Objective**: Implement secure document library, private Supabase Storage bucket, reservation-backed Storage INSERT RLS policy, direct authenticated upload, privileged server-only finalization and safe cleanup lifecycle, concurrency-safe quota serialization, 5-byte range container validation, physical storage deletion on archive, and mobile-first document library UI with local-first isolation and $0.00 cloud spend.
 
 > **Note on SHA Semantics**: Committed reports record the commit SHA of implementation prior to report generation (`LOCAL HEAD SHA BEFORE REPORT`). Committed reports do not contain their own final commit SHA to prevent self-referential commit loops. The final local HEAD SHA is printed in the final agent chat output after all report/status files are committed locally.
 
@@ -55,6 +55,7 @@
      - `public.start_document_cleanup_privileged(UUID, UUID)`: transitions `UPLOADING` to `CLEANUP_PENDING`.
      - `public.complete_document_cleanup_privileged(UUID, UUID, TEXT, TEXT)`: transitions `CLEANUP_PENDING` to target status (`REJECTED`/`FAILED`).
      - Both granted strictly to `service_role` and revoked from `PUBLIC`, `anon`, and `authenticated`.
+   - Lazy cleanup recovery: `requestDocumentUpload` retries physical `remove()` for any existing `CLEANUP_PENDING` rows for that user, completing them to `FAILED` (`CLEANUP_RECOVERED`) or `REJECTED` once physical absence is confirmed.
 
 4. **Physical Cleanup of Abandoned Uploads (`P0`)**:
    - Stale rows are never marked `FAILED` based on elapsed time alone in SQL.
@@ -83,7 +84,7 @@
 
 9. **Authoritative In-Database & Integration Test Suites (`P0`, `P1`)**:
    - `supabase/tests/database/03_documents_rls.sql`: 62 pgTAP assertions covering Storage RLS, `CLEANUP_PENDING`, worst-case in-flight accounting, and privileged cleanup RPC denials. Total 190 database tests pass.
-   - `tests/integration/storage-security.test.ts`: 20 comprehensive integration tests covering all required scenarios:
+   - `tests/integration/storage-security.test.ts`: 21 comprehensive integration tests covering all required scenarios:
      1. Direct unauthorized Storage upload is strictly denied (P0-3).
      2. Arbitrary unreserved path upload is denied (P0-3).
      3. Exact reserved upload succeeds, creates physical object, transitions to READY, authorized download works (P0).
@@ -104,6 +105,7 @@
      18. Authenticated user cannot call any privileged RPC directly (finalize, archive, start_cleanup, complete_cleanup) (P0).
      19. Storage deletion failure on archive does NOT free quota or mark archived (P0).
      20. Cross-user download authorization denied via application boundary (P0).
+     21. CLEANUP_PENDING recovery: transient remove failure leaves quota reserved, subsequent lazy retry succeeds, removes blob, transitions to FAILED, and frees quota for new upload (P0).
 
 ---
 
@@ -112,16 +114,16 @@
 ### Important Files Created
 - `src/config/server-env.ts` — Server-only environment configuration for `SUPABASE_SECRET_KEY`.
 - `src/lib/supabase/admin.ts` — Server-only privileged Supabase admin client.
-- `tests/integration/storage-security.test.ts` — Authoritative Supabase Storage API integration test suite.
-- `docs/reports/phase-01c-failure-matrix.md` — 25-scenario security and failure matrix.
+- `tests/integration/storage-security.test.ts` — Authoritative Supabase Storage API integration test suite (21 tests).
+- `docs/reports/phase-01c-failure-matrix.md` — 30-scenario security and failure matrix.
 
 ### Important Files Modified
-- `supabase/migrations/20260920000000_documents_and_storage.sql` — Hardened storage policies, removed `finalize_token`, added input check constraints, concurrency-safe advisory lock, quota counting `UPLOADING` rows, and privileged finalization RPCs.
-- `supabase/tests/database/03_documents_rls.sql` — Updated pgTAP tests to verify new security boundaries.
-- `src/modules/documents/types.ts` — Updated domain types: removed `finalize_token`, added `signedUploadUrl` and `signedUploadToken`.
-- `src/modules/documents/service.ts` — Updated service: exact signed upload, 5-byte range validation, server-only privileged finalization, and physical storage deletion on archive.
-- `src/modules/documents/actions.ts` — Updated server actions to pass signed upload parameters.
-- `src/components/documents/document-uploader.tsx` — Added PHI warning banner and `uploadToSignedUrl` integration.
+- `supabase/migrations/20260920000000_documents_and_storage.sql` — Hardened storage policies, removed `finalize_token`, added `CLEANUP_PENDING` status, reservation-backed Storage INSERT RLS, input check constraints, concurrency-safe advisory lock, worst-case quota counting, and privileged finalization/cleanup/archive RPCs.
+- `supabase/tests/database/03_documents_rls.sql` — Updated pgTAP tests to verify new security boundaries (62 tests).
+- `src/modules/documents/types.ts` — Updated domain types: removed `finalize_token`, added `CLEANUP_PENDING` status, updated `RequestUploadResult`.
+- `src/modules/documents/service.ts` — Updated service: direct authenticated upload, 5-byte range validation, server-only privileged finalization, two-step cleanup lifecycle with `CLEANUP_PENDING` recovery, and physical storage deletion on archive.
+- `src/modules/documents/actions.ts` — Updated server actions to pass reservation parameters for direct authenticated upload.
+- `src/components/documents/document-uploader.tsx` — Added PHI warning banner and direct authenticated upload integration.
 - `vitest.config.mts` — Added `tests/integration` to test runner.
 - `tests/e2e/document-management.spec.ts` — Added fake PDF rejection, PHI warning check, and full E2E flow.
 - `.env.example` — Added `SUPABASE_SECRET_KEY` placeholder.
@@ -135,18 +137,19 @@
 
 - **Architecture Decisions**:
   - Eliminated `finalize_token`: Authenticated browsers can no longer invoke finalization directly. Privileged finalization is callable ONLY by `service_role`.
-  - Removed broad authenticated mutation policies on `storage.objects`. Uploads use exact-path signed upload URLs (`uploadToSignedUrl`) with `upsert: false`.
+  - Removed broad authenticated mutation policies on `storage.objects`. Uploads use direct authenticated upload governed by reservation-backed Storage INSERT RLS policy with `upsert: false`.
   - Concurrency-safe quota reservations via PostgreSQL per-user transaction advisory locks (`pg_advisory_xact_lock`).
-  - Total storage quota counts all active reservations (`UPLOADING`, `VALIDATING`, `READY`).
+  - Total storage quota counts all active reservations (`UPLOADING`, `CLEANUP_PENDING`, `READY`) using worst-case 25 MB for unverified rows.
   - 5-byte range validation via HTTP Range request on internal signed URL avoids downloading 25 MB into server memory.
   - Physical blob removal on archive via official Storage API before stamping `archived_at`.
+  - Two-step cleanup lifecycle (`UPLOADING` -> `CLEANUP_PENDING` -> physical `remove()` -> `REJECTED`/`FAILED`) with lazy recovery in `requestDocumentUpload`.
 - **Database Impact**:
   - Migration `20260920000000_documents_and_storage.sql` applied cleanly.
-  - `public.documents` table updated: check constraints added, `finalize_token` removed.
-  - Privileged RPCs: `finalize_document_upload_privileged` and `reject_document_upload_privileged` granted strictly to `service_role`.
+  - `public.documents` table updated: check constraints added, `finalize_token` removed, `CLEANUP_PENDING` status added.
+  - Privileged RPCs: `finalize_document_upload_privileged`, `archive_document_privileged`, `start_document_cleanup_privileged`, and `complete_document_cleanup_privileged` granted strictly to `service_role`.
   - Quota serialization inside `request_document_upload`.
 - **API Impact**:
-  - `requestDocumentUploadAction` returns exact `signedUploadUrl` and `signedUploadToken`.
+  - `requestDocumentUploadAction` returns `documentId`, `storageBucket`, and `storageKey` for direct authenticated upload.
   - `finalizeDocumentUploadAction` executes server-side validation and privileged finalization.
 - **AI Impact**: NONE (strictly deferred to Slice 1E and 1F).
 - **Background-Job Impact**: NONE (worker pipeline deferred to Slice 1D).
@@ -159,10 +162,10 @@
 - **Security Review**:
   - Authenticated user CANNOT directly finalize documents to `READY`.
   - Authenticated user CANNOT upload arbitrary unreserved Storage objects.
-  - Exact-path signed upload authorization strictly binds path `{user_id}/{doc_id}/source.pdf`.
+  - Reservation-backed Storage INSERT RLS strictly binds path `{user_id}/{doc_id}/source.pdf`.
   - User A / User B isolation verified across database queries, storage access, signed URLs, and archival.
   - Container validation inspects `%PDF-` magic bytes; non-PDFs are rejected and physically deleted.
-  - Quota bypass via parallel reservations prevented by transaction advisory locks and counting `UPLOADING` rows.
+  - Quota bypass via parallel reservations prevented by transaction advisory locks and worst-case accounting of `UPLOADING` and `CLEANUP_PENDING` rows.
   - Real Storage API deletion on archive prevents unbounded storage accumulation.
   - Automated security scan in `create-review-package.ps1`: Zero secrets, keys, or credentials detected.
 - **Medical & Content Safety**:
@@ -182,10 +185,10 @@
   - `pnpm format:check` -> Exit Code 0 (PASS)
   - `pnpm lint` -> Exit Code 0 (PASS)
   - `pnpm typecheck` -> Exit Code 0 (PASS)
-  - `pnpm test` -> Exit Code 0 (PASS, 92 tests across 10 suites including real Storage API integration tests)
+  - `pnpm test` -> Exit Code 0 (PASS, 108 tests across 10 suites including 21 real Storage API integration tests)
   - `pnpm db:reset` -> Exit Code 0 (PASS, migrations applied)
   - `pnpm db:types` -> Exit Code 0 (PASS, database types regenerated)
-  - `pnpm db:test` -> Exit Code 0 (PASS, 178 pgTAP assertions across 3 suites)
+  - `pnpm db:test` -> Exit Code 0 (PASS, 190 pgTAP assertions across 3 suites including 62 in 03_documents_rls.sql)
   - `pnpm build` -> Exit Code 0 (PASS, Turbopack production build)
   - `pnpm test:e2e` -> Exit Code 0 (PASS, 17 Playwright tests across 5 suites)
   - `pnpm audit` -> Exit Code 0 (PASS, 0 vulnerabilities)

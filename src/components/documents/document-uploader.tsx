@@ -105,7 +105,7 @@ export function DocumentUploader({
     setSuccessMsg(null);
 
     try {
-      // Step 1: Request upload reservation & exact signed upload token
+      // Step 1: Request upload reservation for direct authenticated upload
       setStep("AUTHORIZING");
       const authRes = await requestDocumentUploadAction({
         original_filename: file.name,

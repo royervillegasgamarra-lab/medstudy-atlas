@@ -6,6 +6,7 @@ import {
   finalizeDocumentUpload,
   getAuthorizedDocumentUrl,
   archiveDocument,
+  getDocumentQuotaUsage,
 } from "@/modules/documents/service";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
@@ -1075,5 +1076,136 @@ describe("Authoritative Supabase Storage API Integration & Security Boundary (Ph
       .from("documents")
       .delete()
       .eq("id", docRecord.document_id);
+  });
+
+  it("21. CLEANUP_PENDING recovery: transient remove failure leaves quota reserved, subsequent lazy retry succeeds, removes blob, transitions to FAILED, and frees quota for new upload (P0)", async () => {
+    // 1. Create real physical object
+    const fakeContent = Buffer.from("NOT_A_VALID_PDF_HEADER");
+    const declaredSize = fakeContent.length;
+
+    const { data: rpcData, error: rpcError } = await aliceClient.rpc(
+      "request_document_upload",
+      {
+        p_original_filename: "cleanup_recovery_test.pdf",
+        p_size_bytes: declaredSize,
+        p_mime_type: "application/pdf",
+        p_subject_id: aliceSubjectId,
+      }
+    );
+    expect(rpcError).toBeNull();
+    const docRecord = Array.isArray(rpcData) ? rpcData[0] : rpcData;
+    if (!docRecord) throw new Error("Expected docRecord");
+
+    const { error: uploadError } = await aliceClient.storage
+      .from(docRecord.storage_bucket)
+      .upload(docRecord.storage_key, fakeContent, {
+        contentType: "application/pdf",
+        upsert: false,
+      });
+    expect(uploadError).toBeNull();
+
+    // Verify physical object exists
+    const { data: infoBefore } = await adminClient.storage
+      .from(docRecord.storage_bucket)
+      .info(docRecord.storage_key);
+    expect(infoBefore).not.toBeNull();
+
+    // 2 & 3. Enter CLEANUP_PENDING and simulate first remove failure
+    const realFrom21 = supabaseAdmin.storage.from.bind(supabaseAdmin.storage);
+    const fromSpy21 = vi
+      .spyOn(supabaseAdmin.storage, "from")
+      .mockImplementation((bucket: string) => {
+        const fileApi = realFrom21(bucket);
+        vi.spyOn(fileApi, "remove").mockResolvedValue({
+          data: null,
+          error: {
+            name: "StorageApiError",
+            message: "Simulated Transient Storage Error during remove",
+          } as unknown as NonNullable<
+            Awaited<ReturnType<typeof fileApi.remove>>["error"]
+          >,
+        });
+        return fileApi;
+      });
+
+    currentClient = aliceClient;
+    const finalizeRes = await finalizeDocumentUpload({
+      documentId: docRecord.document_id,
+    });
+    fromSpy21.mockRestore();
+
+    expect(finalizeRes.error).toContain(
+      "Error al limpiar archivo con firma PDF inválida"
+    );
+
+    // DB state must be CLEANUP_PENDING
+    const { data: docPending } = await adminClient
+      .from("documents")
+      .select("status")
+      .eq("id", docRecord.document_id)
+      .single();
+    expect(docPending?.status).toBe("CLEANUP_PENDING");
+
+    // Physical blob is still present in storage
+    const { data: infoStillPresent } = await adminClient.storage
+      .from(docRecord.storage_bucket)
+      .info(docRecord.storage_key);
+    expect(infoStillPresent).not.toBeNull();
+
+    // 4. Prove quota remains reserved (getDocumentQuotaUsage counts CLEANUP_PENDING as worst-case 25MB)
+    const quotaRes1 = await getDocumentQuotaUsage();
+    expect(quotaRes1.data?.activeDocumentsCount).toBeGreaterThanOrEqual(1);
+    expect(quotaRes1.data?.totalSizeBytes).toBeGreaterThanOrEqual(
+      25 * 1024 * 1024
+    );
+
+    // 5 & 6. Execute normal recovery path: subsequent requestDocumentUpload triggers lazy retry without error
+    const newDocRes = await requestDocumentUpload({
+      original_filename: "recovered_and_new.pdf",
+      size_bytes: 1024,
+      mime_type: "application/pdf",
+      subject_id: aliceSubjectId,
+    });
+    expect(newDocRes.error).toBeUndefined();
+    expect(newDocRes.data?.documentId).toBeDefined();
+
+    // 7. Physical object absent (confirmed removed by second remove)
+    const { data: infoAfterRecovery } = await adminClient.storage
+      .from(docRecord.storage_bucket)
+      .info(docRecord.storage_key);
+    expect(infoAfterRecovery).toBeNull();
+
+    // 8. Terminal DB state reached (FAILED / CLEANUP_RECOVERED)
+    const { data: docRecovered } = await adminClient
+      .from("documents")
+      .select("status, validation_error_code")
+      .eq("id", docRecord.document_id)
+      .single();
+    expect(docRecovered?.status).toBe("FAILED");
+    expect(docRecovered?.validation_error_code).toBe("CLEANUP_RECOVERED");
+
+    // 9. Quota released for the recovered document (now only the newly requested document is active)
+    const quotaRes2 = await getDocumentQuotaUsage();
+    expect(quotaRes2.data?.activeDocumentsCount).toBe(1);
+    expect(quotaRes2.data?.totalSizeBytes).toBe(25 * 1024 * 1024);
+
+    // 10. New upload becomes possible / succeeds
+    const validPdf = Buffer.from("%PDF-1.4 recovery test\ntrailer\n%%EOF");
+    const { error: newUploadErr } = await aliceClient.storage
+      .from(newDocRes.data!.storageBucket)
+      .upload(newDocRes.data!.storageKey, validPdf, {
+        contentType: "application/pdf",
+        upsert: false,
+      });
+    expect(newUploadErr).toBeNull();
+
+    // Cleanup
+    await adminClient.storage
+      .from(newDocRes.data!.storageBucket)
+      .remove([newDocRes.data!.storageKey]);
+    await adminClient
+      .from("documents")
+      .delete()
+      .in("id", [docRecord.document_id, newDocRes.data!.documentId]);
   });
 });
