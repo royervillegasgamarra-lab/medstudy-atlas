@@ -3,7 +3,7 @@
 -- for document_processing_runs and document_pages.
 
 BEGIN;
-SELECT plan(47);
+SELECT plan(51);
 
 -- Setup test users
 CREATE EXTENSION IF NOT EXISTS pgtap;
@@ -224,6 +224,21 @@ SELECT is(
     'Claim: claim_next_processing_run recovers expired lease'
 );
 
+-- Validate lease seconds bounds [1, 3600]
+SELECT throws_ok(
+    $$ SELECT * FROM public.claim_next_processing_run('worker-test-bounds', 0) $$,
+    '22023',
+    NULL,
+    'Claim: Lease seconds < 1 rejected'
+);
+
+SELECT throws_ok(
+    $$ SELECT * FROM public.claim_next_processing_run('worker-test-bounds', 4000) $$,
+    '22023',
+    NULL,
+    'Claim: Lease seconds > 3600 rejected'
+);
+
 -- ============================================================================
 -- 5. Privileged Persistence, Claim Fencing & Provenance
 -- ============================================================================
@@ -401,6 +416,46 @@ SELECT public.enqueue_document_processing_privileged('bbbbbbbb-bbbb-bbbb-bbbb-bb
 
 CREATE TEMP TABLE bob_job AS
 SELECT * FROM public.claim_next_processing_run('worker-test-bob', 300);
+
+-- Expire lease manually to test write authority revocation
+UPDATE public.document_processing_runs
+SET lease_expires_at = NOW() - INTERVAL '10 seconds'
+WHERE id = (SELECT run_id FROM bob_job);
+
+-- Persist throws 55000 due to expired lease
+SELECT throws_ok(
+    $$
+    SELECT public.persist_processing_run_results_privileged(
+        (SELECT run_id FROM bob_job),
+        (SELECT claim_token FROM bob_job),
+        '{"page_count": 0}'::jsonb,
+        '[]'::jsonb
+    )
+    $$,
+    '55000',
+    NULL,
+    'Write Revocation: Persist rejected with expired lease even without competitor claim'
+);
+
+-- Fail throws 55000 due to expired lease
+SELECT throws_ok(
+    $$
+    SELECT public.fail_processing_run_privileged(
+        (SELECT run_id FROM bob_job),
+        (SELECT claim_token FROM bob_job),
+        'PARSER_TIMEOUT',
+        true
+    )
+    $$,
+    '55000',
+    NULL,
+    'Write Revocation: Fail rejected with expired lease even without competitor claim'
+);
+
+-- Restore active lease so subsequent fail and retry tests continue cleanly
+UPDATE public.document_processing_runs
+SET lease_expires_at = NOW() + INTERVAL '300 seconds'
+WHERE id = (SELECT run_id FROM bob_job);
 
 -- Fail with wrong claim token is rejected
 SELECT throws_ok(

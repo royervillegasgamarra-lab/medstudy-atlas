@@ -254,7 +254,7 @@ GRANT EXECUTE ON FUNCTION public.enqueue_document_processing_privileged(UUID, UU
 
 CREATE OR REPLACE FUNCTION public.claim_next_processing_run(
     p_worker_id TEXT,
-    p_lease_seconds INT DEFAULT 300
+    p_lease_seconds INT DEFAULT 900
 )
 RETURNS TABLE (
     run_id UUID,
@@ -279,6 +279,10 @@ DECLARE
 BEGIN
     IF p_worker_id IS NULL OR trim(p_worker_id) = '' THEN
         RAISE EXCEPTION 'p_worker_id is required' USING ERRCODE = '22023';
+    END IF;
+
+    IF p_lease_seconds < 1 OR p_lease_seconds > 3600 THEN
+        RAISE EXCEPTION 'Lease seconds must be between 1 and 3600' USING ERRCODE = '22023';
     END IF;
 
     -- Maintenance: Transition expired RUNNING runs that have exhausted attempts to FAILED_FINAL
@@ -397,6 +401,11 @@ BEGIN
     IF v_run.status != 'RUNNING' THEN
         RAISE EXCEPTION 'Processing run is not in RUNNING status (current: %)', v_run.status
             USING ERRCODE = '22023';
+    END IF;
+
+    -- Lease expiration check: write authority is revoked once lease expires
+    IF v_run.lease_expires_at IS NOT NULL AND v_run.lease_expires_at <= NOW() THEN
+        RAISE EXCEPTION 'Processing run lease has expired' USING ERRCODE = '55000';
     END IF;
 
     -- Parent document must still be READY and unarchived
@@ -549,6 +558,11 @@ BEGIN
     IF v_run.status != 'RUNNING' THEN
         RAISE EXCEPTION 'Cannot fail processing run: status is %, expected RUNNING', v_run.status
             USING ERRCODE = '22023';
+    END IF;
+
+    -- Lease expiration check: write authority is revoked once lease expires
+    IF v_run.lease_expires_at IS NOT NULL AND v_run.lease_expires_at <= NOW() THEN
+        RAISE EXCEPTION 'Processing run lease has expired' USING ERRCODE = '55000';
     END IF;
 
     IF p_retryable AND v_run.attempt_count < 3 THEN

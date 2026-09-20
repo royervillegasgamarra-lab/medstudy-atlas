@@ -11,7 +11,7 @@ Responsibilities:
 5. Strict output serialization (manifest.json and per-page json files).
 
 SECURITY INVARIANTS:
-- Runs in a sandboxed subprocess with zero Supabase, DB, or AI credentials.
+- Application credentials are not inherited through the parser child-process environment.
 - Bounded resource budgets enforced before expensive operations.
 - Render pixel limits enforced prior to bitmap rasterization.
 - Prompt injection text is extracted as inert USER_DOCUMENT_UNTRUSTED data.
@@ -21,10 +21,12 @@ SECURITY INVARIANTS:
 import argparse
 import hashlib
 import json
+import math
 import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -39,10 +41,74 @@ DEFAULT_MAX_OCR_PAGES_PER_DOCUMENT = 60
 DEFAULT_MAX_EXTRACTED_CHARS_PER_PAGE = 100_000
 DEFAULT_MAX_EXTRACTED_CHARS_PER_DOCUMENT = 3_000_000
 DEFAULT_MAX_RENDER_PIXELS_PER_PAGE = 12_000_000
+DEFAULT_MAX_PAGE_DIMENSION_POINTS = 5000
 DEFAULT_PREFLIGHT_TIMEOUT_SECONDS = 10
 DEFAULT_OCR_PAGE_TIMEOUT_SECONDS = 20
 DEFAULT_MIN_NATIVE_CHARS_FOR_TEXT = 50
 DEFAULT_PIPELINE_VERSION = "1.0.0"
+
+
+def run_bounded_cmd(cmd: List[str], timeout_sec: int, max_bytes: int = 65536) -> Tuple[int, str, str]:
+    """
+    Executes a child process with a hard wall-clock timeout and bounded stream buffers (max_bytes)
+    to prevent memory exhaustion from verbose or adversarial diagnostic output.
+    Raises:
+      subprocess.TimeoutExpired: if process does not terminate within timeout_sec
+      ValueError: if stdout or stderr stream exceeds max_bytes
+    """
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        shell=False,
+    )
+
+    stdout_chunks: List[bytes] = []
+    stderr_chunks: List[bytes] = []
+    exceeded = [False]
+
+    def read_stream(stream, chunks: List[bytes]):
+        total = 0
+        while True:
+            chunk = stream.read(4096)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > max_bytes:
+                exceeded[0] = True
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                break
+            chunks.append(chunk)
+
+    t_out = threading.Thread(target=read_stream, args=(proc.stdout, stdout_chunks))
+    t_err = threading.Thread(target=read_stream, args=(proc.stderr, stderr_chunks))
+    t_out.daemon = True
+    t_err.daemon = True
+    t_out.start()
+    t_err.start()
+
+    try:
+        proc.wait(timeout=timeout_sec)
+        t_out.join(timeout=1.0)
+        t_err.join(timeout=1.0)
+    except subprocess.TimeoutExpired:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        t_out.join(timeout=1.0)
+        t_err.join(timeout=1.0)
+        raise subprocess.TimeoutExpired(cmd, timeout_sec)
+
+    if exceeded[0]:
+        raise ValueError(f"Diagnostic output exceeded limit of {max_bytes} bytes")
+
+    stdout_str = b"".join(stdout_chunks).decode("utf-8", errors="replace")
+    stderr_str = b"".join(stderr_chunks).decode("utf-8", errors="replace")
+    return proc.returncode, stdout_str, stderr_str
 
 
 def normalize_text(text: str) -> str:
@@ -111,6 +177,7 @@ class DocumentParser:
         self.max_extracted_chars_per_page = DEFAULT_MAX_EXTRACTED_CHARS_PER_PAGE
         self.max_extracted_chars_per_document = DEFAULT_MAX_EXTRACTED_CHARS_PER_DOCUMENT
         self.max_render_pixels_per_page = DEFAULT_MAX_RENDER_PIXELS_PER_PAGE
+        self.max_page_dimension_points = DEFAULT_MAX_PAGE_DIMENSION_POINTS
         self.preflight_timeout_seconds = DEFAULT_PREFLIGHT_TIMEOUT_SECONDS
         self.ocr_page_timeout_seconds = DEFAULT_OCR_PAGE_TIMEOUT_SECONDS
         self.min_native_chars_for_text = DEFAULT_MIN_NATIVE_CHARS_FOR_TEXT
@@ -118,7 +185,7 @@ class DocumentParser:
 
         if not config_json:
             sys.stderr.write("Error: --config argument is required for document parser invocation\n")
-            self.write_failure_manifest("PARSER_OUTPUT_INVALID", 0)
+            self.write_failure_manifest("PARSER_INTERNAL_ERROR", 0)
             sys.exit(1)
 
         try:
@@ -131,6 +198,7 @@ class DocumentParser:
             self.max_extracted_chars_per_page = int(cfg.get("maxExtractedCharsPerPage", self.max_extracted_chars_per_page))
             self.max_extracted_chars_per_document = int(cfg.get("maxExtractedCharsPerDocument", self.max_extracted_chars_per_document))
             self.max_render_pixels_per_page = int(cfg.get("maxRenderPixelsPerPage", self.max_render_pixels_per_page))
+            self.max_page_dimension_points = int(cfg.get("maxPageDimensionPoints", self.max_page_dimension_points))
             self.preflight_timeout_seconds = int(cfg.get("preflightTimeoutSeconds", self.preflight_timeout_seconds))
             self.ocr_page_timeout_seconds = int(cfg.get("ocrPageTimeoutSeconds", self.ocr_page_timeout_seconds))
             self.min_native_chars_for_text = int(cfg.get("minNativeCharsForText", self.min_native_chars_for_text))
@@ -147,6 +215,8 @@ class DocumentParser:
                 raise ValueError("maxExtractedCharsPerDocument out of range [10, 50000000]")
             if not (1_000_000 <= self.max_render_pixels_per_page <= 50_000_000):
                 raise ValueError("maxRenderPixelsPerPage out of range [1000000, 50000000]")
+            if not (100 <= self.max_page_dimension_points <= 20_000):
+                raise ValueError("maxPageDimensionPoints out of range [100, 20000]")
             if not (1 <= self.preflight_timeout_seconds <= 120):
                 raise ValueError("preflightTimeoutSeconds out of range [1, 120]")
             if not (1 <= self.ocr_page_timeout_seconds <= 120):
@@ -158,7 +228,7 @@ class DocumentParser:
 
         except Exception as err:
             sys.stderr.write(f"Invalid parser config: {err}\n")
-            self.write_failure_manifest("PARSER_OUTPUT_INVALID", 0)
+            self.write_failure_manifest("PARSER_INTERNAL_ERROR", 0)
             sys.exit(1)
 
     def write_failure_manifest(self, error_code: str, warning_count: int = 0) -> None:
@@ -178,63 +248,66 @@ class DocumentParser:
             json.dump(manifest, f, indent=2)
 
     def run_preflight(self) -> Tuple[int, int]:
-        # 1. Encryption Check
+        # 1. Encryption Check (bounded diagnostic stream)
         try:
-            res_enc = subprocess.run(
+            rc_enc, _, _ = run_bounded_cmd(
                 [self.qpdf_path, "--is-encrypted", str(self.input_path)],
-                capture_output=True,
-                text=True,
-                timeout=self.preflight_timeout_seconds,
-                shell=False,
+                timeout_sec=self.preflight_timeout_seconds,
             )
             # qpdf --is-encrypted returns 0 if encrypted, 2 if not encrypted
-            if res_enc.returncode == 0:
+            if rc_enc == 0:
                 self.write_failure_manifest("PDF_ENCRYPTED")
                 sys.exit(1)
         except subprocess.TimeoutExpired:
             self.write_failure_manifest("PREFLIGHT_TIMEOUT")
             sys.exit(1)
+        except ValueError:
+            self.write_failure_manifest("PREFLIGHT_FAILED")
+            sys.exit(1)
         except Exception:
-            self.write_failure_manifest("PARSER_CRASH")
+            self.write_failure_manifest("PARSER_INTERNAL_ERROR")
             sys.exit(1)
 
-        # 2. Structural Check & Warnings
+        # 2. Structural Check & Warnings (bounded diagnostic stream)
         warning_count = 0
         try:
-            res_check = subprocess.run(
+            rc_check, _, stderr_check = run_bounded_cmd(
                 [self.qpdf_path, "--check", str(self.input_path)],
-                capture_output=True,
-                text=True,
-                timeout=self.preflight_timeout_seconds,
-                shell=False,
+                timeout_sec=self.preflight_timeout_seconds,
             )
             # qpdf exit codes: 0 = clean, 3 = warnings, 2 = errors
-            if res_check.returncode == 2:
+            if rc_check == 2:
                 self.write_failure_manifest("PDF_CORRUPT")
                 sys.exit(1)
-            elif res_check.returncode == 3:
-                warning_count = len([line for line in res_check.stderr.splitlines() if "WARNING" in line.upper()])
+            elif rc_check == 3:
+                warning_count = len([line for line in stderr_check.splitlines() if "WARNING" in line.upper()])
                 if warning_count == 0:
                     warning_count = 1
+            elif rc_check != 0:
+                self.write_failure_manifest("PDF_CORRUPT")
+                sys.exit(1)
         except subprocess.TimeoutExpired:
             self.write_failure_manifest("PREFLIGHT_TIMEOUT")
             sys.exit(1)
+        except ValueError:
+            self.write_failure_manifest("PREFLIGHT_FAILED")
+            sys.exit(1)
+        except Exception:
+            self.write_failure_manifest("PARSER_INTERNAL_ERROR")
+            sys.exit(1)
 
-        # 3. Page Count
+        # 3. Page Count (bounded diagnostic stream)
         try:
-            res_pages = subprocess.run(
+            rc_pages, stdout_pages, _ = run_bounded_cmd(
                 [self.qpdf_path, "--show-npages", str(self.input_path)],
-                capture_output=True,
-                text=True,
-                timeout=self.preflight_timeout_seconds,
-                shell=False,
+                timeout_sec=self.preflight_timeout_seconds,
             )
-            if res_pages.returncode not in (0, 3):
+            if rc_pages not in (0, 3):
                 self.write_failure_manifest("PDF_CORRUPT", warning_count)
                 sys.exit(1)
 
             page_count = None
-            for line in [l.strip() for l in res_pages.stdout.splitlines() if l.strip()]:
+            for line in [l.strip() for l in stdout_pages.splitlines() if l.strip()]:
                 if line.isdigit():
                     page_count = int(line)
                     break
@@ -248,13 +321,19 @@ class DocumentParser:
                 sys.exit(1)
 
             if page_count > self.max_pages_per_document:
-                self.write_failure_manifest("PAGE_LIMIT_EXCEEDED", warning_count)
+                self.write_failure_manifest("PDF_PAGE_COUNT_EXCEEDED", warning_count)
                 sys.exit(1)
 
             return page_count, warning_count
 
         except subprocess.TimeoutExpired:
             self.write_failure_manifest("PREFLIGHT_TIMEOUT", warning_count)
+            sys.exit(1)
+        except ValueError:
+            self.write_failure_manifest("PREFLIGHT_FAILED", warning_count)
+            sys.exit(1)
+        except Exception:
+            self.write_failure_manifest("PARSER_INTERNAL_ERROR", warning_count)
             sys.exit(1)
 
     def process(self) -> None:
@@ -289,9 +368,20 @@ class DocumentParser:
             height_pts = float(page.get_height())
             rotation = int(page.get_rotation())
 
-            # Protect against extreme dimension page bombs
-            if (width_pts * height_pts) > self.max_render_pixels_per_page:
-                self.write_failure_manifest("PAGE_RENDER_LIMIT", warning_count)
+            # Protect against non-finite, non-positive, or extreme dimension page bombs
+            if not (math.isfinite(width_pts) and math.isfinite(height_pts) and width_pts > 0 and height_pts > 0):
+                self.write_failure_manifest("PAGE_DIMENSION_EXCEEDED", warning_count)
+                sys.exit(1)
+
+            if width_pts > self.max_page_dimension_points or height_pts > self.max_page_dimension_points:
+                self.write_failure_manifest("PAGE_DIMENSION_EXCEEDED", warning_count)
+                sys.exit(1)
+
+            # Protect against extreme rasterization pixel area
+            scale = 2.0
+            render_pixels = (width_pts * scale) * (height_pts * scale)
+            if render_pixels > self.max_render_pixels_per_page:
+                self.write_failure_manifest("PAGE_PIXEL_AREA_EXCEEDED", warning_count)
                 sys.exit(1)
 
             # 2. Extract Native Text
@@ -313,7 +403,7 @@ class DocumentParser:
             else:
                 # Scanned or image-heavy page requires selective OCR
                 if ocr_attempts >= self.max_ocr_pages_per_document:
-                    self.write_failure_manifest("OCR_PAGE_LIMIT", warning_count)
+                    self.write_failure_manifest("PARSER_RESOURCE_LIMIT", warning_count)
                     sys.exit(1)
 
                 ocr_attempts += 1
@@ -321,10 +411,8 @@ class DocumentParser:
 
                 try:
                     # Controlled rasterization at 144 DPI (scale=2.0)
-                    scale = 2.0
-                    render_pixels = (width_pts * scale) * (height_pts * scale)
                     if render_pixels > self.max_render_pixels_per_page:
-                        self.write_failure_manifest("PAGE_RENDER_LIMIT", warning_count)
+                        self.write_failure_manifest("PAGE_PIXEL_AREA_EXCEEDED", warning_count)
                         sys.exit(1)
 
                     bitmap = page.render(scale=scale)
@@ -410,12 +498,12 @@ class DocumentParser:
 
             # Validate per-page character bounds
             if final_char_count > self.max_extracted_chars_per_page:
-                self.write_failure_manifest("TEXT_PAGE_LIMIT", warning_count)
+                self.write_failure_manifest("PARSER_RESOURCE_LIMIT", warning_count)
                 sys.exit(1)
 
             total_extracted_chars += final_char_count
             if total_extracted_chars > self.max_extracted_chars_per_document:
-                self.write_failure_manifest("TEXT_DOCUMENT_LIMIT", warning_count)
+                self.write_failure_manifest("PARSER_RESOURCE_LIMIT", warning_count)
                 sys.exit(1)
 
             # Page provenance output

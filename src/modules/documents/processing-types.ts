@@ -1,30 +1,38 @@
 import { z } from "zod";
 
 /**
- * Stable machine-readable error codes for document processing.
+ * Error codes that the Python parser subprocess is permitted to emit in manifest.json.
  */
-export const PROCESSING_ERROR_CODES = [
-  "SOURCE_NOT_READY",
-  "SOURCE_MISSING",
-  "SOURCE_CHANGED",
-  "STORAGE_UNAVAILABLE",
+export const PARSER_REPORTED_ERROR_CODES = [
   "PDF_ENCRYPTED",
   "PDF_CORRUPT",
   "PDF_ZERO_PAGES",
-  "PAGE_LIMIT_EXCEEDED",
+  "PDF_PAGE_COUNT_EXCEEDED",
+  "PREFLIGHT_FAILED",
   "PREFLIGHT_TIMEOUT",
-  "PARSER_TIMEOUT",
-  "PARSER_CRASH",
-  "PAGE_RENDER_LIMIT",
-  "TEXT_PAGE_LIMIT",
-  "TEXT_DOCUMENT_LIMIT",
-  "OCR_UNAVAILABLE",
+  "PAGE_DIMENSION_EXCEEDED",
+  "PAGE_PIXEL_AREA_EXCEEDED",
+  "PARSER_RESOURCE_LIMIT",
+  "PARSER_INTERNAL_ERROR",
   "OCR_TIMEOUT",
-  "OCR_PAGE_LIMIT",
+  "OCR_UNAVAILABLE",
+  "OCR_FAILED",
+] as const;
+
+export type ParserReportedErrorCode =
+  (typeof PARSER_REPORTED_ERROR_CODES)[number];
+
+/**
+ * Complete set of processing error codes across parser, worker, storage, and database layers.
+ */
+export const PROCESSING_ERROR_CODES = [
+  ...PARSER_REPORTED_ERROR_CODES,
+  "SOURCE_MISSING",
+  "STORAGE_UNAVAILABLE",
+  "PARSER_TIMEOUT",
   "PARSER_OUTPUT_INVALID",
-  "JOB_LEASE_EXPIRED",
-  "JOB_RETRY_LIMIT",
   "WORKER_INTERNAL_ERROR",
+  "DOCUMENT_ARCHIVED",
 ] as const;
 
 export type ProcessingErrorCode = (typeof PROCESSING_ERROR_CODES)[number];
@@ -86,7 +94,7 @@ export const processingSuccessManifestSchema = z.object({
 
 /**
  * Zod schema for failed parser output manifest.
- * Allows page_count = 0 and requires a valid error_code.
+ * Allows page_count = 0 and requires a valid parser error_code.
  */
 export const processingFailureManifestSchema = z.object({
   status: z.literal("FAILED"),
@@ -103,7 +111,7 @@ export const processingFailureManifestSchema = z.object({
   ocr_page_count: z.number().int().nonnegative().optional().default(0),
   no_text_page_count: z.number().int().nonnegative().optional().default(0),
   processing_duration_ms: z.number().int().nonnegative().optional().default(0),
-  error_code: z.enum(PROCESSING_ERROR_CODES),
+  error_code: z.enum(PARSER_REPORTED_ERROR_CODES),
 });
 
 /**

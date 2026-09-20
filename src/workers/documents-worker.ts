@@ -20,6 +20,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { PROCESSING_LIMITS } from "@/config/processing-limits";
 import { isConfirmedObjectNotFoundError } from "@/modules/documents/service";
 import {
+  PARSER_REPORTED_ERROR_CODES,
   processingManifestSchema,
   pageProcessingResultSchema,
   type ProcessingManifest,
@@ -337,6 +338,155 @@ export function resolveTesseractExecutable(): string | undefined {
   return undefined;
 }
 
+export type ParserManifestCandidate =
+  | ProcessingManifest
+  | {
+      status?: unknown;
+      error_code?: unknown;
+      page_count?: unknown;
+      [key: string]: unknown;
+    };
+
+export interface ParserOutcomeInput {
+  exitCode: number;
+  spawnError?: Error | null;
+  manifestExists: boolean;
+  manifestSize?: number;
+  manifestData?: ParserManifestCandidate | null;
+}
+
+export interface ClassifiedParserOutcome {
+  status: "SUCCEEDED" | "FAILED";
+  errorCode?: ProcessingErrorCode;
+  isRetryable: boolean;
+}
+
+/**
+ * Pure helper to classify the outcome of a parser subprocess execution.
+ * Evaluates hard process timeouts first, followed by spawn errors, manifest validity,
+ * parser-reported failure manifests, and exit code contradictions.
+ */
+export function classifyParserOutcome(
+  input: ParserOutcomeInput
+): ClassifiedParserOutcome {
+  // 1. Hard parser process timeout: child killed with SIGKILL (-1)
+  if (input.exitCode === -1) {
+    return {
+      status: "FAILED",
+      errorCode: "PARSER_TIMEOUT",
+      isRetryable: true,
+    };
+  }
+
+  // 2. Child process spawn or execution error before exit
+  if (input.spawnError) {
+    return {
+      status: "FAILED",
+      errorCode: "WORKER_INTERNAL_ERROR",
+      isRetryable: false,
+    };
+  }
+
+  // 3. Manifest existence and size bounding (<= 64 KB)
+  if (
+    !input.manifestExists ||
+    (input.manifestSize !== undefined && input.manifestSize > 64 * 1024)
+  ) {
+    return {
+      status: "FAILED",
+      errorCode: "PARSER_OUTPUT_INVALID",
+      isRetryable: false,
+    };
+  }
+
+  // 4. Manifest data parsing or validation failure
+  if (!input.manifestData) {
+    return {
+      status: "FAILED",
+      errorCode: "PARSER_OUTPUT_INVALID",
+      isRetryable: false,
+    };
+  }
+
+  // 5. Parser reported failure manifest
+  if (input.manifestData.status === "FAILED") {
+    const rawErrorCode =
+      typeof input.manifestData.error_code === "string"
+        ? input.manifestData.error_code
+        : undefined;
+    // Validate error_code is strictly one of PARSER_REPORTED_ERROR_CODES
+    if (
+      !rawErrorCode ||
+      !(PARSER_REPORTED_ERROR_CODES as readonly string[]).includes(rawErrorCode)
+    ) {
+      return {
+        status: "FAILED",
+        errorCode: "PARSER_OUTPUT_INVALID",
+        isRetryable: false,
+      };
+    }
+
+    const isRetryable = (
+      [
+        "PREFLIGHT_TIMEOUT",
+        "OCR_TIMEOUT",
+        "PARSER_TIMEOUT",
+      ] as readonly string[]
+    ).includes(rawErrorCode);
+
+    return {
+      status: "FAILED",
+      errorCode: rawErrorCode as ProcessingErrorCode,
+      isRetryable,
+    };
+  }
+
+  // 6. Contradiction: non-zero exit code but manifest claimed SUCCEEDED
+  if (input.exitCode !== 0) {
+    return {
+      status: "FAILED",
+      errorCode: "PARSER_OUTPUT_INVALID",
+      isRetryable: false,
+    };
+  }
+
+  // 7. Successful parser execution
+  return {
+    status: "SUCCEEDED",
+    isRetryable: false,
+  };
+}
+
+/**
+ * Robust temporary directory cleanup with bounded retries and exponential backoff
+ * to handle Windows file locking delays without failing the job or exposing sensitive paths.
+ */
+async function cleanupJobTempDir(
+  dirPath: string,
+  runId: string
+): Promise<void> {
+  const delays = [100, 200, 400];
+  for (let attempt = 0; attempt <= delays.length; attempt++) {
+    try {
+      await fs.rm(dirPath, {
+        recursive: true,
+        force: true,
+        maxRetries: 2,
+        retryDelay: 50,
+      });
+      return;
+    } catch {
+      if (attempt < delays.length) {
+        await new Promise((resolve) => setTimeout(resolve, delays[attempt]));
+      } else {
+        console.warn(
+          `[DocumentsWorker] Temporary directory cleanup incomplete for run ${runId}. Residual cleanup deferred to OS lifecycle.`
+        );
+      }
+    }
+  }
+}
+
 /**
  * Claims and processes a single document processing job with claim token fencing and semantic provenance verification.
  */
@@ -359,33 +509,27 @@ export async function processNextDocumentJob(
     };
   }
 
-  const claimList = (claims as unknown as WorkerJobClaim[]) || [];
-  if (claimList.length === 0) {
+  if (!claims || (claims as unknown as unknown[]).length === 0) {
     return { claimed: false };
   }
 
-  const job = claimList[0];
-  const randomJobId = crypto.randomBytes(8).toString("hex");
-  const jobTempDir = path.join(
-    os.tmpdir(),
-    "medstudy-atlas-proc",
-    `${job.run_id}-${randomJobId}`
-  );
-  const sourcePdfPath = path.join(jobTempDir, "source.pdf");
+  const job = (claims as unknown as WorkerJobClaim[])[0];
+
+  // Guaranteed temp working directory for this run: <tmpdir>/medstudy-atlas-proc/<run_id>/
+  const jobTempDir = path.join(os.tmpdir(), "medstudy-atlas-proc", job.run_id);
+  const inputPdfPath = path.join(jobTempDir, "input.pdf");
   const outputDir = path.join(jobTempDir, "output");
-  const ocrTempDir = path.join(jobTempDir, "ocr-temp");
 
   try {
-    // 2. Prepare temporary filesystem isolation
+    await fs.mkdir(jobTempDir, { recursive: true });
     await fs.mkdir(outputDir, { recursive: true });
-    await fs.mkdir(ocrTempDir, { recursive: true });
 
-    // 3. Download source PDF from private Supabase Storage
-    const { data: blob, error: downloadError } = await supabaseAdmin.storage
+    // 2. Download source PDF with authoritative error classification
+    const { data: pdfBlob, error: downloadError } = await supabaseAdmin.storage
       .from(job.storage_bucket)
       .download(job.storage_key);
 
-    if (downloadError || !blob) {
+    if (downloadError || !pdfBlob) {
       const isConfirmedMissing = isConfirmedObjectNotFoundError(downloadError);
       const errorCode: ProcessingErrorCode = isConfirmedMissing
         ? "SOURCE_MISSING"
@@ -408,16 +552,16 @@ export async function processNextDocumentJob(
       };
     }
 
-    const buffer = Buffer.from(await blob.arrayBuffer());
-    await fs.writeFile(sourcePdfPath, buffer);
+    const pdfBuffer = Buffer.from(await pdfBlob.arrayBuffer());
+    await fs.writeFile(inputPdfPath, pdfBuffer);
 
-    // Compute SHA-256 of downloaded PDF in trusted orchestrator
+    // 3. Compute trusted source SHA-256 in Node before handing to parser
     const sourceSha256 = crypto
       .createHash("sha256")
-      .update(buffer)
+      .update(pdfBuffer)
       .digest("hex");
 
-    // 4. Spawn secure parser child process with explicit centralized configuration
+    // 4. Invoke Python parser subprocess with stripped environment
     const pythonExe = resolvePythonExecutable();
     const parserScript = path.resolve(
       process.cwd(),
@@ -429,11 +573,11 @@ export async function processNextDocumentJob(
     const args = [
       parserScript,
       "--input",
-      sourcePdfPath,
+      inputPdfPath,
       "--output",
       outputDir,
       "--temp",
-      ocrTempDir,
+      path.join(jobTempDir, "ocr_temp"),
       "--source-sha256",
       sourceSha256,
       "--config",
@@ -449,38 +593,93 @@ export async function processNextDocumentJob(
 
     const safeEnv = createSafeParserEnvironment();
 
-    const parserExitCode = await new Promise<number>((resolve, reject) => {
-      const child = spawn(pythonExe, args, {
-        env: safeEnv,
-        shell: false,
-        stdio: ["ignore", "pipe", "pipe"],
+    const { exitCode: parserExitCode, error: parserSpawnError } =
+      await new Promise<{ exitCode: number; error: Error | null }>(
+        (resolve) => {
+          const child = spawn(pythonExe, args, {
+            env: safeEnv,
+            shell: false,
+            stdio: ["ignore", "pipe", "pipe"],
+          });
+
+          const timeout = setTimeout(() => {
+            child.kill("SIGKILL");
+            resolve({ exitCode: -1, error: new Error("PARSER_TIMEOUT") });
+          }, PROCESSING_LIMITS.parserProcessTimeoutSeconds * 1000);
+
+          child.on("error", (err) => {
+            clearTimeout(timeout);
+            resolve({ exitCode: 1, error: err });
+          });
+
+          child.on("exit", (code) => {
+            clearTimeout(timeout);
+            resolve({ exitCode: code ?? 1, error: null });
+          });
+        }
+      );
+
+    // 5. Hard parser timeout check: immediately classify as PARSER_TIMEOUT with p_retryable: true
+    // Do NOT inspect manifest.json on hard process timeout.
+    if (parserExitCode === -1) {
+      await supabaseAdmin.rpc("fail_processing_run_privileged", {
+        p_run_id: job.run_id,
+        p_claim_token: job.claim_token,
+        p_error_code: "PARSER_TIMEOUT",
+        p_retryable: true,
       });
 
-      const timeout = setTimeout(() => {
-        child.kill("SIGKILL");
-        reject(new Error("PARSER_TIMEOUT"));
-      }, PROCESSING_LIMITS.parserProcessTimeoutSeconds * 1000);
+      return {
+        claimed: true,
+        runId: job.run_id,
+        documentId: job.document_id,
+        status: "FAILED",
+        errorCode: "PARSER_TIMEOUT",
+      };
+    }
 
-      child.on("error", (err) => {
-        clearTimeout(timeout);
-        reject(err);
-      });
-
-      child.on("exit", (code) => {
-        clearTimeout(timeout);
-        resolve(code ?? 1);
-      });
-    }).catch((err) => {
-      if (err.message === "PARSER_TIMEOUT") return -1;
-      return 1;
-    });
-
-    // 5. Bound parser output before readFile()
+    // 6. Inspect and bound parser output manifest
     const manifestPath = path.join(outputDir, "manifest.json");
     const manifestStat = await fs.stat(manifestPath).catch(() => null);
 
-    // Manifest size bound: maximum 64 KB
-    if (!manifestStat || manifestStat.size > 64 * 1024) {
+    let manifestData: ProcessingManifest | null = null;
+    if (manifestStat && manifestStat.size <= 64 * 1024) {
+      try {
+        const rawManifest = await fs.readFile(manifestPath, "utf-8");
+        manifestData = processingManifestSchema.parse(JSON.parse(rawManifest));
+      } catch {
+        manifestData = null;
+      }
+    }
+
+    const outcome = classifyParserOutcome({
+      exitCode: parserExitCode,
+      spawnError: parserSpawnError,
+      manifestExists: !!manifestStat,
+      manifestSize: manifestStat?.size,
+      manifestData,
+    });
+
+    if (outcome.status === "FAILED") {
+      const errorCode = outcome.errorCode || "PARSER_OUTPUT_INVALID";
+      await supabaseAdmin.rpc("fail_processing_run_privileged", {
+        p_run_id: job.run_id,
+        p_claim_token: job.claim_token,
+        p_error_code: errorCode,
+        p_retryable: outcome.isRetryable,
+      });
+
+      return {
+        claimed: true,
+        runId: job.run_id,
+        documentId: job.document_id,
+        status: "FAILED",
+        errorCode,
+      };
+    }
+
+    // Narrow manifestData to ProcessingSuccessManifest
+    if (!manifestData || manifestData.status !== "SUCCEEDED") {
       await supabaseAdmin.rpc("fail_processing_run_privileged", {
         p_run_id: job.run_id,
         p_claim_token: job.claim_token,
@@ -497,53 +696,12 @@ export async function processNextDocumentJob(
       };
     }
 
-    let manifestData: ProcessingManifest | null = null;
-    try {
-      const rawManifest = await fs.readFile(manifestPath, "utf-8");
-      manifestData = processingManifestSchema.parse(JSON.parse(rawManifest));
-    } catch {
-      manifestData = null;
-    }
-
-    if (
-      parserExitCode !== 0 ||
-      !manifestData ||
-      manifestData.status === "FAILED"
-    ) {
-      let errorCode: ProcessingErrorCode = "PARSER_CRASH";
-      if (parserExitCode === -1) {
-        errorCode = "PARSER_TIMEOUT";
-      } else if (manifestData?.error_code) {
-        errorCode = manifestData.error_code;
-      }
-
-      const isRetryable = [
-        "PARSER_TIMEOUT",
-        "PREFLIGHT_TIMEOUT",
-        "OCR_TIMEOUT",
-        "STORAGE_UNAVAILABLE",
-      ].includes(errorCode);
-
-      await supabaseAdmin.rpc("fail_processing_run_privileged", {
-        p_run_id: job.run_id,
-        p_claim_token: job.claim_token,
-        p_error_code: errorCode,
-        p_retryable: isRetryable,
-      });
-
-      return {
-        claimed: true,
-        runId: job.run_id,
-        documentId: job.document_id,
-        status: "FAILED",
-        errorCode,
-      };
-    }
+    const successManifest = manifestData;
 
     // Bound page count: must not exceed maxPagesPerDocument or be <= 0
     if (
-      manifestData.page_count <= 0 ||
-      manifestData.page_count > PROCESSING_LIMITS.maxPagesPerDocument
+      successManifest.page_count <= 0 ||
+      successManifest.page_count > PROCESSING_LIMITS.maxPagesPerDocument
     ) {
       await supabaseAdmin.rpc("fail_processing_run_privileged", {
         p_run_id: job.run_id,
@@ -570,7 +728,7 @@ export async function processNextDocumentJob(
       pageFiles = [];
     }
 
-    if (pageFiles.length !== manifestData.page_count) {
+    if (pageFiles.length !== successManifest.page_count) {
       await supabaseAdmin.rpc("fail_processing_run_privileged", {
         p_run_id: job.run_id,
         p_claim_token: job.claim_token,
@@ -590,7 +748,7 @@ export async function processNextDocumentJob(
     // 6. Trusted Provenance Verification: Read and validate each page result file
     const pagesList: PageProcessingResult[] = [];
 
-    for (let p = 1; p <= manifestData.page_count; p++) {
+    for (let p = 1; p <= successManifest.page_count; p++) {
       const pageFileName = `${String(p).padStart(4, "0")}.json`;
       const pageFilePath = path.join(pagesDir, pageFileName);
 
@@ -639,7 +797,7 @@ export async function processNextDocumentJob(
     const provenance = verifyParserProvenance({
       job,
       sourceSha256,
-      manifest: manifestData,
+      manifest: successManifest,
       pages: pagesList,
     });
 
@@ -666,7 +824,7 @@ export async function processNextDocumentJob(
       {
         p_run_id: job.run_id,
         p_claim_token: job.claim_token,
-        p_manifest: manifestData,
+        p_manifest: successManifest,
         p_pages: pagesList,
       }
     );
@@ -693,15 +851,11 @@ export async function processNextDocumentJob(
       runId: job.run_id,
       documentId: job.document_id,
       status: "SUCCEEDED",
-      pageCount: manifestData.page_count,
+      pageCount: successManifest.page_count,
     };
   } finally {
     // Guaranteed cleanup of temporary working directory on success and failure
-    try {
-      await fs.rm(jobTempDir, { recursive: true, force: true });
-    } catch {
-      // ignore cleanup errors
-    }
+    await cleanupJobTempDir(jobTempDir, job.run_id);
   }
 }
 

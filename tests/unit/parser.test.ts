@@ -9,6 +9,8 @@ import {
   resolvePythonExecutable,
   resolveQpdfExecutable,
   resolveTesseractExecutable,
+  classifyParserOutcome,
+  type ParserManifestCandidate,
 } from "@/workers/documents-worker";
 import {
   processingManifestSchema,
@@ -147,6 +149,174 @@ describe("Document Parser Subprocess & Schemas", () => {
 
       const parsed = pageProcessingResultSchema.safeParse(invalidPage);
       expect(parsed.success).toBe(false);
+    });
+  });
+
+  describe("classifyParserOutcome helper", () => {
+    it("classifies hard child process timeout (exitCode -1) as PARSER_TIMEOUT and retryable", () => {
+      // Hard timeout with no manifest
+      const outcomeNoManifest = classifyParserOutcome({
+        exitCode: -1,
+        manifestExists: false,
+      });
+      expect(outcomeNoManifest.status).toBe("FAILED");
+      expect(outcomeNoManifest.errorCode).toBe("PARSER_TIMEOUT");
+      expect(outcomeNoManifest.isRetryable).toBe(true);
+
+      // Hard timeout even if partial/corrupt manifest exists
+      const outcomeWithManifest = classifyParserOutcome({
+        exitCode: -1,
+        manifestExists: true,
+        manifestData: {
+          status: "FAILED",
+          error_code: "PDF_CORRUPT",
+        } as ParserManifestCandidate,
+      });
+      expect(outcomeWithManifest.status).toBe("FAILED");
+      expect(outcomeWithManifest.errorCode).toBe("PARSER_TIMEOUT");
+      expect(outcomeWithManifest.isRetryable).toBe(true);
+    });
+
+    it("classifies child spawn error as WORKER_INTERNAL_ERROR", () => {
+      const outcome = classifyParserOutcome({
+        exitCode: 1,
+        spawnError: new Error("ENOENT: python not found"),
+        manifestExists: false,
+      });
+      expect(outcome.status).toBe("FAILED");
+      expect(outcome.errorCode).toBe("WORKER_INTERNAL_ERROR");
+      expect(outcome.isRetryable).toBe(false);
+    });
+
+    it("classifies missing manifest as PARSER_OUTPUT_INVALID", () => {
+      const outcome = classifyParserOutcome({
+        exitCode: 1,
+        manifestExists: false,
+      });
+      expect(outcome.status).toBe("FAILED");
+      expect(outcome.errorCode).toBe("PARSER_OUTPUT_INVALID");
+      expect(outcome.isRetryable).toBe(false);
+    });
+
+    it("classifies oversized manifest (>64KB) as PARSER_OUTPUT_INVALID", () => {
+      const outcome = classifyParserOutcome({
+        exitCode: 1,
+        manifestExists: true,
+        manifestSize: 70 * 1024,
+      });
+      expect(outcome.status).toBe("FAILED");
+      expect(outcome.errorCode).toBe("PARSER_OUTPUT_INVALID");
+      expect(outcome.isRetryable).toBe(false);
+    });
+
+    it("classifies corrupt or unparseable manifestData as PARSER_OUTPUT_INVALID", () => {
+      const outcome = classifyParserOutcome({
+        exitCode: 1,
+        manifestExists: true,
+        manifestSize: 500,
+        manifestData: null,
+      });
+      expect(outcome.status).toBe("FAILED");
+      expect(outcome.errorCode).toBe("PARSER_OUTPUT_INVALID");
+      expect(outcome.isRetryable).toBe(false);
+    });
+
+    it("classifies parser failure manifests with correct retryability", () => {
+      // Retryable parser codes
+      for (const retryableCode of ["PREFLIGHT_TIMEOUT", "OCR_TIMEOUT"]) {
+        const outcome = classifyParserOutcome({
+          exitCode: 1,
+          manifestExists: true,
+          manifestSize: 200,
+          manifestData: {
+            status: "FAILED",
+            error_code: retryableCode,
+          } as ParserManifestCandidate,
+        });
+        expect(outcome.status).toBe("FAILED");
+        expect(outcome.errorCode).toBe(retryableCode);
+        expect(outcome.isRetryable).toBe(true);
+      }
+
+      // Non-retryable parser codes
+      const nonRetryableCodes = [
+        "PDF_ENCRYPTED",
+        "PDF_CORRUPT",
+        "PDF_ZERO_PAGES",
+        "PDF_PAGE_COUNT_EXCEEDED",
+        "PREFLIGHT_FAILED",
+        "PAGE_DIMENSION_EXCEEDED",
+        "PAGE_PIXEL_AREA_EXCEEDED",
+        "PARSER_RESOURCE_LIMIT",
+        "PARSER_INTERNAL_ERROR",
+        "OCR_UNAVAILABLE",
+        "OCR_FAILED",
+      ];
+      for (const code of nonRetryableCodes) {
+        const outcome = classifyParserOutcome({
+          exitCode: 1,
+          manifestExists: true,
+          manifestSize: 200,
+          manifestData: {
+            status: "FAILED",
+            error_code: code,
+          } as ParserManifestCandidate,
+        });
+        expect(outcome.status).toBe("FAILED");
+        expect(outcome.errorCode).toBe(code);
+        expect(outcome.isRetryable).toBe(false);
+      }
+    });
+
+    it("rejects unknown error codes in failure manifest as PARSER_OUTPUT_INVALID", () => {
+      const outcome = classifyParserOutcome({
+        exitCode: 1,
+        manifestExists: true,
+        manifestSize: 200,
+        manifestData: {
+          status: "FAILED",
+          error_code: "BOGUS_ERROR_CODE",
+        } as ParserManifestCandidate,
+      });
+      expect(outcome.status).toBe("FAILED");
+      expect(outcome.errorCode).toBe("PARSER_OUTPUT_INVALID");
+      expect(outcome.isRetryable).toBe(false);
+    });
+
+    it("rejects non-zero exit code with SUCCEEDED status as PARSER_OUTPUT_INVALID", () => {
+      const outcome = classifyParserOutcome({
+        exitCode: 1,
+        manifestExists: true,
+        manifestSize: 200,
+        manifestData: {
+          status: "SUCCEEDED",
+          page_count: 5,
+        } as ParserManifestCandidate,
+      });
+      expect(outcome.status).toBe("FAILED");
+      expect(outcome.errorCode).toBe("PARSER_OUTPUT_INVALID");
+      expect(outcome.isRetryable).toBe(false);
+    });
+
+    it("classifies clean 0 exit code with SUCCEEDED manifest as SUCCEEDED", () => {
+      const outcome = classifyParserOutcome({
+        exitCode: 0,
+        manifestExists: true,
+        manifestSize: 200,
+        manifestData: {
+          status: "SUCCEEDED",
+          pipeline_version: "1.0.0",
+          source_sha256: "abc",
+          page_count: 2,
+          structural_warning_count: 0,
+          native_text_page_count: 2,
+          ocr_page_count: 0,
+          no_text_page_count: 0,
+          processing_duration_ms: 100,
+        },
+      });
+      expect(outcome.status).toBe("SUCCEEDED");
+      expect(outcome.isRetryable).toBe(false);
     });
   });
 
@@ -337,7 +507,7 @@ describe("Document Parser Subprocess & Schemas", () => {
       expect(manifest.error_code).toBe("PDF_CORRUPT");
     });
 
-    it("fails on extreme_dimension.pdf with PAGE_RENDER_LIMIT", async () => {
+    it("fails on extreme_dimension.pdf with PAGE_DIMENSION_EXCEEDED", async () => {
       const { exitCode, outDir } = runParser(
         "extreme_dimension.pdf",
         "extreme-dim"
@@ -350,10 +520,141 @@ describe("Document Parser Subprocess & Schemas", () => {
       );
       const manifest: ProcessingManifest = JSON.parse(manifestRaw);
       expect(manifest.status).toBe("FAILED");
-      expect(manifest.error_code).toBe("PAGE_RENDER_LIMIT");
+      expect(manifest.error_code).toBe("PAGE_DIMENSION_EXCEEDED");
     });
 
-    it("fails with PARSER_OUTPUT_INVALID when --config is missing", async () => {
+    it("fails with PAGE_PIXEL_AREA_EXCEEDED when render pixels exceed maxRenderPixelsPerPage (2000x2000 pt)", async () => {
+      const syntheticPdfPath = path.join(testTempDir, "extreme_pixel_area.pdf");
+      const rawPdf = Buffer.from(
+        `%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 2000 2000] /Resources <<>> >>
+endobj
+xref
+0 4
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+trailer
+<< /Size 4 /Root 1 0 R >>
+startxref
+208
+%%EOF
+`
+      );
+      await fs.writeFile(syntheticPdfPath, rawPdf);
+
+      const outDir = path.join(testTempDir, "out-pixel-area");
+      const tempOcrDir = path.join(testTempDir, "temp-pixel-area");
+
+      const args = [
+        parserScript,
+        "--input",
+        syntheticPdfPath,
+        "--output",
+        outDir,
+        "--temp",
+        tempOcrDir,
+        "--source-sha256",
+        "mock-sha-256",
+        "--config",
+        JSON.stringify(PROCESSING_LIMITS),
+      ];
+
+      if (qpdfExe) args.push("--qpdf-path", qpdfExe);
+      if (tesseractExe) args.push("--tesseract-path", tesseractExe);
+
+      const safeEnv = createSafeParserEnvironment();
+      const res = spawnSync(pythonExe, args, {
+        env: safeEnv,
+        encoding: "utf-8",
+      });
+      expect(res.status).not.toBe(0);
+
+      const manifestRaw = await fs.readFile(
+        path.join(outDir, "manifest.json"),
+        "utf-8"
+      );
+      const manifest: ProcessingManifest = JSON.parse(manifestRaw);
+      expect(manifest.status).toBe("FAILED");
+      expect(manifest.error_code).toBe("PAGE_PIXEL_AREA_EXCEEDED");
+    });
+
+    it("fails with PAGE_DIMENSION_EXCEEDED when single-axis dimension exceeds maxPageDimensionPoints (10000x100 pt)", async () => {
+      const syntheticPdfPath = path.join(
+        testTempDir,
+        "extreme_single_axis.pdf"
+      );
+      const rawPdf = Buffer.from(
+        `%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10000 100] /Resources <<>> >>
+endobj
+xref
+0 4
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+trailer
+<< /Size 4 /Root 1 0 R >>
+startxref
+208
+%%EOF
+`
+      );
+      await fs.writeFile(syntheticPdfPath, rawPdf);
+
+      const outDir = path.join(testTempDir, "out-single-axis-dim");
+      const tempOcrDir = path.join(testTempDir, "temp-single-axis-dim");
+
+      const args = [
+        parserScript,
+        "--input",
+        syntheticPdfPath,
+        "--output",
+        outDir,
+        "--temp",
+        tempOcrDir,
+        "--source-sha256",
+        "mock-sha-256",
+        "--config",
+        JSON.stringify(PROCESSING_LIMITS),
+      ];
+
+      if (qpdfExe) args.push("--qpdf-path", qpdfExe);
+      if (tesseractExe) args.push("--tesseract-path", tesseractExe);
+
+      const safeEnv = createSafeParserEnvironment();
+      const res = spawnSync(pythonExe, args, {
+        env: safeEnv,
+        encoding: "utf-8",
+      });
+      expect(res.status).not.toBe(0);
+
+      const manifestRaw = await fs.readFile(
+        path.join(outDir, "manifest.json"),
+        "utf-8"
+      );
+      const manifest: ProcessingManifest = JSON.parse(manifestRaw);
+      expect(manifest.status).toBe("FAILED");
+      expect(manifest.error_code).toBe("PAGE_DIMENSION_EXCEEDED");
+    });
+
+    it("fails with PARSER_INTERNAL_ERROR when --config is missing", async () => {
       const inputPdf = path.join(fixturesDir, "valid_text.pdf");
       const outDir = path.join(testTempDir, "out-missing-config");
       const tempOcrDir = path.join(testTempDir, "temp-missing-config");
@@ -383,10 +684,10 @@ describe("Document Parser Subprocess & Schemas", () => {
       );
       const manifest: ProcessingManifest = JSON.parse(manifestRaw);
       expect(manifest.status).toBe("FAILED");
-      expect(manifest.error_code).toBe("PARSER_OUTPUT_INVALID");
+      expect(manifest.error_code).toBe("PARSER_INTERNAL_ERROR");
     });
 
-    it("fails with PARSER_OUTPUT_INVALID when given out-of-range configuration", async () => {
+    it("fails with PARSER_INTERNAL_ERROR when given out-of-range configuration", async () => {
       const { exitCode, outDir } = runParser(
         "valid_text.pdf",
         "invalid-config",
@@ -402,10 +703,10 @@ describe("Document Parser Subprocess & Schemas", () => {
       );
       const manifest: ProcessingManifest = JSON.parse(manifestRaw);
       expect(manifest.status).toBe("FAILED");
-      expect(manifest.error_code).toBe("PARSER_OUTPUT_INVALID");
+      expect(manifest.error_code).toBe("PARSER_INTERNAL_ERROR");
     });
 
-    it("fails with TEXT_PAGE_LIMIT when page extracted text exceeds maxExtractedCharsPerPage", async () => {
+    it("fails with PARSER_RESOURCE_LIMIT when page extracted text exceeds maxExtractedCharsPerPage", async () => {
       const { exitCode, outDir } = runParser(
         "valid_text.pdf",
         "page-text-limit",
@@ -421,10 +722,10 @@ describe("Document Parser Subprocess & Schemas", () => {
       );
       const manifest: ProcessingManifest = JSON.parse(manifestRaw);
       expect(manifest.status).toBe("FAILED");
-      expect(manifest.error_code).toBe("TEXT_PAGE_LIMIT");
+      expect(manifest.error_code).toBe("PARSER_RESOURCE_LIMIT");
     });
 
-    it("fails with TEXT_DOCUMENT_LIMIT when total extracted text exceeds maxExtractedCharsPerDocument", async () => {
+    it("fails with PARSER_RESOURCE_LIMIT when total extracted text exceeds maxExtractedCharsPerDocument", async () => {
       const { exitCode, outDir } = runParser(
         "valid_text.pdf",
         "doc-text-limit",
@@ -441,10 +742,10 @@ describe("Document Parser Subprocess & Schemas", () => {
       );
       const manifest: ProcessingManifest = JSON.parse(manifestRaw);
       expect(manifest.status).toBe("FAILED");
-      expect(manifest.error_code).toBe("TEXT_DOCUMENT_LIMIT");
+      expect(manifest.error_code).toBe("PARSER_RESOURCE_LIMIT");
     });
 
-    it("fails with PAGE_LIMIT_EXCEEDED when document exceeds maxPagesPerDocument", async () => {
+    it("fails with PDF_PAGE_COUNT_EXCEEDED when document exceeds maxPagesPerDocument", async () => {
       const { exitCode, outDir } = runParser(
         "valid_text.pdf",
         "page-count-limit",
@@ -460,10 +761,10 @@ describe("Document Parser Subprocess & Schemas", () => {
       );
       const manifest: ProcessingManifest = JSON.parse(manifestRaw);
       expect(manifest.status).toBe("FAILED");
-      expect(manifest.error_code).toBe("PAGE_LIMIT_EXCEEDED");
+      expect(manifest.error_code).toBe("PDF_PAGE_COUNT_EXCEEDED");
     });
 
-    it("fails with OCR_PAGE_LIMIT when OCR budget maxOcrPagesPerDocument is exceeded", async () => {
+    it("fails with PARSER_RESOURCE_LIMIT when OCR budget maxOcrPagesPerDocument is exceeded", async () => {
       const { exitCode, outDir } = runParser(
         "scanned_image.pdf",
         "ocr-page-limit",
@@ -479,7 +780,7 @@ describe("Document Parser Subprocess & Schemas", () => {
       );
       const manifest: ProcessingManifest = JSON.parse(manifestRaw);
       expect(manifest.status).toBe("FAILED");
-      expect(manifest.error_code).toBe("OCR_PAGE_LIMIT");
+      expect(manifest.error_code).toBe("PARSER_RESOURCE_LIMIT");
     });
 
     it("classifies pytesseract RuntimeError timeout as OCR_TIMEOUT during DocumentParser.process()", () => {

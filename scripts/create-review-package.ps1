@@ -494,10 +494,14 @@ if (Test-Path (Join-Path $repoRoot "package.json")) {
             Copy-Item -Path $_.FullName -Destination (Join-Path $repoTestResultsDir $_.Name) -Force
         }
 
-        # If test:e2e re-generated existing committed screenshots in docs/screenshots, restore them to clean commit state
+        # If test:e2e re-generated existing committed screenshots in docs/screenshots or modified next-env.d.ts, restore them to clean commit state
         $screenshotStatus = git -C $repoRoot status --porcelain docs/screenshots 2>$null
         if ($screenshotStatus) {
             git -C $repoRoot checkout -- docs/screenshots 2>$null
+        }
+        $nextEnvStatus = git -C $repoRoot status --porcelain next-env.d.ts 2>$null
+        if ($nextEnvStatus) {
+            git -C $repoRoot checkout -- next-env.d.ts 2>$null
         }
     }
 

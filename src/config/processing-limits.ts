@@ -19,6 +19,9 @@ export const PROCESSING_LIMITS = {
   /** Maximum rasterization pixel count for OCR rendering (e.g. ~3000x4000) */
   maxRenderPixelsPerPage: 12_000_000,
 
+  /** Maximum page dimension in points (width or height) to prevent strip-bomb attacks */
+  maxPageDimensionPoints: 5000,
+
   /** Maximum seconds allowed for qpdf structural preflight */
   preflightTimeoutSeconds: 10,
 

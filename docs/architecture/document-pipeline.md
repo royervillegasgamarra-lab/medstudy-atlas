@@ -57,20 +57,20 @@ flowchart TD
 
 | Subsystem Component | Status | Implementation Details |
 | :--- | :--- | :--- |
-| **Preflight Integrity (`qpdf` 12.4.1)** | `IMPLEMENTED` | Detects encryption (`PDF_ENCRYPTED`), corruption (`PDF_CORRUPT`), zero pages (`PDF_ZERO_PAGES`), and bounds page count ($\le 300$ pages). Code 3 warnings accepted. |
-| **Native Text Extraction (`pypdfium2` 5.13.0)** | `IMPLEMENTED` | Native digital text extracted via PDFium textpage interface without launching browser runtimes. Bypasses OCR when native characters $\ge 50$. |
-| **Selective OCR (`tesseract` 5.5.3)** | `IMPLEMENTED` | Local Tesseract invoked strictly with `spa+eng` language packs for pages with $< 50$ native characters. Capped at 60 OCR pages/doc and 12M pixels/page. |
+| **Preflight Integrity (`qpdf` 12.4.1)** | `IMPLEMENTED` | Detects encryption (`PDF_ENCRYPTED`), corruption (`PDF_CORRUPT`), zero pages (`PDF_ZERO_PAGES`), and bounds page count ($\le 300$ pages, `PDF_PAGE_COUNT_EXCEEDED`). Code 3 warnings accepted. Diagnostic output capped at 64 KB; kills child and fails with `PREFLIGHT_FAILED` if exceeded. |
+| **Native Text Extraction (`pypdfium2` 5.13.0)** | `IMPLEMENTED` | Native digital text extracted via PDFium textpage interface without launching browser runtimes. Bypasses OCR when native characters $\ge 50$. Dimension checked: single-axis $\le 5000$ pt (`PAGE_DIMENSION_EXCEEDED`), render pixel area $\le 12$M pixels (`PAGE_PIXEL_AREA_EXCEEDED`). |
+| **Selective OCR (`tesseract` 5.5.3)** | `IMPLEMENTED` | Local Tesseract invoked strictly with `spa+eng` language packs for pages with $< 50$ native characters. Capped at 60 OCR pages/doc (`PARSER_RESOURCE_LIMIT`) and 12M pixels/page. |
 | **Prompt Injection Defense** | `IMPLEMENTED` | All content classified as `USER_DOCUMENT_UNTRUSTED`. Prompt injection payloads are preserved verbatim as inert text data without executing. |
-| **Subprocess Security Boundary** | `IMPLEMENTED` | `createSafeParserEnvironment()` strips all application secrets (`SUPABASE_*`, `DATABASE_URL`, AI keys, auth tokens). Note: stripped environment provides credential isolation, not an OS sandbox. Full OS-level sandboxing (e.g. gVisor, Firecracker, or container seccomp) is an explicit production deployment gate. |
-| **Worker Queue & Claim Fencing** | `IMPLEMENTED` | `document_processing_runs` uses PostgreSQL `claim_next_processing_run` (`FOR UPDATE SKIP LOCKED`). Fenced by `claim_token UUID`, `claimed_by TEXT`, and `lease_expires_at TIMESTAMPTZ`. |
-| **Bounded Retry & Terminal Semantics** | `IMPLEMENTED` | Max 3 attempts. `FAILED_RETRYABLE` may be manually re-enqueued; `FAILED_FINAL` cannot be re-enqueued or claimed. UI offers no retry for terminal failures. |
+| **Subprocess Security Boundary** | `IMPLEMENTED` | Application credentials are not inherited through the parser child-process environment. `createSafeParserEnvironment()` strips all application secrets (`SUPABASE_*`, `DATABASE_URL`, AI keys, auth tokens). Note: stripped environment provides credential isolation, not an OS sandbox. Full OS-level sandboxing (e.g. gVisor, Firecracker, or container seccomp) is an explicit production deployment gate. |
+| **Worker Queue & Claim Fencing** | `IMPLEMENTED` | `document_processing_runs` uses PostgreSQL `claim_next_processing_run` (`FOR UPDATE SKIP LOCKED`). Fenced by `claim_token UUID`, `claimed_by TEXT`, and `lease_expires_at TIMESTAMPTZ` (default 900s, bounds 1-3600s). Expired leases (`lease_expires_at <= NOW()`) immediately revoke write authority on persist/fail (raises 55000). |
+| **Bounded Retry & Terminal Semantics** | `IMPLEMENTED` | Max 3 attempts. `FAILED_RETRYABLE` may be manually re-enqueued; `FAILED_FINAL` cannot be re-enqueued or claimed. UI offers no retry for terminal failures. Hard parser timeouts (`-1`) classified as `PARSER_TIMEOUT` with `p_retryable: true` before manifest check. |
 | **Trusted Provenance Verification** | `IMPLEMENTED` | Trusted Node orchestrator verifies source SHA-256, per-page text SHA-256, Unicode code points, aggregate counters, and pipeline version before persistence. |
 | **Archive Race Closure** | `IMPLEMENTED` | `archive_document_privileged` marks active runs `FAILED_FINAL` (`DOCUMENT_ARCHIVED`) and deletes `document_pages`. Stale worker persist is denied on archived documents. |
 | **Deterministic Chunking** | `DEFERRED` | Formal chunking (400–800 tokens, 10–15% overlap) and concept linking scheduled for **Vertical Slice 1E (Study Pack Generation)**. |
 | **AI Embeddings & Vector Search** | `DEFERRED` | `pgvector` hybrid search and embeddings generation scheduled for **Vertical Slice 1E & 1F**. Zero AI spend in Phase 1D ($0.00). |
 | **Docling Structural Parser** | `DEFERRED` | Heavyweight PyTorch/layout parsing deferred post-MVP. |
 | **Cloud API OCR Fallback** | `DEFERRED` | Zero external cloud OCR APIs enabled. Local Tesseract `spa+eng` is the sole OCR engine. |
-| **Hard Memory Cap & OS Sandbox** | `DEPLOYMENT GATE` | Operating-system-level hard RSS/memory container cap and true OS sandboxing (gVisor / Firecracker / seccomp) constitute an explicit **Deployment Gate** required before public untrusted uploads in production. Currently enforced guards: qpdf preflight, 300-page limit, 12M pixel render limit, 100K char/page limit, 600s parser process timeout. |
+| **Hard Memory Cap & OS Sandbox** | `DEPLOYMENT GATE` | Operating-system-level hard RSS/memory container cap and true OS sandboxing (gVisor / Firecracker / seccomp) constitute an explicit **Deployment Gate** required before public untrusted uploads in production. Currently enforced guards: qpdf preflight (64 KB output cap), 300-page limit, 5000 pt dimension limit, 12M pixel render limit, 100K char/page limit, 600s parser process timeout. |
 
 ---
 
@@ -80,15 +80,16 @@ Centralized in [`src/config/processing-limits.ts`](file:///c:/Users/DR_%20CHAPAT
 
 | Parameter | Bound | Rationale |
 | :--- | :--- | :--- |
-| `maxPagesPerDocument` | 300 pages | Accommodates comprehensive medical syllabi and semester slide decks while bounding processing runtime. |
-| `maxOcrPagesPerDocument` | 60 pages | Prevents CPU exhaustion on massive scanned books; students are guided to use text-readable PDFs. |
-| `maxExtractedCharsPerPage` | 100,000 chars | Prevents text-inflation decompression bombs. |
-| `maxExtractedCharsPerDocument` | 3,000,000 chars | Total text budget across entire document (~600,000 words). |
-| `maxRenderPixelsPerPage` | 12,000,000 pixels | ~3000x4000 resolution at 144 DPI; prevents bitmap memory bombs. |
-| `preflightTimeoutSeconds` | 10 seconds | Fast fail for corrupt, locked, or malformed PDFs. |
+| `maxPagesPerDocument` | 300 pages | Accommodates comprehensive medical syllabi and semester slide decks while bounding processing runtime (`PDF_PAGE_COUNT_EXCEEDED`). |
+| `maxOcrPagesPerDocument` | 60 pages | Prevents CPU exhaustion on massive scanned books; students are guided to use text-readable PDFs (`PARSER_RESOURCE_LIMIT`). |
+| `maxPageDimensionPoints` | 5000 points | Prevents single-axis strip decompression bombs (`PAGE_DIMENSION_EXCEEDED`). |
+| `maxRenderPixelsPerPage` | 12,000,000 pixels | ~3000x4000 resolution at 144 DPI; prevents bitmap memory bombs (`PAGE_PIXEL_AREA_EXCEEDED`). |
+| `maxExtractedCharsPerPage` | 100,000 chars | Prevents text-inflation decompression bombs (`PARSER_RESOURCE_LIMIT`). |
+| `maxExtractedCharsPerDocument` | 3,000,000 chars | Total text budget across entire document (~600,000 words; `PARSER_RESOURCE_LIMIT`). |
+| `preflightTimeoutSeconds` | 10 seconds | Fast fail for corrupt, locked, or malformed PDFs (`PREFLIGHT_TIMEOUT`). |
 | `ocrPageTimeoutSeconds` | 20 seconds | Hard timeout per OCR page; raises `OCR_TIMEOUT` on hung Tesseract processes. |
-| `parserProcessTimeoutSeconds` | 600 seconds (10 min) | Operative hard deadline for native extraction and overall subprocess execution (`totalJobTimeoutSeconds` alias). |
-| `workerLeaseSeconds` | 900 seconds (15 min) | Automatic lease expiration window for crashed workers before reclaiming ($900s > 600s$). |
+| `parserProcessTimeoutSeconds` | 600 seconds (10 min) | Operative hard deadline for native extraction and overall subprocess execution (`totalJobTimeoutSeconds` alias; `PARSER_TIMEOUT`). |
+| `workerLeaseSeconds` | 900 seconds (15 min) | Automatic lease expiration window for crashed workers before reclaiming ($900s > 600s$). Bounded to range 1–3600s. Expired lease revokes write authority. |
 | `maxRetries` | 3 attempts | Bounded retry budget before transitioning to `FAILED_FINAL`. |
 | `minNativeCharsForText` | 50 characters | Decision boundary to bypass OCR on digitally authored slides. |
 | `pipelineVersion` | `"1.0.0"` | Canonical version for schema and run compatibility. |

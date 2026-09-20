@@ -978,4 +978,180 @@ describe("Document Processing Worker & Isolation Integration (Phase 1D)", () => 
       expect(runRecord!.error_code).toBe("JOB_RETRY_LIMIT");
     });
   });
+
+  describe("Failure Contract & Lease Revocation Integration", () => {
+    it("fails run with FAILED_FINAL when encountering PDF_ENCRYPTED manifest", async () => {
+      const docId = crypto.randomUUID();
+      const storageKey = `${testUserId}/${docId}.pdf`;
+
+      await adminClient.from("documents").insert({
+        id: docId,
+        user_id: testUserId,
+        subject_id: testSubjectId,
+        original_filename: "encrypted_contract_test.pdf",
+        storage_bucket: "documents",
+        storage_key: storageKey,
+        size_bytes: 1024,
+        mime_type: "application/pdf",
+        status: "READY",
+      });
+
+      const { data: enqueueData } = await adminClient.rpc(
+        "enqueue_document_processing_privileged",
+        { p_document_id: docId, p_user_id: testUserId }
+      );
+      const runId = (enqueueData as unknown as Array<{ run_id: string }>)[0]
+        .run_id;
+
+      const { data: claimData } = await adminClient.rpc(
+        "claim_next_processing_run",
+        { p_worker_id: "worker-enc-test", p_lease_seconds: 900 }
+      );
+      const claimToken = (
+        claimData as unknown as Array<{ claim_token: string }>
+      )[0].claim_token;
+
+      // Fail with PDF_ENCRYPTED (non-retryable)
+      const { error: failError } = await adminClient.rpc(
+        "fail_processing_run_privileged",
+        {
+          p_run_id: runId,
+          p_claim_token: claimToken,
+          p_error_code: "PDF_ENCRYPTED",
+          p_retryable: false,
+        }
+      );
+      expect(failError).toBeNull();
+
+      const { data: run } = await adminClient
+        .from("document_processing_runs")
+        .select("status, error_code")
+        .eq("id", runId)
+        .single();
+
+      expect(run!.status).toBe("FAILED_FINAL");
+      expect(run!.error_code).toBe("PDF_ENCRYPTED");
+    });
+
+    it("fails run with FAILED_RETRYABLE when encountering PREFLIGHT_TIMEOUT manifest", async () => {
+      const docId = crypto.randomUUID();
+      const storageKey = `${testUserId}/${docId}.pdf`;
+
+      await adminClient.from("documents").insert({
+        id: docId,
+        user_id: testUserId,
+        subject_id: testSubjectId,
+        original_filename: "timeout_contract_test.pdf",
+        storage_bucket: "documents",
+        storage_key: storageKey,
+        size_bytes: 1024,
+        mime_type: "application/pdf",
+        status: "READY",
+      });
+
+      const { data: enqueueData } = await adminClient.rpc(
+        "enqueue_document_processing_privileged",
+        { p_document_id: docId, p_user_id: testUserId }
+      );
+      const runId = (enqueueData as unknown as Array<{ run_id: string }>)[0]
+        .run_id;
+
+      const { data: claimData } = await adminClient.rpc(
+        "claim_next_processing_run",
+        { p_worker_id: "worker-timeout-test", p_lease_seconds: 900 }
+      );
+      const claimToken = (
+        claimData as unknown as Array<{ claim_token: string }>
+      )[0].claim_token;
+
+      // Fail with PREFLIGHT_TIMEOUT (retryable)
+      const { error: failError } = await adminClient.rpc(
+        "fail_processing_run_privileged",
+        {
+          p_run_id: runId,
+          p_claim_token: claimToken,
+          p_error_code: "PREFLIGHT_TIMEOUT",
+          p_retryable: true,
+        }
+      );
+      expect(failError).toBeNull();
+
+      const { data: run } = await adminClient
+        .from("document_processing_runs")
+        .select("status, error_code")
+        .eq("id", runId)
+        .single();
+
+      expect(run!.status).toBe("FAILED_RETRYABLE");
+      expect(run!.error_code).toBe("PREFLIGHT_TIMEOUT");
+    });
+
+    it("revokes write authority on expired lease even without competitor claim", async () => {
+      const docId = crypto.randomUUID();
+      const storageKey = `${testUserId}/${docId}.pdf`;
+
+      await adminClient.from("documents").insert({
+        id: docId,
+        user_id: testUserId,
+        subject_id: testSubjectId,
+        original_filename: "lease_revocation_test.pdf",
+        storage_bucket: "documents",
+        storage_key: storageKey,
+        size_bytes: 1024,
+        mime_type: "application/pdf",
+        status: "READY",
+      });
+
+      const { data: enqueueData } = await adminClient.rpc(
+        "enqueue_document_processing_privileged",
+        { p_document_id: docId, p_user_id: testUserId }
+      );
+      const runId = (enqueueData as unknown as Array<{ run_id: string }>)[0]
+        .run_id;
+
+      const { data: claimData } = await adminClient.rpc(
+        "claim_next_processing_run",
+        { p_worker_id: "worker-expired-test", p_lease_seconds: 900 }
+      );
+      const claimToken = (
+        claimData as unknown as Array<{ claim_token: string }>
+      )[0].claim_token;
+
+      // Manually expire the lease
+      await adminClient
+        .from("document_processing_runs")
+        .update({
+          lease_expires_at: new Date(Date.now() - 5000).toISOString(),
+        })
+        .eq("id", runId);
+
+      // Attempt to persist results with expired lease -> MUST be rejected (code 55000)
+      const { error: persistError } = await adminClient.rpc(
+        "persist_processing_run_results_privileged",
+        {
+          p_run_id: runId,
+          p_claim_token: claimToken,
+          p_manifest: { page_count: 0 },
+          p_pages: [],
+        }
+      );
+      expect(persistError).toBeDefined();
+      expect(persistError?.message).toContain(
+        "Processing run lease has expired"
+      );
+
+      // Attempt to fail run with expired lease -> MUST be rejected (code 55000)
+      const { error: failError } = await adminClient.rpc(
+        "fail_processing_run_privileged",
+        {
+          p_run_id: runId,
+          p_claim_token: claimToken,
+          p_error_code: "PARSER_TIMEOUT",
+          p_retryable: true,
+        }
+      );
+      expect(failError).toBeDefined();
+      expect(failError?.message).toContain("Processing run lease has expired");
+    });
+  });
 });

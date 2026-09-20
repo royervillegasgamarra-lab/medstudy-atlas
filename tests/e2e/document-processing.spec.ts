@@ -109,49 +109,97 @@ test.describe("Phase 1D: Secure Document Processing & Provenance UI", () => {
       caret: "initial",
     });
 
-    // 6. Simulate a failed processing run via legitimate fail_processing_run_privileged RPC
+    // 6. Create a separate document and run that fails legitimately via fail_processing_run_privileged
     const supabaseAdmin = createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL || "http://127.0.0.1:54321",
       process.env.SUPABASE_SECRET_KEY!
     );
 
-    const { data: latestRun } = await supabaseAdmin
-      .from("document_processing_runs")
-      .select("id")
+    const { data: firstDoc } = await supabaseAdmin
+      .from("documents")
+      .select("id, user_id, subject_id")
+      .eq("original_filename", "fisiopatologia_cardiaca.pdf")
       .order("created_at", { ascending: false })
       .limit(1)
-      .single();
+      .maybeSingle();
 
-    if (latestRun?.id) {
-      const simClaimToken = crypto.randomUUID();
-      await supabaseAdmin
-        .from("document_processing_runs")
-        .update({
-          status: "RUNNING",
-          claim_token: simClaimToken,
-          claimed_by: "e2e-worker-sim",
-          lease_expires_at: new Date(Date.now() + 300000).toISOString(),
-        })
-        .eq("id", latestRun.id);
+    expect(firstDoc?.user_id).toBeDefined();
 
-      // Call legitimate fail_processing_run_privileged RPC with matching claim_token
-      const { error: failRpcError } = await supabaseAdmin.rpc(
-        "fail_processing_run_privileged",
-        {
-          p_run_id: latestRun.id,
-          p_claim_token: simClaimToken,
-          p_error_code: "PREFLIGHT_TIMEOUT",
-          p_retryable: true,
-        }
-      );
-      expect(failRpcError).toBeNull();
-    }
+    const retryDocId = crypto.randomUUID();
+    const retryStorageKey = `${firstDoc!.user_id}/${retryDocId}.pdf`;
+
+    // Upload PDF to storage
+    await supabaseAdmin.storage
+      .from("documents")
+      .upload(retryStorageKey, validPdfBuffer, {
+        contentType: "application/pdf",
+        upsert: true,
+      });
+
+    // Insert READY document
+    await supabaseAdmin.from("documents").insert({
+      id: retryDocId,
+      user_id: firstDoc!.user_id,
+      subject_id: firstDoc!.subject_id,
+      original_filename: "documento_fallido_reintento.pdf",
+      storage_bucket: "documents",
+      storage_key: retryStorageKey,
+      size_bytes: validPdfBuffer.length,
+      mime_type: "application/pdf",
+      status: "READY",
+    });
+
+    // Enqueue processing run
+    const { data: enqueueData } = await supabaseAdmin.rpc(
+      "enqueue_document_processing_privileged",
+      {
+        p_document_id: retryDocId,
+        p_user_id: firstDoc!.user_id,
+      }
+    );
+    const retryRunId = (enqueueData as unknown as Array<{ run_id: string }>)[0]
+      .run_id;
+
+    // Claim run via claim_next_processing_run
+    const { data: claimData } = await supabaseAdmin.rpc(
+      "claim_next_processing_run",
+      {
+        p_worker_id: "e2e-worker-sim",
+        p_lease_seconds: 900,
+      }
+    );
+    const claimToken = (
+      claimData as unknown as Array<{ claim_token: string }>
+    )[0].claim_token;
+
+    // Call legitimate fail_processing_run_privileged RPC with matching claim_token and retryable=true
+    const { error: failRpcError } = await supabaseAdmin.rpc(
+      "fail_processing_run_privileged",
+      {
+        p_run_id: retryRunId,
+        p_claim_token: claimToken,
+        p_error_code: "PREFLIGHT_TIMEOUT",
+        p_retryable: true,
+      }
+    );
+    expect(failRpcError).toBeNull();
 
     await page.reload();
-    await expect(page.getByText("Error al procesar")).toBeVisible({
+    await expect(page.getByText("documento_fallido_reintento.pdf")).toBeVisible(
+      {
+        timeout: 10000,
+      }
+    );
+
+    const failedDocRow = page
+      .locator("div")
+      .filter({ hasText: "documento_fallido_reintento.pdf" })
+      .filter({ has: page.getByRole("button", { name: /Archivar/i }) })
+      .first();
+    await expect(failedDocRow.getByText("Error al procesar")).toBeVisible({
       timeout: 10000,
     });
-    const retryBtn = page.getByRole("button", { name: /Reintentar/i });
+    const retryBtn = failedDocRow.getByRole("button", { name: /Reintentar/i });
     await expect(retryBtn).toBeVisible();
 
     // Capture screenshot of failed processing state with retry button
@@ -166,28 +214,26 @@ test.describe("Phase 1D: Secure Document Processing & Provenance UI", () => {
     await expect(
       page.getByText("Procesamiento reencolado exitosamente.")
     ).toBeVisible({ timeout: 10000 });
-    await expect(page.getByText("Pendiente de procesar")).toBeVisible();
+    await expect(failedDocRow.getByText("Pendiente de procesar")).toBeVisible();
 
     // 8. Auto-enqueue recovery: delete processing run for this document to verify "Procesar" recovery UI
-    const { data: doc } = await supabaseAdmin
-      .from("documents")
-      .select("id")
-      .eq("original_filename", "fisiopatologia_cardiaca.pdf")
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .single();
-
-    expect(doc?.id).toBeDefined();
-
     await supabaseAdmin
       .from("document_processing_runs")
       .delete()
-      .eq("document_id", doc!.id);
+      .eq("document_id", retryDocId);
 
     await page.reload();
 
+    const recoveryDocRow = page
+      .locator("div")
+      .filter({ hasText: "documento_fallido_reintento.pdf" })
+      .filter({ has: page.getByRole("button", { name: /Archivar/i }) })
+      .first();
+
     // Verify "Procesar" recovery button is visible
-    const procesarBtn = page.getByRole("button", { name: /Procesar/i });
+    const procesarBtn = recoveryDocRow.getByRole("button", {
+      name: /Procesar/i,
+    });
     await expect(procesarBtn).toBeVisible({ timeout: 10000 });
 
     // Click "Procesar" to trigger auto-enqueue recovery
@@ -195,6 +241,8 @@ test.describe("Phase 1D: Secure Document Processing & Provenance UI", () => {
     await expect(
       page.getByText("Procesamiento reencolado exitosamente.")
     ).toBeVisible({ timeout: 10000 });
-    await expect(page.getByText("Pendiente de procesar")).toBeVisible();
+    await expect(
+      recoveryDocRow.getByText("Pendiente de procesar")
+    ).toBeVisible();
   });
 });
