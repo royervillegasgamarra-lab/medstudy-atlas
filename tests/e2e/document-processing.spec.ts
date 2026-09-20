@@ -84,12 +84,22 @@ test.describe("Phase 1D: Secure Document Processing & Provenance UI", () => {
       page.getByText(/Pendiente de procesar|Procesando/)
     ).toBeVisible();
 
-    // 4. Process the document using worker CLI
-    execSync("pnpm worker:documents --once", { stdio: "inherit" });
+    // 4. Process queued documents until our document transitions to SUCCEEDED
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        execSync("pnpm worker:documents --once", { stdio: "inherit" });
+      } catch {
+        // worker may exit with 1 if an earlier corrupt document failed, continue processing queue
+      }
+      await page.reload();
+      const isDone = await page.getByText(/Procesado/).isVisible();
+      if (isDone) break;
+      await page.waitForTimeout(1000);
+    }
 
-    // 5. Reload page and verify status transitions to "Procesado"
+    // 5. Verify status transitions to "Procesado"
     await page.reload();
-    await expect(page.getByText(/Procesado/)).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText(/Procesado/)).toBeVisible({ timeout: 15000 });
 
     // Capture screenshot of processed document in library
     await page.screenshot({

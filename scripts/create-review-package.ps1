@@ -145,7 +145,7 @@ $phaseTitle = switch -Regex ($PhaseSlug) {
     "01?a" { "Vertical Slice 1A -- Identity, Auth & RLS Baseline" }
     "01?b" { "Vertical Slice 1B -- Onboarding, Curriculum & Exam Targets" }
     "01?c" { "Vertical Slice 1C -- Document Library & Secure Upload" }
-    "01?d" { "Vertical Slice 1D -- Secure Document Processing / Ingestion & Page Provenance" }
+    "01?d" { "Phase 1D — Document Processing / Ingestion" }
     default { "$PhaseSlug -- Local Review Package" }
 }
 

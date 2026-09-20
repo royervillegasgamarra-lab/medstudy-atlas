@@ -186,13 +186,17 @@ class DocumentParser:
                 timeout=PREFLIGHT_TIMEOUT_SECONDS,
                 shell=False,
             )
-            if res_pages.returncode != 0:
+            if res_pages.returncode not in (0, 3):
                 self.write_failure_manifest("PDF_CORRUPT", warning_count)
                 sys.exit(1)
 
-            try:
-                page_count = int(res_pages.stdout.strip())
-            except ValueError:
+            page_count = None
+            for line in [l.strip() for l in res_pages.stdout.splitlines() if l.strip()]:
+                if line.isdigit():
+                    page_count = int(line)
+                    break
+
+            if page_count is None:
                 self.write_failure_manifest("PDF_CORRUPT", warning_count)
                 sys.exit(1)
 
