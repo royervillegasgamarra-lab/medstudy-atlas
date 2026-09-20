@@ -54,7 +54,7 @@ pnpm verify
 
 ---
 
-## 3. Complete Phase 1A Verification Sequence
+## 3. Complete Verification Sequence (Phase 1B & Reusable Baseline)
 For final branch verification and review package readiness, execute the complete sequential pipeline:
 ```bash
 pnpm install --frozen-lockfile
@@ -72,20 +72,22 @@ pnpm audit
 
 ---
 
-## 4. End-to-End Browser Smoke & Auth Isolation: `pnpm test:e2e`
+## 4. End-to-End Browser Smoke & Functional Verification: `pnpm test:e2e`
 Runs Playwright against the local application, launching `pnpm dev` automatically via `webServer`:
 ```bash
 pnpm test:e2e
 ```
 Verifies:
-- Root URL (`/`) HTTP 200 response and correct heading/tagline rendering with Phase 1A status.
+- Root URL (`/`) HTTP 200 response and correct heading/tagline rendering.
 - Mobile viewport rendering (375x667) with zero horizontal overflow.
 - 404 (`/non-existent-route-for-testing`) graceful fallback route.
 - Health endpoint (`/api/health`) returning `{ status: "ok" }`.
-- Auth lifecycle: signup -> view `/app` -> edit profile -> logout -> login.
-- Open redirect defense: protocol-relative and backslash bypass targets sanitized.
-- Two-user isolation across distinct browser contexts.
-- Generates desktop, mobile, auth, and profile screenshots in `docs/screenshots/`.
+- Auth lifecycle: signup -> onboarding wizard -> `/app` -> edit profile -> logout -> login.
+- Open redirect defense: protocol-relative (`//attacker.com`) and backslash bypass targets sanitized to `/app`.
+- Two-user isolation across distinct browser contexts (User A and User B operate completely independently).
+- Curriculum & Exam Target CRUD & Archival flows.
+- User-content XSS defense: HTML and script tags in subject names render as plain text without execution.
+- Generates desktop, mobile, auth, onboarding, subjects, and exam targets screenshots in `docs/screenshots/`.
 
 ---
 

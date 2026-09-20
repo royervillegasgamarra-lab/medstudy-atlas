@@ -34,6 +34,74 @@ export type Database = {
   };
   public: {
     Tables: {
+      exam_targets: {
+        Row: {
+          archived_at: string | null;
+          created_at: string;
+          exam_date: string;
+          id: string;
+          subject_id: string | null;
+          title: string;
+          updated_at: string;
+          user_id: string;
+        };
+        Insert: {
+          archived_at?: string | null;
+          created_at?: string;
+          exam_date: string;
+          id?: string;
+          subject_id?: string | null;
+          title: string;
+          updated_at?: string;
+          user_id: string;
+        };
+        Update: {
+          archived_at?: string | null;
+          created_at?: string;
+          exam_date?: string;
+          id?: string;
+          subject_id?: string | null;
+          title?: string;
+          updated_at?: string;
+          user_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "fk_exam_targets_subject_owner";
+            columns: ["subject_id", "user_id"];
+            isOneToOne: false;
+            referencedRelation: "subjects";
+            referencedColumns: ["id", "user_id"];
+          },
+        ];
+      };
+      subjects: {
+        Row: {
+          archived_at: string | null;
+          created_at: string;
+          id: string;
+          name: string;
+          updated_at: string;
+          user_id: string;
+        };
+        Insert: {
+          archived_at?: string | null;
+          created_at?: string;
+          id?: string;
+          name: string;
+          updated_at?: string;
+          user_id: string;
+        };
+        Update: {
+          archived_at?: string | null;
+          created_at?: string;
+          id?: string;
+          name?: string;
+          updated_at?: string;
+          user_id?: string;
+        };
+        Relationships: [];
+      };
       user_profiles: {
         Row: {
           created_at: string;
@@ -41,7 +109,7 @@ export type Database = {
           full_name: string | null;
           id: string;
           medical_school: string | null;
-          target_exam_date: string | null;
+          onboarding_completed_at: string | null;
           updated_at: string;
           year_of_study: number | null;
         };
@@ -51,7 +119,7 @@ export type Database = {
           full_name?: string | null;
           id: string;
           medical_school?: string | null;
-          target_exam_date?: string | null;
+          onboarding_completed_at?: string | null;
           updated_at?: string;
           year_of_study?: number | null;
         };
@@ -61,7 +129,7 @@ export type Database = {
           full_name?: string | null;
           id?: string;
           medical_school?: string | null;
-          target_exam_date?: string | null;
+          onboarding_completed_at?: string | null;
           updated_at?: string;
           year_of_study?: number | null;
         };
@@ -72,7 +140,7 @@ export type Database = {
       [_ in never]: never;
     };
     Functions: {
-      [_ in never]: never;
+      complete_onboarding: { Args: never; Returns: string };
     };
     Enums: {
       [_ in never]: never;

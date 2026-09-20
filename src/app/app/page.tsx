@@ -1,46 +1,42 @@
 import Link from "next/link";
-import { getCurrentUser, getCurrentProfile } from "@/modules/identity";
+import { getCurrentProfile } from "@/modules/identity";
 import {
-  Card,
-  CardHeader,
-  CardTitle,
-  CardDescription,
-  CardContent,
-  CardFooter,
-} from "@/components/ui/card";
+  getActiveSubjects,
+  getUpcomingExamTargets,
+} from "@/modules/curriculum";
+import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-
-function formatExamDate(dateStr: string | null | undefined): string {
-  if (!dateStr) return "Sin fecha definida";
-  const [year, month, day] = dateStr.split("-").map(Number);
-  if (!year || !month || !day) return dateStr;
-  const date = new Date(year, month - 1, day);
-  return date.toLocaleDateString("es-PE", {
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-  });
-}
+import { formatExamDate, getRemainingDays } from "@/lib/date-utils";
+import { SubjectManager } from "@/components/curriculum/subject-manager";
+import { ExamManager } from "@/components/curriculum/exam-manager";
 
 export default async function AppDashboardPage() {
-  const user = await getCurrentUser();
   const profile = await getCurrentProfile();
+  const subjectsRes = await getActiveSubjects();
+  const examsRes = await getUpcomingExamTargets();
+
+  const subjects = subjectsRes.data || [];
+  const exams = examsRes.data || [];
 
   const studentName = profile?.full_name || "Colega Médico";
-  const studentEmail = profile?.email || user?.email || "";
-  const studentSchool = profile?.medical_school || "No especificada";
+  const studentSchool = profile?.medical_school || "Facultad no especificada";
   const studentYear = profile?.year_of_study
-    ? `${profile.year_of_study}° Año`
-    : "No registrado";
-  const examDate = formatExamDate(profile?.target_exam_date);
+    ? `${profile.year_of_study}° Año de Medicina`
+    : "Año no especificado";
+
+  // Earliest upcoming exam
+  const nextExam = exams.length > 0 ? exams[0] : null;
+  const nextExamRemaining = nextExam
+    ? getRemainingDays(nextExam.exam_date)
+    : null;
 
   return (
     <div className="space-y-8">
-      {/* Welcome Header */}
+      {/* Student Greeting & Academic Context */}
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 border-b border-border/60 pb-6">
         <div>
-          <div className="flex items-center gap-2 mb-1">
+          <div className="flex items-center gap-2 mb-1 flex-wrap">
             <h1 className="text-3xl font-bold tracking-tight text-foreground">
               Bienvenido, {studentName}
             </h1>
@@ -49,7 +45,7 @@ export default async function AppDashboardPage() {
             </Badge>
           </div>
           <p className="text-muted-foreground text-sm">
-            Entorno de Estudio Médico y Preparación Académica Personalizada
+            {studentSchool} • {studentYear}
           </p>
         </div>
 
@@ -60,202 +56,61 @@ export default async function AppDashboardPage() {
         </Link>
       </div>
 
-      {/* Student Profile Overview Card */}
-      <Card className="border-border bg-card/60 shadow-sm">
-        <CardHeader>
-          <CardTitle className="text-lg font-semibold flex items-center justify-between">
-            <span>Ficha del Estudiante</span>
-            <Badge variant="secondary" className="text-xs">
-              RLS Aislado
-            </Badge>
-          </CardTitle>
-          <CardDescription>
-            Tus datos están protegidos por Row Level Security exclusivo para tu
-            cuenta.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 text-sm">
-            <div>
-              <p className="text-xs text-muted-foreground uppercase tracking-wider font-semibold">
-                Correo Electrónico
-              </p>
-              <p className="font-medium text-foreground mt-1">{studentEmail}</p>
-            </div>
-
-            <div>
-              <p className="text-xs text-muted-foreground uppercase tracking-wider font-semibold">
-                Facultad de Medicina
-              </p>
-              <p className="font-medium text-foreground mt-1">
-                {studentSchool}
-              </p>
-            </div>
-
-            <div>
-              <p className="text-xs text-muted-foreground uppercase tracking-wider font-semibold">
-                Nivel Académico
-              </p>
-              <p className="font-medium text-foreground mt-1">{studentYear}</p>
-            </div>
-
-            <div>
-              <p className="text-xs text-muted-foreground uppercase tracking-wider font-semibold">
-                Examen Objetivo
-              </p>
-              <p className="font-medium text-foreground mt-1">{examDate}</p>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Modules Roadmap Grid */}
-      <div>
-        <h2 className="text-xl font-bold tracking-tight text-foreground mb-4">
-          Módulos de Preparación
-        </h2>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          <Card className="border-border/60 bg-card/40">
-            <CardHeader>
-              <div className="flex items-center justify-between">
-                <CardTitle className="text-base font-semibold">
-                  Plan de Estudio & Currículo
-                </CardTitle>
-                <Badge
-                  variant="outline"
-                  className="text-xs text-muted-foreground"
-                >
-                  Fase 1B
-                </Badge>
+      {/* Next Upcoming Exam Banner / Empty State */}
+      {nextExam ? (
+        <Card className="border-primary/30 bg-primary/5 shadow-sm">
+          <CardContent className="p-6">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs uppercase font-bold text-primary tracking-wider">
+                    Próximo Examen
+                  </span>
+                  {nextExamRemaining && (
+                    <Badge
+                      variant={
+                        nextExamRemaining.isPast ? "secondary" : "default"
+                      }
+                      className="text-xs"
+                    >
+                      {nextExamRemaining.label}
+                    </Badge>
+                  )}
+                </div>
+                <h2 className="text-xl font-bold text-foreground">
+                  {nextExam.title}
+                </h2>
+                <p className="text-sm text-muted-foreground">
+                  📅 {formatExamDate(nextExam.exam_date)}
+                  {nextExam.subject && (
+                    <span> • Asignatura: {nextExam.subject.name}</span>
+                  )}
+                </p>
               </div>
-              <CardDescription>
-                Onboarding académico, asignaturas y blueprints de examen.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
+            </div>
+          </CardContent>
+        </Card>
+      ) : (
+        <Card className="border-border bg-card/40 shadow-xs">
+          <CardContent className="p-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <div className="space-y-1">
+              <h2 className="text-base font-semibold text-foreground">
+                Sin exámenes próximos programados
+              </h2>
               <p className="text-xs text-muted-foreground">
-                Configuración curricular y metas de estudio según tu año y
-                facultad de medicina.
+                Puedes registrar tus fechas de evaluación abajo para activar la
+                cuenta regresiva.
               </p>
-            </CardContent>
-            <CardFooter>
-              <Button
-                variant="secondary"
-                size="sm"
-                className="w-full text-xs"
-                disabled
-              >
-                Próximamente
-              </Button>
-            </CardFooter>
-          </Card>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
-          <Card className="border-border/60 bg-card/40">
-            <CardHeader>
-              <div className="flex items-center justify-between">
-                <CardTitle className="text-base font-semibold">
-                  Biblioteca & Documentos
-                </CardTitle>
-                <Badge
-                  variant="outline"
-                  className="text-xs text-muted-foreground"
-                >
-                  Fase 1C
-                </Badge>
-              </div>
-              <CardDescription>
-                Ingesta de guías clínicas y PDFs con OCR selectivo.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <p className="text-xs text-muted-foreground">
-                Sube tus materiales de clase para extraer conceptos y generar
-                packs de estudio.
-              </p>
-            </CardContent>
-            <CardFooter>
-              <Button
-                variant="secondary"
-                size="sm"
-                className="w-full text-xs"
-                disabled
-              >
-                Próximamente
-              </Button>
-            </CardFooter>
-          </Card>
+      {/* Subjects Section */}
+      <SubjectManager initialSubjects={subjects} />
 
-          <Card className="border-border/60 bg-card/40">
-            <CardHeader>
-              <div className="flex items-center justify-between">
-                <CardTitle className="text-base font-semibold">
-                  Repetición Espaciada (FSRS)
-                </CardTitle>
-                <Badge
-                  variant="outline"
-                  className="text-xs text-muted-foreground"
-                >
-                  Fase 1H
-                </Badge>
-              </div>
-              <CardDescription>
-                Algoritmo FSRS de retención cognitiva a largo plazo.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <p className="text-xs text-muted-foreground">
-                Tarjetas de memoria generadas a partir de tus lecturas con
-                cálculo de estabilidad y olvido.
-              </p>
-            </CardContent>
-            <CardFooter>
-              <Button
-                variant="secondary"
-                size="sm"
-                className="w-full text-xs"
-                disabled
-              >
-                Próximamente
-              </Button>
-            </CardFooter>
-          </Card>
-
-          <Card className="border-border/60 bg-card/40">
-            <CardHeader>
-              <div className="flex items-center justify-between">
-                <CardTitle className="text-base font-semibold">
-                  Simulador & Error Notebook
-                </CardTitle>
-                <Badge
-                  variant="outline"
-                  className="text-xs text-muted-foreground"
-                >
-                  Fase 1F
-                </Badge>
-              </div>
-              <CardDescription>
-                Preguntas de opción múltiple tipo ENAM y cuaderno de errores.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <p className="text-xs text-muted-foreground">
-                Entrena con casos clínicos educativos y retroalimentación
-                justificada.
-              </p>
-            </CardContent>
-            <CardFooter>
-              <Button
-                variant="secondary"
-                size="sm"
-                className="w-full text-xs"
-                disabled
-              >
-                Próximamente
-              </Button>
-            </CardFooter>
-          </Card>
-        </div>
-      </div>
+      {/* Exam Targets Section */}
+      <ExamManager initialExams={exams} subjects={subjects} />
     </div>
   );
 }

@@ -68,12 +68,6 @@ export async function updateProfile(
     if (input.year_of_study !== undefined) {
       updatePayload.year_of_study = input.year_of_study;
     }
-    if (input.target_exam_date !== undefined) {
-      updatePayload.target_exam_date =
-        input.target_exam_date && input.target_exam_date.trim().length > 0
-          ? input.target_exam_date.trim()
-          : null;
-    }
 
     if (Object.keys(updatePayload).length === 0) {
       return { success: true };
@@ -85,7 +79,6 @@ export async function updateProfile(
       .eq("id", userId);
 
     if (error) {
-      // Sanitize error: never expose SQL, internal table names, or raw Postgres messages
       console.error("[updateProfile error]", error.message);
       return {
         success: false,
@@ -100,6 +93,52 @@ export async function updateProfile(
     return {
       success: false,
       error: "Error al actualizar el perfil.",
+    };
+  }
+}
+
+/**
+ * Verifies onboarding completion conditions server-side and marks onboarding completed.
+ * Rule: Authenticated profile exists AND at least one active (non-archived) subject exists.
+ * Enforced at the database level via public.complete_onboarding() RPC.
+ * Does not trust arbitrary client assertions.
+ */
+export async function completeOnboarding(): Promise<{
+  success: boolean;
+  error?: string;
+}> {
+  try {
+    const user = await getCurrentUser();
+    if (!user) {
+      return { success: false, error: "No autenticado." };
+    }
+
+    const supabase = await createClient();
+
+    // Call database-enforced RPC function which verifies active subjects and stamps completion
+    const { error: rpcError } = await supabase.rpc("complete_onboarding");
+
+    if (rpcError) {
+      console.error("[completeOnboarding rpc error]", rpcError.message);
+      if (rpcError.code === "23514") {
+        return {
+          success: false,
+          error:
+            "Debes registrar al menos una asignatura activa para completar el onboarding.",
+        };
+      }
+      return {
+        success: false,
+        error: "No se pudo registrar la finalización del onboarding.",
+      };
+    }
+
+    return { success: true };
+  } catch (err) {
+    console.error("[completeOnboarding exception]", err);
+    return {
+      success: false,
+      error: "Error inesperado al completar el onboarding.",
     };
   }
 }

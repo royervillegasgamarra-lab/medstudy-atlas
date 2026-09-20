@@ -64,7 +64,7 @@ export default function HomePage() {
             </Link>
             <Badge variant="success" className="gap-1 px-2 py-0.5 text-xs">
               <span className="size-1.5 rounded-full bg-emerald-600 dark:bg-emerald-400 animate-pulse" />
-              Phase 1A
+              Phase 1B
             </Badge>
             <ThemeToggle />
           </div>
@@ -87,11 +87,11 @@ export default function HomePage() {
             {APP_CONFIG.tagline}
           </p>
           <p className="text-sm font-medium text-primary">
-            Identity, Auth & RLS Baseline operational — Phase 1A
+            Onboarding, Curriculum & Exam Targets — Phase 1B
           </p>
           <p className="text-sm font-medium text-emerald-600 dark:text-emerald-400">
-            Vertical Slice 1A: Autenticación SSR y RLS activas localmente
-            ($0.00)
+            Vertical Slice 1B: Onboarding, Asignaturas y Metas de Examen activas
+            localmente ($0.00)
           </p>
 
           <div className="flex flex-wrap items-center justify-center gap-3 pt-4">

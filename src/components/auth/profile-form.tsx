@@ -32,7 +32,7 @@ export function ProfileForm({ profile }: ProfileFormProps) {
           Perfil del Estudiante
         </CardTitle>
         <CardDescription>
-          Configura tus datos académicos y fecha de examen objetivo
+          Configura tus datos académicos y personales.
         </CardDescription>
       </CardHeader>
       <form action={formAction}>
@@ -93,6 +93,7 @@ export function ProfileForm({ profile }: ProfileFormProps) {
                 name="medicalSchool"
                 defaultValue={profile.medical_school || ""}
                 placeholder="Ej. UNMSM, UPCH, UCSUR"
+                maxLength={150}
                 disabled={isPending}
               />
             </div>
@@ -104,26 +105,12 @@ export function ProfileForm({ profile }: ProfileFormProps) {
                 name="yearOfStudy"
                 type="number"
                 min="1"
-                max="7"
+                max="10"
                 defaultValue={profile.year_of_study || ""}
-                placeholder="1 - 7"
+                placeholder="1 - 10"
                 disabled={isPending}
               />
             </div>
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="targetExamDate">Fecha del Examen Objetivo</Label>
-            <Input
-              id="targetExamDate"
-              name="targetExamDate"
-              type="date"
-              defaultValue={profile.target_exam_date || ""}
-              disabled={isPending}
-            />
-            <p className="text-xs text-muted-foreground">
-              Fecha estimada de tu examen (ENAM, Essalud o residentado).
-            </p>
           </div>
         </CardContent>
 

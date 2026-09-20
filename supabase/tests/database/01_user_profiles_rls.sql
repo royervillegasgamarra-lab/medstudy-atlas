@@ -1,5 +1,5 @@
 BEGIN;
-SELECT plan(57);
+SELECT plan(66);
 
 -- 1. Schema & Relation Structure
 SELECT has_table('public', 'user_profiles', 'Table public.user_profiles exists');
@@ -39,15 +39,39 @@ SELECT results_eq(
     'Authenticated has no EXECUTE privilege on private.handle_new_user'
 );
 
+-- Check complete_onboarding function exists and is restricted
+SELECT has_function('public', 'complete_onboarding', 'Function public.complete_onboarding exists in public schema');
+SELECT results_eq(
+    $$ SELECT prosecdef FROM pg_proc WHERE proname = 'complete_onboarding' AND pronamespace = 'public'::regnamespace $$,
+    $$ VALUES (true) $$,
+    'public.complete_onboarding is SECURITY DEFINER'
+);
+SELECT results_eq(
+    $$ SELECT has_function_privilege('public', 'public.complete_onboarding()', 'execute') $$,
+    $$ VALUES (false) $$,
+    'Public has no EXECUTE privilege on public.complete_onboarding'
+);
+SELECT results_eq(
+    $$ SELECT has_function_privilege('anon', 'public.complete_onboarding()', 'execute') $$,
+    $$ VALUES (false) $$,
+    'Anon has no EXECUTE privilege on public.complete_onboarding'
+);
+SELECT results_eq(
+    $$ SELECT has_function_privilege('authenticated', 'public.complete_onboarding()', 'execute') $$,
+    $$ VALUES (true) $$,
+    'Authenticated has EXECUTE privilege on public.complete_onboarding'
+);
+
 -- Check columns exist
 SELECT has_column('public', 'user_profiles', 'id', 'user_profiles has id');
 SELECT has_column('public', 'user_profiles', 'email', 'user_profiles has email');
 SELECT has_column('public', 'user_profiles', 'full_name', 'user_profiles has full_name');
 SELECT has_column('public', 'user_profiles', 'medical_school', 'user_profiles has medical_school');
 SELECT has_column('public', 'user_profiles', 'year_of_study', 'user_profiles has year_of_study');
-SELECT has_column('public', 'user_profiles', 'target_exam_date', 'user_profiles has target_exam_date');
+SELECT has_column('public', 'user_profiles', 'onboarding_completed_at', 'user_profiles has onboarding_completed_at');
 SELECT has_column('public', 'user_profiles', 'created_at', 'user_profiles has created_at');
 SELECT has_column('public', 'user_profiles', 'updated_at', 'user_profiles has updated_at');
+SELECT hasnt_column('public', 'user_profiles', 'target_exam_date', 'user_profiles does not have dead field target_exam_date');
 SELECT hasnt_column('public', 'user_profiles', 'target_exam_id', 'user_profiles does not have dead field target_exam_id');
 
 -- Check RLS is enabled
@@ -154,8 +178,7 @@ BEGIN
     UPDATE public.user_profiles
     SET full_name = 'User One Updated',
         medical_school = 'Universidad Nacional Mayor de San Marcos',
-        year_of_study = 6,
-        target_exam_date = '2027-01-15'
+        year_of_study = 6
     WHERE id = '11111111-1111-1111-1111-111111111111';
 END $$;
 
@@ -241,6 +264,22 @@ SELECT throws_ok(
     'User 1: cannot update system-managed updated_at column'
 );
 
+-- Cannot update onboarding_completed_at directly (column update privilege revoked)
+SELECT throws_ok(
+    $$ UPDATE public.user_profiles SET onboarding_completed_at = NOW() WHERE id = '11111111-1111-1111-1111-111111111111' $$,
+    '42501',
+    NULL,
+    'User 1: cannot directly UPDATE onboarding_completed_at (privilege revoked)'
+);
+
+-- Cannot clear onboarding_completed_at directly (column update privilege revoked)
+SELECT throws_ok(
+    $$ UPDATE public.user_profiles SET onboarding_completed_at = NULL WHERE id = '11111111-1111-1111-1111-111111111111' $$,
+    '42501',
+    NULL,
+    'User 1: cannot directly clear onboarding_completed_at (privilege revoked)'
+);
+
 SELECT throws_ok(
     $$ SELECT private.handle_updated_at() $$,
     '42501',
@@ -289,8 +328,7 @@ BEGIN
     UPDATE public.user_profiles
     SET full_name = 'User Two Updated',
         medical_school = 'Universidad Peruana Cayetano Heredia',
-        year_of_study = 4,
-        target_exam_date = '2028-06-20'
+        year_of_study = 4
     WHERE id = '22222222-2222-2222-2222-222222222222';
 END $$;
 
@@ -298,6 +336,14 @@ SELECT is(
     (SELECT full_name FROM public.user_profiles WHERE id = '22222222-2222-2222-2222-222222222222'),
     'User Two Updated',
     'User 2: can UPDATE explicitly permitted own profile fields'
+);
+
+-- User 2 cannot directly UPDATE onboarding_completed_at
+SELECT throws_ok(
+    $$ UPDATE public.user_profiles SET onboarding_completed_at = NOW() WHERE id = '22222222-2222-2222-2222-222222222222' $$,
+    '42501',
+    NULL,
+    'User 2: cannot directly UPDATE onboarding_completed_at (privilege revoked)'
 );
 
 SELECT ok(

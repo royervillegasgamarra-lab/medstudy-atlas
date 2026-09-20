@@ -31,8 +31,8 @@ export async function proxy(request: NextRequest) {
     return response;
   }
 
-  // Protect /app and sub-routes
-  if (pathname.startsWith("/app")) {
+  // Protect /app and /onboarding and sub-routes
+  if (pathname.startsWith("/app") || pathname.startsWith("/onboarding")) {
     if (!user) {
       const redirectUrl = request.nextUrl.clone();
       redirectUrl.pathname = "/auth/login";
@@ -58,5 +58,5 @@ export async function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/app/:path*", "/auth/:path*"],
+  matcher: ["/app/:path*", "/onboarding/:path*", "/auth/:path*"],
 };

@@ -17,6 +17,10 @@ export default async function AppLayout({
 
   const profile = await getCurrentProfile();
 
+  if (!profile?.onboarding_completed_at) {
+    redirect("/onboarding");
+  }
+
   return (
     <div className="min-h-screen flex flex-col bg-background text-foreground">
       <header className="border-b border-border/60 bg-card/50 backdrop-blur sticky top-0 z-40 px-6 py-3">

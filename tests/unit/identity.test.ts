@@ -3,6 +3,7 @@ import {
   SignupSchema,
   LoginSchema,
   ProfileUpdateSchema,
+  AcademicProfileSchema,
   getSafeRedirectUrl,
 } from "@/modules/identity/validation";
 
@@ -10,6 +11,7 @@ describe("Identity Validation Schemas & Security Boundaries", () => {
   describe("getSafeRedirectUrl (Open Redirect Defense CWE-601)", () => {
     it("permits valid local relative paths", () => {
       expect(getSafeRedirectUrl("/app")).toBe("/app");
+      expect(getSafeRedirectUrl("/onboarding")).toBe("/onboarding");
       expect(getSafeRedirectUrl("/app/profile")).toBe("/app/profile");
       expect(getSafeRedirectUrl("/app/settings?tab=general")).toBe(
         "/app/settings?tab=general"
@@ -107,7 +109,7 @@ describe("Identity Validation Schemas & Security Boundaries", () => {
       expect(result.success).toBe(true);
     });
 
-    it("rejects year of study outside medical curriculum range (1 to 7)", () => {
+    it("rejects year of study outside practical LATAM range (1 to 10)", () => {
       const resultUnder = SignupSchema.safeParse({
         fullName: "Dr. Roberto",
         email: "roberto@medicina.pe",
@@ -120,9 +122,17 @@ describe("Identity Validation Schemas & Security Boundaries", () => {
         fullName: "Dr. Roberto",
         email: "roberto@medicina.pe",
         password: "securePassword123!",
-        yearOfStudy: 8,
+        yearOfStudy: 11,
       });
       expect(resultOver.success).toBe(false);
+
+      const resultValid10 = SignupSchema.safeParse({
+        fullName: "Dr. Roberto",
+        email: "roberto@medicina.pe",
+        password: "securePassword123!",
+        yearOfStudy: 10,
+      });
+      expect(resultValid10.success).toBe(true);
     });
 
     it("normalizes optional fields to null when omitted or empty", () => {
@@ -168,13 +178,12 @@ describe("Identity Validation Schemas & Security Boundaries", () => {
     });
   });
 
-  describe("ProfileUpdateSchema", () => {
-    it("validates profile updates with target exam dates", () => {
+  describe("ProfileUpdateSchema & AcademicProfileSchema", () => {
+    it("validates profile updates with 1-10 years of study", () => {
       const result = ProfileUpdateSchema.safeParse({
         fullName: "Dra. Carmen Rosa",
         medicalSchool: "UPCH",
         yearOfStudy: "7",
-        targetExamDate: "2027-03-20",
       });
 
       expect(result.success).toBe(true);
@@ -182,7 +191,21 @@ describe("Identity Validation Schemas & Security Boundaries", () => {
         expect(result.data.fullName).toBe("Dra. Carmen Rosa");
         expect(result.data.medicalSchool).toBe("UPCH");
         expect(result.data.yearOfStudy).toBe(7);
-        expect(result.data.targetExamDate).toBe("2027-03-20");
+      }
+    });
+
+    it("validates academic profile schema independently", () => {
+      const result = AcademicProfileSchema.safeParse({
+        medicalSchool: "Universidad Nacional Mayor de San Marcos",
+        yearOfStudy: "5",
+      });
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.medicalSchool).toBe(
+          "Universidad Nacional Mayor de San Marcos"
+        );
+        expect(result.data.yearOfStudy).toBe(5);
       }
     });
 
@@ -191,14 +214,12 @@ describe("Identity Validation Schemas & Security Boundaries", () => {
         fullName: "Dra. Carmen Rosa",
         medicalSchool: "   ",
         yearOfStudy: "",
-        targetExamDate: "",
       });
 
       expect(result.success).toBe(true);
       if (result.success) {
         expect(result.data.medicalSchool).toBeNull();
         expect(result.data.yearOfStudy).toBeNull();
-        expect(result.data.targetExamDate).toBeNull();
       }
     });
   });

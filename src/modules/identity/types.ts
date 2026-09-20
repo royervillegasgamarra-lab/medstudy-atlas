@@ -5,7 +5,7 @@ export type UserProfile = Database["public"]["Tables"]["user_profiles"]["Row"];
 export type UpdateProfileInput = Partial<
   Pick<
     Database["public"]["Tables"]["user_profiles"]["Update"],
-    "full_name" | "medical_school" | "year_of_study" | "target_exam_date"
+    "full_name" | "medical_school" | "year_of_study"
   >
 >;
 

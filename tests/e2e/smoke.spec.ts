@@ -43,12 +43,12 @@ test.describe("MedStudy Atlas Smoke & Browser Verification", () => {
       page.getByText("Adaptive medical learning workspace")
     ).toBeVisible();
 
-    // Verify Phase 1A badge (exact match)
-    await expect(page.getByText("Phase 1A", { exact: true })).toBeVisible();
+    // Verify Phase 1B badge (exact match)
+    await expect(page.getByText("Phase 1B", { exact: true })).toBeVisible();
 
-    // Verify engineering baseline operational text
+    // Verify operational text
     await expect(
-      page.getByText("Identity, Auth & RLS Baseline operational — Phase 1A")
+      page.getByText("Onboarding, Curriculum & Exam Targets — Phase 1B")
     ).toBeVisible();
 
     // Desktop screenshot - Light mode

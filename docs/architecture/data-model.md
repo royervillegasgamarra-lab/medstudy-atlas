@@ -16,10 +16,10 @@ PostgreSQL (hosted on Supabase) serves as the primary system of record for MedSt
 | Entity | Domain | Classification | Notes |
 | :--- | :--- | :--- | :--- |
 | `User` | Identity | **MVP REQUIRED** | Supabase `auth.users` managed. |
-| `UserProfile` | Identity | **MVP REQUIRED** | Medical student metadata, target exam, preferences. |
-| `Course` | Curriculum | **MVP REQUIRED** | Academic course (e.g., Medicina Interna). |
-| `Subject` | Curriculum | **MVP REQUIRED** | Sub-discipline (e.g., Cardiología, Neumología). |
-| `ExamTarget` | Curriculum | **MVP REQUIRED** | Target exam blueprint (e.g., ENAM, Essalud). |
+| `UserProfile` | Identity | **MVP REQUIRED** | Medical student metadata, academic context, onboarding completion marker. |
+| `Course` | Curriculum | **DEFERRED** | Course hierarchy deferred until real curriculum requirements justify it; Subject serves as primary container. |
+| `Subject` | Curriculum | **MVP REQUIRED** | User-owned academic subject/course/module (e.g., Anatomía, Fisiología) with RLS and active unique index. |
+| `ExamTarget` | Curriculum | **MVP REQUIRED** | Upcoming exam blueprint with composite foreign key enforcing subject owner integrity. |
 | `Document` | Documents | **MVP REQUIRED** | Top-level uploaded file record. |
 | `DocumentVersion` | Documents | **MVP REQUIRED** | Versioning for document re-uploads / updates. |
 | `DocumentPage` | Documents | **MVP REQUIRED** | Page-level metadata, classification (text vs scan), image ref. |
@@ -109,16 +109,47 @@ CREATE TABLE user_profiles (
     email TEXT NOT NULL,
     full_name TEXT,
     medical_school TEXT,
-    year_of_study INT CHECK (year_of_study BETWEEN 1 AND 7),
-    target_exam_date DATE,
+    year_of_study INT CHECK (year_of_study BETWEEN 1 AND 10),
+    onboarding_completed_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 ```
 
+### Curriculum & Exam Targets
+```sql
+CREATE TABLE subjects (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    archived_at TIMESTAMPTZ,
+    CONSTRAINT uq_subjects_id_user_id UNIQUE (id, user_id)
+);
+
+CREATE UNIQUE INDEX idx_subjects_user_name_unique
+    ON subjects (user_id, lower(trim(name)))
+    WHERE archived_at IS NULL;
+
+CREATE TABLE exam_targets (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    subject_id UUID,
+    title TEXT NOT NULL,
+    exam_date DATE NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    archived_at TIMESTAMPTZ,
+    CONSTRAINT fk_exam_targets_subject_owner FOREIGN KEY (subject_id, user_id)
+        REFERENCES subjects(id, user_id)
+        ON DELETE SET NULL (subject_id)
+);
+```
+
 > **Non-Blocking Data Model Debt (Acknowledged)**:
 > - `user_profiles.email` duplicates the canonical `auth.users.email` and can become stale if email change support is added later. Before implementing account-email changes, we must either: (A) remove duplicated profile email and read canonical Auth email, or (B) implement reliable synchronization.
-> - Academic-field business constraints and curriculum normalization (`medical_school`, `year_of_study`) will be formalized in Phase 1B.
+> - `Course` hierarchy container is deferred until real curriculum requirements justify it. `Subject` serves as the primary curriculum container for the MVP.
 
 ### Documents & Chunks
 ```sql

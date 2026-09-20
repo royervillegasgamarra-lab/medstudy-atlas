@@ -84,8 +84,47 @@ if (-not $PhaseSlug -or $PhaseSlug -eq "phase-00a") {
         $PhaseSlug = "phase-00c"
     } elseif ($detectedBranch -match "phase/01a") {
         $PhaseSlug = "phase-01a"
+    } elseif ($detectedBranch -match "phase/01b") {
+        $PhaseSlug = "phase-01b"
     }
 }
+
+# Consistency check: Verify requested phase, current branch, execution report, and status.md
+Write-Host "Verifying phase and environment consistency for $PhaseSlug..." -ForegroundColor Yellow
+$branchMatches = switch -Regex ($PhaseSlug) {
+    "00?a" { $currentBranch -match "phase/00a" }
+    "00?b" { $currentBranch -match "phase/00b" }
+    "00?c" { $currentBranch -match "phase/00c" }
+    "01?a" { $currentBranch -match "phase/01a" }
+    "01?b" { $currentBranch -match "phase/01b" }
+    default { $true }
+}
+if (-not $branchMatches) {
+    throw "Consistency Error: Requested phase '$PhaseSlug' does not match current branch '$currentBranch'."
+}
+
+$expectedReportMatches = Get-ChildItem -Path (Join-Path $repoRoot "docs/reports") -Filter "$PhaseSlug-*.md" -ErrorAction SilentlyContinue
+if (-not $expectedReportMatches -or $expectedReportMatches.Count -eq 0) {
+    throw "Consistency Error: Expected execution report 'docs/reports/$PhaseSlug-*.md' does not exist."
+}
+
+$statusContent = Get-Content (Join-Path $repoRoot "docs/status.md") -Raw -Encoding utf8
+$phaseIdentifier = switch -Regex ($PhaseSlug) {
+    "00?a" { "0A" }
+    "00?b" { "0B" }
+    "00?c" { "0C" }
+    "01?a" { "1A" }
+    "01?b" { "1B" }
+    default { $PhaseSlug }
+}
+if ($statusContent -notmatch $phaseIdentifier) {
+    throw "Consistency Error: docs/status.md does not reference expected phase '$phaseIdentifier'."
+}
+
+if (-not $headSha) {
+    throw "Consistency Error: Unable to determine git HEAD commit SHA."
+}
+Write-Host "Phase consistency verified: Phase=$PhaseSlug, Branch=$currentBranch, HEAD=$headSha" -ForegroundColor Green
 
 # 3. Create Core Evidence Documents
 Write-Host "Assembling core evidence documents..." -ForegroundColor Yellow
@@ -96,6 +135,7 @@ $phaseTitle = switch -Regex ($PhaseSlug) {
     "00?b" { "Phase 0B -- Architecture Foundation" }
     "00?c" { "Phase 0C -- Engineering Baseline" }
     "01?a" { "Vertical Slice 1A -- Identity, Auth & RLS Baseline" }
+    "01?b" { "Vertical Slice 1B -- Onboarding, Curriculum & Exam Targets" }
     default { "$PhaseSlug -- Local Review Package" }
 }
 
@@ -148,6 +188,22 @@ $reviewCriteria = switch -Regex ($PhaseSlug) {
             '10. [ ] **Roadmap Consistency**: Next slice aligned as 1B — Onboarding / Curriculum / Exam Target.',
             '11. [ ] **Password Policy Baseline**: Minimum 8 characters synchronized across config, schemas, UI, and tests.',
             '12. [ ] **Zero Cloud Resources & Paid Services**: No Supabase Cloud project, no external hosting, zero spend ($0.00).'
+        )
+    }
+    "01?b" {
+        @(
+            '1. [ ] **Academic Profile Normalization**: `public.user_profiles` schema normalized; `target_exam_date` removed; `year_of_study` practical range (1-10); `onboarding_completed_at` marker implemented.',
+            '2. [ ] **Curriculum Schema (Subjects First)**: `public.subjects` table implemented with unique active subject index (`idx_subjects_user_name_unique`), `updated_at` trigger, and RLS.',
+            '3. [ ] **Exam Targets & Ownership Integrity**: `public.exam_targets` table implemented with composite foreign key enforcing `exam_targets.user_id = subjects.user_id` when `subject_id` is set.',
+            '4. [ ] **Explicit Privilege Model (GRANTS/REVOKES)**: Strict least-privilege GRANTS on `subjects` and `exam_targets`; direct table DELETE revoked; column-level UPDATE restrictions.',
+            '5. [ ] **In-Database Security Matrix (pgTAP)**: Comprehensive in-database test suites verify anon denial, user isolation, active subject deduplication, ownership integrity, and cascade deletion.',
+            '6. [ ] **Server-Side Onboarding Completion**: Server validates that at least one active subject exists before setting `onboarding_completed_at`; client cannot forge completion.',
+            '7. [ ] **Authenticated Routing & Resumability**: `/onboarding` is protected; uncompleted users visiting `/app` redirect to `/onboarding`; completed users visiting `/onboarding` redirect to `/app`; progress is safely resumable.',
+            '8. [ ] **First Useful Dashboard**: Displays greeting, active subjects, upcoming exam countdown, subject and exam management; zero fake AI data.',
+            '9. [ ] **Timezone-Safe Date Handling**: Calendar date parsing and countdown without UTC timezone shift.',
+            '10. [ ] **Automated Tests**: Unit tests, database tests, and Playwright E2E tests (onboarding lifecycle, management, two-user isolation) pass cleanly.',
+            '11. [ ] **Course Hierarchy Simplification**: Documented explicitly; Course entity deferred to post-MVP.',
+            '12. [ ] **Zero Cloud Resources & Paid Services**: Local-First execution; $0.00 cost.'
         )
     }
     default {
@@ -208,6 +264,18 @@ $nextStep = switch -Regex ($PhaseSlug) {
             'Then proceed to **Vertical Slice 1B -- Onboarding / Curriculum / Exam Target** (`phase/01b-onboarding`).'
         )
     }
+    "01?b" {
+        @(
+            '## 4. Next Step Upon Approval',
+            "Upon approval of this review package, merge $currentBranch into $BaseBranch locally via squash merge:",
+            '```powershell',
+            "git checkout $BaseBranch",
+            "git merge --squash $currentBranch",
+            'git commit -m "feat(phase-01b): implement onboarding, curriculum, and exam targets"',
+            '```',
+            'Then proceed to **Vertical Slice 1C -- Document Library & Secure Upload** (`phase/01c-documents`).'
+        )
+    }
     default {
         @(
             '## 4. Next Step Upon Approval',
@@ -263,10 +331,10 @@ $reviewLines | Out-File -FilePath (Join-Path $stagingDir "REVIEW.md") -Encoding 
 $matchedReports = Get-ChildItem -Path (Join-Path $repoRoot "docs/reports") -Filter "$PhaseSlug-*.md" -ErrorAction SilentlyContinue
 if ($matchedReports -and $matchedReports.Count -gt 0) {
     Copy-Item -Path $matchedReports[0].FullName -Destination (Join-Path $stagingDir "execution-report.md")
-} elseif (Test-Path (Join-Path $repoRoot "docs/reports/phase-00c-engineering.md")) {
-    Copy-Item -Path (Join-Path $repoRoot "docs/reports/phase-00c-engineering.md") -Destination (Join-Path $stagingDir "execution-report.md")
-} elseif (Test-Path (Join-Path $repoRoot "docs/reports/phase-00b-architecture.md")) {
-    Copy-Item -Path (Join-Path $repoRoot "docs/reports/phase-00b-architecture.md") -Destination (Join-Path $stagingDir "execution-report.md")
+} else {
+    Write-Host "ERROR: Review package generation ABORTED!" -ForegroundColor Red
+    Write-Host "Expected execution report not found for phase: $PhaseSlug in docs/reports/" -ForegroundColor Red
+    throw "Review package generation aborted: Expected phase execution report (docs/reports/$PhaseSlug-*.md) missing. Falling back to an older phase report is strictly prohibited."
 }
 
 # status.md
@@ -299,6 +367,7 @@ if (Test-Path (Join-Path $repoRoot "package.json")) {
         }
 
         $checksToRun = @(
+            @{ Name = "install"; Cmd = "pnpm install --frozen-lockfile" },
             @{ Name = "format"; Cmd = "pnpm format:check" },
             @{ Name = "lint"; Cmd = "pnpm lint" },
             @{ Name = "typecheck"; Cmd = "pnpm typecheck" },
@@ -334,14 +403,21 @@ if (Test-Path (Join-Path $repoRoot "package.json")) {
             $repoLogFile = Join-Path $repoTestResultsDir "$($chk.Name).log"
             $out = & cmd.exe /c "$($chk.Cmd) 2>&1"
             $exitCode = $LASTEXITCODE
-            $header = "COMMAND: $($chk.Cmd)`nEXIT_CODE: $exitCode`nTIMESTAMP: $(Get-Date -Format 'o')`n---`n"
+            $header = "COMMAND: $($chk.Cmd)`nEXIT_CODE: $exitCode`nTIMESTAMP: $(Get-Date -Format 'o')`nBRANCH: $currentBranch`nHEAD_SHA: $headSha`nPHASE: $PhaseSlug`n---`n"
             $fullLogContent = $header + ($out -join "`n")
             Set-Content -Path $logFile -Value $fullLogContent -Encoding utf8
             Set-Content -Path $repoLogFile -Value $fullLogContent -Encoding utf8
         }
+
+        # If test:e2e re-generated existing committed screenshots in docs/screenshots, restore them to clean commit state
+        $screenshotStatus = git -C $repoRoot status --porcelain docs/screenshots 2>$null
+        if ($screenshotStatus) {
+            git -C $repoRoot checkout -- docs/screenshots 2>$null
+        }
     }
 
     $checkDefinitions = @(
+        @{ Label = "Frozen Lockfile Install (`pnpm install --frozen-lockfile`)"; Key = "install"; Mandatory = $true },
         @{ Label = "Format Check (`pnpm format:check`)"; Key = "format"; Mandatory = $true },
         @{ Label = "Lint (`pnpm lint`)"; Key = "lint"; Mandatory = $true },
         @{ Label = "Typecheck (`pnpm typecheck`)"; Key = "typecheck"; Mandatory = $true },
@@ -361,6 +437,9 @@ if (Test-Path (Join-Path $repoRoot "package.json")) {
     $allPassed = $true
     $missingMandatory = @()
     $failedChecks = @()
+    $staleChecks = @()
+    $branchMismatchChecks = @()
+    $phaseMismatchChecks = @()
 
     foreach ($def in $checkDefinitions) {
         $logFile = Join-Path (Join-Path $repoRoot "test-results") "$($def.Key).log"
@@ -380,6 +459,9 @@ if (Test-Path (Join-Path $repoRoot "package.json")) {
             $rawContent = Get-Content -Path $logFile -Raw -Encoding utf8
             $isPass = $false
             $isUnavailable = $false
+            $isStale = $false
+            $isBranchMismatch = $false
+            $isPhaseMismatch = $false
 
             if ($def.Key -eq "audit" -and ($rawContent -match 'ENOTFOUND|getaddrinfo|ECONNREFUSED|registry.*unavailable|network.*unavailable|fetch failed|NOT EXECUTED.*UNAVAILABLE')) {
                 $isUnavailable = $true
@@ -389,8 +471,48 @@ if (Test-Path (Join-Path $repoRoot "package.json")) {
                 $isPass = $true
             }
 
+            # Check metadata in header if present
+            if ($rawContent -match 'HEAD_SHA:\s*([a-f0-9]+)') {
+                $loggedSha = $matches[1].Trim()
+                if ($loggedSha -ne $headSha) {
+                    $isStale = $true
+                }
+            } elseif ($def.Mandatory) {
+                $isStale = $true
+            }
+
+            if ($rawContent -match 'BRANCH:\s*([^\r\n]+)') {
+                $loggedBranch = $matches[1].Trim()
+                if ($loggedBranch -ne $currentBranch) {
+                    $isBranchMismatch = $true
+                }
+            } elseif ($def.Mandatory) {
+                $isBranchMismatch = $true
+            }
+
+            if ($rawContent -match 'PHASE:\s*([^\r\n]+)') {
+                $loggedPhase = $matches[1].Trim()
+                if ($loggedPhase -ne $PhaseSlug) {
+                    $isPhaseMismatch = $true
+                }
+            } elseif ($def.Mandatory) {
+                $isPhaseMismatch = $true
+            }
+
             if ($isUnavailable) {
                 $gateLines += "- **$($def.Label)**: NOT EXECUTED -- REGISTRY/NETWORK UNAVAILABLE (Verified from log: ``test-results/$($def.Key).log``)"
+            } elseif ($isStale) {
+                $allPassed = $false
+                $staleChecks += $def.Label
+                $gateLines += "- **$($def.Label)**: STALE EVIDENCE -- HEAD_SHA MISMATCH (Verified from log: ``test-results/$($def.Key).log``)"
+            } elseif ($isBranchMismatch) {
+                $allPassed = $false
+                $branchMismatchChecks += $def.Label
+                $gateLines += "- **$($def.Label)**: BRANCH MISMATCH (Verified from log: ``test-results/$($def.Key).log``)"
+            } elseif ($isPhaseMismatch) {
+                $allPassed = $false
+                $phaseMismatchChecks += $def.Label
+                $gateLines += "- **$($def.Label)**: PHASE MISMATCH (Verified from log: ``test-results/$($def.Key).log``)"
             } elseif ($isPass) {
                 $gateLines += "- **$($def.Label)**: PASS (Verified from actual execution log: ``test-results/$($def.Key).log``)"
             } else {
@@ -415,12 +537,33 @@ if (Test-Path (Join-Path $repoRoot "package.json")) {
         }
     }
 
-    # Reject missing or failed mandatory checks
+    # Reject missing, failed, stale, or mismatched mandatory checks
     if ($missingMandatory.Count -gt 0) {
         Write-Host "ERROR: Review package generation ABORTED!" -ForegroundColor Red
         Write-Host "Missing required evidence for mandatory quality gates:" -ForegroundColor Red
         $missingMandatory | ForEach-Object { Write-Host "  - $_" -ForegroundColor Red }
         throw "Review package generation aborted: Missing mandatory test evidence ($($missingMandatory -join ', ')). Run verification checks first or pass -RunChecks."
+    }
+
+    if ($staleChecks.Count -gt 0) {
+        Write-Host "ERROR: Review package generation ABORTED!" -ForegroundColor Red
+        Write-Host "Stale evidence detected (log HEAD_SHA does not match current HEAD $headSha):" -ForegroundColor Red
+        $staleChecks | ForEach-Object { Write-Host "  - $_" -ForegroundColor Red }
+        throw "Review package generation aborted: Stale test evidence detected ($($staleChecks -join ', ')). Rerun verification checks on current commit."
+    }
+
+    if ($branchMismatchChecks.Count -gt 0) {
+        Write-Host "ERROR: Review package generation ABORTED!" -ForegroundColor Red
+        Write-Host "Branch mismatch detected (log BRANCH does not match current branch $currentBranch):" -ForegroundColor Red
+        $branchMismatchChecks | ForEach-Object { Write-Host "  - $_" -ForegroundColor Red }
+        throw "Review package generation aborted: Branch mismatch detected ($($branchMismatchChecks -join ', '))."
+    }
+
+    if ($phaseMismatchChecks.Count -gt 0) {
+        Write-Host "ERROR: Review package generation ABORTED!" -ForegroundColor Red
+        Write-Host "Phase mismatch detected (log PHASE does not match requested phase $PhaseSlug):" -ForegroundColor Red
+        $phaseMismatchChecks | ForEach-Object { Write-Host "  - $_" -ForegroundColor Red }
+        throw "Review package generation aborted: Phase mismatch detected ($($phaseMismatchChecks -join ', '))."
     }
 
     if ($failedChecks.Count -gt 0) {
@@ -429,6 +572,17 @@ if (Test-Path (Join-Path $repoRoot "package.json")) {
         $failedChecks | ForEach-Object { Write-Host "  - $_" -ForegroundColor Red }
         throw "Review package generation aborted: Quality gate failures detected ($($failedChecks -join ', '))."
     }
+
+    # Post-verification clean tree check
+    Write-Host "Verifying working tree remains clean after quality checks..." -ForegroundColor Yellow
+    $postCheckStatus = (git -C $repoRoot status --porcelain)
+    if ($postCheckStatus) {
+        Write-Host "ERROR: Review package generation ABORTED!" -ForegroundColor Red
+        Write-Host "Working tree was modified during check execution or has uncommitted changes:" -ForegroundColor Red
+        $postCheckStatus | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
+        throw "Review package generation aborted: git status --porcelain must be empty after running checks."
+    }
+    Write-Host "Working tree remains clean." -ForegroundColor Green
 
     $overallStatus = if (-not $anyRan) {
         "NO TESTS EXECUTED FOR THIS REVIEW ARTIFACT"

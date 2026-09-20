@@ -28,10 +28,17 @@ export const SignupSchema = z.object({
     .min(8, "La contraseña debe tener al menos 8 caracteres."),
   medicalSchool: z
     .string()
+    .max(150, "El nombre de la facultad no puede exceder 150 caracteres.")
+    .nullable()
     .optional()
     .transform((val) => (val && val.trim().length > 0 ? val.trim() : null)),
   yearOfStudy: z
-    .union([z.coerce.number().int().min(1).max(7), z.literal(""), z.null()])
+    .union([
+      z.coerce.number().int().min(1).max(10),
+      z.literal(""),
+      z.null(),
+      z.undefined(),
+    ])
     .optional()
     .transform((val) => (typeof val === "number" ? val : null)),
 });
@@ -49,14 +56,35 @@ export const ProfileUpdateSchema = z.object({
     .min(2, "El nombre debe tener al menos 2 caracteres."),
   medicalSchool: z
     .string()
+    .max(150, "El nombre de la facultad no puede exceder 150 caracteres.")
+    .nullable()
     .optional()
     .transform((val) => (val && val.trim().length > 0 ? val.trim() : null)),
   yearOfStudy: z
-    .union([z.coerce.number().int().min(1).max(7), z.literal(""), z.null()])
+    .union([
+      z.coerce.number().int().min(1).max(10),
+      z.literal(""),
+      z.null(),
+      z.undefined(),
+    ])
     .optional()
     .transform((val) => (typeof val === "number" ? val : null)),
-  targetExamDate: z
+});
+
+export const AcademicProfileSchema = z.object({
+  medicalSchool: z
     .string()
+    .max(150, "El nombre de la facultad no puede exceder 150 caracteres.")
+    .nullable()
     .optional()
     .transform((val) => (val && val.trim().length > 0 ? val.trim() : null)),
+  yearOfStudy: z
+    .union([
+      z.coerce.number().int().min(1).max(10),
+      z.literal(""),
+      z.null(),
+      z.undefined(),
+    ])
+    .optional()
+    .transform((val) => (typeof val === "number" ? val : null)),
 });

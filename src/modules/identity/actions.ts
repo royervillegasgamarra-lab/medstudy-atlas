@@ -3,12 +3,13 @@
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
-import { getCurrentUser, updateProfile } from "./service";
+import { getCurrentUser, updateProfile, completeOnboarding } from "./service";
 import type { AuthActionState } from "./types";
 import {
   SignupSchema,
   LoginSchema,
   ProfileUpdateSchema,
+  AcademicProfileSchema,
   getSafeRedirectUrl,
 } from "./validation";
 
@@ -73,7 +74,6 @@ export async function signupAction(
     }
 
     if (data.session && data.user) {
-      // Ensure profile fields are synced if trigger was bypassed or partial
       if (medicalSchool || yearOfStudy) {
         await updateProfile(data.user.id, {
           full_name: fullName,
@@ -89,7 +89,8 @@ export async function signupAction(
     };
   }
 
-  redirect("/app");
+  // Newly signed-up users are routed directly to onboarding
+  redirect("/onboarding");
 }
 
 export async function loginAction(
@@ -157,7 +158,6 @@ export async function updateProfileAction(
     fullName: formData.get("fullName"),
     medicalSchool: formData.get("medicalSchool"),
     yearOfStudy: formData.get("yearOfStudy"),
-    targetExamDate: formData.get("targetExamDate"),
   });
 
   if (!parseResult.success) {
@@ -167,14 +167,12 @@ export async function updateProfileAction(
     };
   }
 
-  const { fullName, medicalSchool, yearOfStudy, targetExamDate } =
-    parseResult.data;
+  const { fullName, medicalSchool, yearOfStudy } = parseResult.data;
 
   const result = await updateProfile(user.id, {
     full_name: fullName,
     medical_school: medicalSchool,
     year_of_study: yearOfStudy,
-    target_exam_date: targetExamDate,
   });
 
   if (!result.success) {
@@ -189,4 +187,53 @@ export async function updateProfileAction(
   return {
     success: true,
   };
+}
+
+export async function saveAcademicBasicsAction(
+  formData: FormData
+): Promise<{ success: boolean; error?: string }> {
+  const user = await getCurrentUser();
+  if (!user) {
+    return { success: false, error: "No autenticado." };
+  }
+
+  const parseResult = AcademicProfileSchema.safeParse({
+    medicalSchool: formData.get("medicalSchool"),
+    yearOfStudy: formData.get("yearOfStudy"),
+  });
+
+  if (!parseResult.success) {
+    return { success: false, error: "Datos académicos no válidos." };
+  }
+
+  const { medicalSchool, yearOfStudy } = parseResult.data;
+  const result = await updateProfile(user.id, {
+    medical_school: medicalSchool,
+    year_of_study: yearOfStudy,
+  });
+
+  if (!result.success) {
+    return {
+      success: false,
+      error: result.error || "No se pudo guardar la información académica.",
+    };
+  }
+
+  revalidatePath("/onboarding");
+  revalidatePath("/app");
+  return { success: true };
+}
+
+export async function completeOnboardingAction(): Promise<{
+  success: boolean;
+  error?: string;
+}> {
+  const result = await completeOnboarding();
+  if (!result.success) {
+    return { success: false, error: result.error };
+  }
+
+  revalidatePath("/app");
+  revalidatePath("/onboarding");
+  return { success: true };
 }

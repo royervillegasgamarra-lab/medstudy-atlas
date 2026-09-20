@@ -95,7 +95,7 @@
 
 ## 3. Architecture & Subsystem Impact
 
-- **Architecture Decisions**: Implemented ADR 001 (Supabase Auth SSR) and ADR 002 (PostgreSQL System of Record). Aligned Next.js 16 Proxy with official `getClaims()` and cache header preservation guidance.
+- **Architecture Decisions**: Implemented ADR 001 (Full-Stack Next.js Application Architecture), Supabase Auth SSR integration, and ADR 002 (PostgreSQL System of Record). Aligned Next.js 16 Proxy with official `getClaims()` and cache header preservation guidance.
 - **Database Impact**: `public.user_profiles` is the single canonical relation. Privileged trigger logic isolated in `private.handle_new_user()` and `private.handle_updated_at()` with `SET search_path = ''` and execution revoked from `PUBLIC`, `anon`, and `authenticated`.
 - **API Impact**: Auth and application routes established. Zero backend SQL or provider error leakage.
 - **AI Impact**: NONE ($0.00 cost; deferred to Slice 1D).

@@ -9,8 +9,8 @@ This document defines the strict, non-negotiable boundaries of the **MedStudy At
 
 ### In-Scope (MVP Required)
 1. **Authentication**: Email/password, magic link login, password reset (Supabase Auth).
-2. **Onboarding**: Student profile (medical school, year of study, target exam e.g., ENAM/Essalud).
-3. **Curriculum Hierarchy**: Courses (e.g. Medicina Interna) and Subjects (Cardiología, Neumología).
+2. **Onboarding**: Student profile (medical school, year of study), active subject creation, and optional exam target (e.g., ENAM/Essalud/Parcial).
+3. **Curriculum Hierarchy**: Subjects (e.g. Cardiología, Neumología, Anatomía) as the primary organizing unit for MVP. Course grouping hierarchy is explicitly deferred to post-MVP to avoid relational overhead.
 4. **Document Library**: Upload PDF slides, view list, processing status, and delete.
 5. **Document Ingestion**: Fast page classification (`pdf-inspector`), native text extraction, selective OCR.
 6. **Study Pack**: Auto-generated and cached summary, learning objectives, key concepts, flashcards, MCQs.
@@ -25,6 +25,7 @@ This document defines the strict, non-negotiable boundaries of the **MedStudy At
 15. **Billing Boundary & Entitlements**: Free tier vs PRO tier gating; provider-neutral payment boundary.
 
 ### Explicitly Deferred (Post-MVP / Phase 2+)
+- **Course Grouping Hierarchy** (subjects organized directly by student; Course entity deferred).
 - **3D Anatomy Viewer** (deferred to Phase 2).
 - **Histology Deep-Zoom Viewer** (deferred to Phase 2).
 - **DICOM / Radiology Viewer** (deferred to Phase 3).
@@ -82,10 +83,10 @@ flowchart LR
 - **Definition of Done**: User logs in with email/password, RLS prevents cross-tenant access, unit/integration tests pass.
 
 #### Slice 1B: Onboarding & Curriculum Targets
-- **User Value**: Student selects university, year of study, and target exam (ENAM/Essalud).
-- **Data Changes**: `courses`, `subjects`, `exam_targets`, updated `user_profiles`.
+- **User Value**: Student configures university, year of study, at least one active subject, and optional upcoming exam target.
+- **Data Changes**: `subjects`, `exam_targets`, updated `user_profiles` (`onboarding_completed_at`). Course entity deferred.
 - **AI Impact**: None ($0).
-- **Definition of Done**: Student completes onboarding wizard; subject hierarchy loads correctly.
+- **Definition of Done**: Student completes onboarding wizard; subjects and exam targets manageable; dashboard displays countdown and active subjects; RLS prevents cross-tenant access.
 
 #### Slice 1C: Document Library & Private Storage
 - **User Value**: Student uploads a PDF syllabus/slide deck and views it in a list.
@@ -96,7 +97,7 @@ flowchart LR
 #### Slice 1D: Document Ingestion, Classification & Chunking
 - **User Value**: Uploaded document is automatically parsed, pages classified, and chunks indexed.
 - **Data Changes**: `document_pages`, `document_chunks` (with FTS `tsvector` and `pgvector` embedding).
-- **AI Impact**: Embedding generation via `AIProvider` (variable token cost; provider pricing verified before purchase).
+- **AI Impact**: Embedding generation via `AIProvider` (variable token cost; provider pricing verified before purchase). Note: AI conversational tutor and generation features remain in Slices 1E/1F.
 - **Definition of Done**: `pdf-inspector` classifies pages; text extracted; chunks stored with embeddings and FTS tokens.
 
 #### Slice 1E: Study Pack Generation & Caching
