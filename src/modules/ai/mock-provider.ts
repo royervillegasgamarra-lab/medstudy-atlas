@@ -69,6 +69,24 @@ export class MockAIProvider implements AIProvider {
     this.callCount++;
     this.lastRequest = request as AIStructuredRequest<unknown>;
 
+    if (request.abortSignal?.aborted) {
+      throw new AIProviderError(
+        "AI_TIMEOUT",
+        "The operation was aborted or timed out.",
+        true,
+        {
+          provider: this.name,
+          model: this.model,
+          inputTokens: 0,
+          outputTokens: 0,
+          cachedTokens: 0,
+          estimatedCostUsd: 0,
+          latencyMs: 0,
+          status: "FAILED",
+        }
+      );
+    }
+
     const startTime = Date.now();
 
     // Check if an action is queued

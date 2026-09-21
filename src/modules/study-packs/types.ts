@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { STUDY_PACK_BUDGET_LIMITS } from "@/config/study-pack-limits";
 
 export const STUDY_PACK_ERROR_CODES = [
   "SOURCE_NOT_READY",
@@ -15,6 +16,7 @@ export const STUDY_PACK_ERROR_CODES = [
   "STUDY_PACK_SCHEMA_INVALID",
   "STUDY_PACK_CITATION_INVALID",
   "STUDY_PACK_EVIDENCE_QA_FAILED",
+  "STUDY_PACK_VERSION_UNSUPPORTED",
   "STUDY_PACK_RETRY_LIMIT",
   "STUDY_PACK_LEASE_EXPIRED",
   "DOCUMENT_ARCHIVED",
@@ -46,71 +48,125 @@ export type StudyPackItemType =
 
 // Candidate Generation Schema (CALL 1)
 export const studyPackCandidateItemSchema = z.object({
-  paragraph: z.string().trim().min(5),
-  evidenceChunkIds: z.array(z.string().uuid()).min(1).max(5),
+  paragraph: z
+    .string()
+    .trim()
+    .min(5)
+    .max(STUDY_PACK_BUDGET_LIMITS.maxSummaryParagraphChars),
+  evidenceChunkIds: z
+    .array(z.string().uuid())
+    .min(1)
+    .max(STUDY_PACK_BUDGET_LIMITS.maxCitationsPerItem),
 });
 
 export const studyPackCandidateSchema = z.object({
   summaryParagraphs: z
     .array(
       z.object({
-        paragraph: z.string().trim().min(10),
-        evidenceChunkIds: z.array(z.string().uuid()).min(1).max(5),
+        paragraph: z
+          .string()
+          .trim()
+          .min(10)
+          .max(STUDY_PACK_BUDGET_LIMITS.maxSummaryParagraphChars),
+        evidenceChunkIds: z
+          .array(z.string().uuid())
+          .min(1)
+          .max(STUDY_PACK_BUDGET_LIMITS.maxCitationsPerItem),
       })
     )
     .min(1)
-    .max(5),
+    .max(STUDY_PACK_BUDGET_LIMITS.maxSummaryParagraphs),
   learningObjectives: z
     .array(
       z.object({
-        objective: z.string().trim().min(5),
-        evidenceChunkIds: z.array(z.string().uuid()).min(1).max(5),
+        objective: z
+          .string()
+          .trim()
+          .min(5)
+          .max(STUDY_PACK_BUDGET_LIMITS.maxLearningObjectiveChars),
+        evidenceChunkIds: z
+          .array(z.string().uuid())
+          .min(1)
+          .max(STUDY_PACK_BUDGET_LIMITS.maxCitationsPerItem),
       })
     )
     .min(1)
-    .max(10),
+    .max(STUDY_PACK_BUDGET_LIMITS.maxLearningObjectives),
   keyConcepts: z
     .array(
       z.object({
-        title: z.string().trim().min(2),
-        explanation: z.string().trim().min(10),
-        evidenceChunkIds: z.array(z.string().uuid()).min(1).max(5),
+        title: z
+          .string()
+          .trim()
+          .min(2)
+          .max(STUDY_PACK_BUDGET_LIMITS.maxKeyConceptTitleChars),
+        explanation: z
+          .string()
+          .trim()
+          .min(10)
+          .max(STUDY_PACK_BUDGET_LIMITS.maxKeyConceptExplanationChars),
+        evidenceChunkIds: z
+          .array(z.string().uuid())
+          .min(1)
+          .max(STUDY_PACK_BUDGET_LIMITS.maxCitationsPerItem),
       })
     )
     .min(1)
-    .max(15),
+    .max(STUDY_PACK_BUDGET_LIMITS.maxKeyConcepts),
   highYieldPoints: z
     .array(
       z.object({
-        point: z.string().trim().min(5),
-        evidenceChunkIds: z.array(z.string().uuid()).min(1).max(5),
+        point: z
+          .string()
+          .trim()
+          .min(5)
+          .max(STUDY_PACK_BUDGET_LIMITS.maxHighYieldPointChars),
+        evidenceChunkIds: z
+          .array(z.string().uuid())
+          .min(1)
+          .max(STUDY_PACK_BUDGET_LIMITS.maxCitationsPerItem),
       })
     )
     .min(1)
-    .max(15),
+    .max(STUDY_PACK_BUDGET_LIMITS.maxHighYieldPoints),
   keyTerms: z
     .array(
       z.object({
-        term: z.string().trim().min(2),
-        definition: z.string().trim().min(5),
-        evidenceChunkIds: z.array(z.string().uuid()).min(1).max(5),
+        term: z
+          .string()
+          .trim()
+          .min(2)
+          .max(STUDY_PACK_BUDGET_LIMITS.maxKeyTermChars),
+        definition: z
+          .string()
+          .trim()
+          .min(5)
+          .max(STUDY_PACK_BUDGET_LIMITS.maxKeyTermDefinitionChars),
+        evidenceChunkIds: z
+          .array(z.string().uuid())
+          .min(1)
+          .max(STUDY_PACK_BUDGET_LIMITS.maxCitationsPerItem),
       })
     )
     .min(1)
-    .max(25),
+    .max(STUDY_PACK_BUDGET_LIMITS.maxKeyTerms),
 });
 
 export type StudyPackCandidate = z.infer<typeof studyPackCandidateSchema>;
 
 // Evidence Verification Schema (CALL 2)
 export const studyPackVerificationSchema = z.object({
-  evaluations: z.array(
-    z.object({
-      itemKey: z.string().min(1),
-      verdict: z.enum(["SUPPORTED", "UNSUPPORTED"]),
-      rationale: z.string(),
-    })
-  ),
+  evaluations: z
+    .array(
+      z.object({
+        itemKey: z.string().min(1).max(100),
+        verdict: z.enum(["SUPPORTED", "UNSUPPORTED"]),
+        rationale: z
+          .string()
+          .max(STUDY_PACK_BUDGET_LIMITS.maxVerificationExplanationChars),
+      })
+    )
+    .max(100),
 });
 
 export type StudyPackVerification = z.infer<typeof studyPackVerificationSchema>;

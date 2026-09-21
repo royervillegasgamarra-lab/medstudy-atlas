@@ -259,6 +259,12 @@ export function chunkDocumentPages(
   for (const page of pages) {
     const pageChunks = chunkPage(page, limits);
     for (const chunk of pageChunks) {
+      const validation = verifyChunkProvenance(page, chunk);
+      if (!validation.valid) {
+        throw new Error(
+          `Chunk provenance validation failed for page ${page.page_number} chunk ${chunk.chunk_index}: ${validation.error}`
+        );
+      }
       allChunks.push(chunk);
     }
   }

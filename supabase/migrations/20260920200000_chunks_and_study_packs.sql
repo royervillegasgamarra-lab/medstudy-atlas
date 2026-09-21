@@ -231,8 +231,8 @@ GRANT SELECT ON TABLE public.study_pack_item_citations TO authenticated;
 CREATE TABLE IF NOT EXISTS public.ai_usages (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
-    document_id UUID REFERENCES public.documents(id) ON DELETE SET NULL,
-    study_pack_id UUID REFERENCES public.study_packs(id) ON DELETE SET NULL,
+    document_id UUID,
+    study_pack_id UUID,
     feature TEXT NOT NULL CHECK (feature IN ('STUDY_PACK_GEN', 'STUDY_PACK_VERIFY', 'BENCHMARK')),
     provider TEXT NOT NULL,
     model TEXT NOT NULL,
@@ -242,7 +242,11 @@ CREATE TABLE IF NOT EXISTS public.ai_usages (
     estimated_cost_usd NUMERIC(10, 6) NOT NULL DEFAULT 0,
     latency_ms INT,
     status TEXT NOT NULL CHECK (status IN ('SUCCESS', 'FAILED', 'RATE_LIMITED')),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT fk_ai_usages_doc_owner FOREIGN KEY (document_id, user_id)
+        REFERENCES public.documents(id, user_id) ON DELETE SET NULL,
+    CONSTRAINT fk_ai_usages_pack_owner FOREIGN KEY (study_pack_id, user_id)
+        REFERENCES public.study_packs(id, user_id) ON DELETE SET NULL
 );
 
 -- Indexes
@@ -288,6 +292,18 @@ AS $$
 DECLARE
     v_id UUID;
 BEGIN
+    IF p_document_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM public.documents WHERE id = p_document_id AND user_id = p_user_id
+    ) THEN
+        RAISE EXCEPTION 'Document % does not belong to user %', p_document_id, p_user_id USING ERRCODE = '22023';
+    END IF;
+
+    IF p_study_pack_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM public.study_packs WHERE id = p_study_pack_id AND user_id = p_user_id
+    ) THEN
+        RAISE EXCEPTION 'Study pack % does not belong to user %', p_study_pack_id, p_user_id USING ERRCODE = '22023';
+    END IF;
+
     INSERT INTO public.ai_usages (
         user_id,
         document_id,
@@ -343,6 +359,7 @@ AS $$
 DECLARE
     v_run RECORD;
     v_doc RECORD;
+    v_page RECORD;
     v_chunk RECORD;
     v_count INT := 0;
 BEGIN
@@ -380,7 +397,7 @@ BEGIN
         RETURN v_count;
     END IF;
 
-    -- Insert chunks from JSONB array
+    -- Insert chunks from JSONB array with strict provenance validation
     FOR v_chunk IN
         SELECT
             (c->>'document_page_id')::UUID AS document_page_id,
@@ -393,6 +410,44 @@ BEGIN
             (c->>'content_sha256')::TEXT AS content_sha256
         FROM jsonb_array_elements(p_chunks) AS c
     LOOP
+        -- 1. Verify document_page exists and belongs to this run, doc, and user
+        SELECT dp.id, dp.page_number, dp.text_content
+        INTO v_page
+        FROM public.document_pages dp
+        WHERE dp.id = v_chunk.document_page_id
+          AND dp.processing_run_id = v_run.id
+          AND dp.document_id = v_run.document_id
+          AND dp.user_id = v_run.user_id;
+
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'Page % does not belong to processing run %', v_chunk.document_page_id, p_processing_run_id USING ERRCODE = '22023';
+        END IF;
+
+        -- 2. Verify page number matches
+        IF v_page.page_number != v_chunk.page_number THEN
+            RAISE EXCEPTION 'Page number mismatch: page has %, chunk has %', v_page.page_number, v_chunk.page_number USING ERRCODE = '22023';
+        END IF;
+
+        -- 3. Verify offsets are valid
+        IF v_chunk.start_char < 0 OR v_chunk.end_char > length(v_page.text_content) OR v_chunk.start_char >= v_chunk.end_char THEN
+            RAISE EXCEPTION 'Chunk offsets out of bounds: [%, %] on page length %', v_chunk.start_char, v_chunk.end_char, length(v_page.text_content) USING ERRCODE = '22023';
+        END IF;
+
+        -- 4. Verify char count matches slice
+        IF v_chunk.char_count != (v_chunk.end_char - v_chunk.start_char) THEN
+            RAISE EXCEPTION 'Chunk char_count mismatch' USING ERRCODE = '22023';
+        END IF;
+
+        -- 5. Verify chunk content matches exact page substring
+        IF v_chunk.content != substring(v_page.text_content from (v_chunk.start_char + 1) for v_chunk.char_count) THEN
+            RAISE EXCEPTION 'Chunk content does not match page substring at [%, %]', v_chunk.start_char, v_chunk.end_char USING ERRCODE = '22023';
+        END IF;
+
+        -- 6. Verify SHA-256 matches content
+        IF v_chunk.content_sha256 != pg_catalog.encode(extensions.digest(convert_to(v_chunk.content, 'UTF8'), 'sha256'), 'hex') THEN
+            RAISE EXCEPTION 'Chunk content_sha256 mismatch' USING ERRCODE = '22023';
+        END IF;
+
         INSERT INTO public.document_chunks (
             user_id,
             document_id,
@@ -436,17 +491,23 @@ GRANT EXECUTE ON FUNCTION public.create_document_chunks_privileged(UUID, TEXT, J
 -- Idempotently creates or re-enqueues a study pack generation job.
 -- ============================================================================
 
+DROP FUNCTION IF EXISTS public.enqueue_study_pack_privileged(UUID, UUID, TEXT);
+DROP FUNCTION IF EXISTS public.enqueue_study_pack_privileged(UUID, UUID, TEXT, TEXT, TEXT);
 CREATE OR REPLACE FUNCTION public.enqueue_study_pack_privileged(
     p_document_id UUID,
     p_user_id UUID,
-    p_generation_version TEXT DEFAULT 'sp-gen-v1'
+    p_generation_version TEXT DEFAULT 'sp-gen-v1',
+    p_chunking_version TEXT DEFAULT 'chunk-v1',
+    p_prompt_version TEXT DEFAULT 'sp-prompt-v1'
 )
 RETURNS TABLE (
     study_pack_id UUID,
     document_id UUID,
     user_id UUID,
     processing_run_id UUID,
+    chunking_version TEXT,
     generation_version TEXT,
+    prompt_version TEXT,
     status TEXT,
     attempt_count INT
 )
@@ -493,7 +554,7 @@ BEGIN
     END IF;
 
     -- Check if a study pack row exists
-    SELECT sp.id, sp.document_id, sp.user_id, sp.processing_run_id, sp.generation_version, sp.status, sp.attempt_count
+    SELECT sp.id, sp.document_id, sp.user_id, sp.processing_run_id, sp.chunking_version, sp.generation_version, sp.prompt_version, sp.status, sp.attempt_count
     INTO v_existing
     FROM public.study_packs sp
     WHERE sp.document_id = p_document_id
@@ -504,7 +565,7 @@ BEGIN
         -- If READY, PENDING, or actively GENERATING: return existing without mutation
         IF v_existing.status IN ('READY', 'PENDING', 'GENERATING') THEN
             RETURN QUERY
-            SELECT v_existing.id, v_existing.document_id, v_existing.user_id, v_existing.processing_run_id, v_existing.generation_version, v_existing.status, v_existing.attempt_count;
+            SELECT v_existing.id, v_existing.document_id, v_existing.user_id, v_existing.processing_run_id, v_existing.chunking_version, v_existing.generation_version, v_existing.prompt_version, v_existing.status, v_existing.attempt_count;
             RETURN;
         END IF;
 
@@ -512,6 +573,8 @@ BEGIN
         IF v_existing.status = 'FAILED_RETRYABLE' THEN
             UPDATE public.study_packs sp
             SET status = 'PENDING',
+                chunking_version = p_chunking_version,
+                prompt_version = p_prompt_version,
                 error_code = NULL,
                 claimed_by = NULL,
                 claim_token = NULL,
@@ -520,11 +583,11 @@ BEGIN
                 finished_at = NULL,
                 updated_at = NOW()
             WHERE sp.id = v_existing.id
-            RETURNING sp.id, sp.document_id, sp.user_id, sp.processing_run_id, sp.generation_version, sp.status, sp.attempt_count
+            RETURNING sp.id, sp.document_id, sp.user_id, sp.processing_run_id, sp.chunking_version, sp.generation_version, sp.prompt_version, sp.status, sp.attempt_count
             INTO v_pack;
 
             RETURN QUERY
-            SELECT v_pack.id, v_pack.document_id, v_pack.user_id, v_pack.processing_run_id, v_pack.generation_version, v_pack.status, v_pack.attempt_count;
+            SELECT v_pack.id, v_pack.document_id, v_pack.user_id, v_pack.processing_run_id, v_pack.chunking_version, v_pack.generation_version, v_pack.prompt_version, v_pack.status, v_pack.attempt_count;
             RETURN;
         END IF;
 
@@ -539,7 +602,9 @@ BEGIN
         user_id,
         document_id,
         processing_run_id,
+        chunking_version,
         generation_version,
+        prompt_version,
         status,
         attempt_count
     )
@@ -547,7 +612,9 @@ BEGIN
         p_user_id,
         p_document_id,
         v_run.id,
+        p_chunking_version,
         p_generation_version,
+        p_prompt_version,
         'PENDING',
         0
     )
@@ -556,18 +623,20 @@ BEGIN
         public.study_packs.document_id,
         public.study_packs.user_id,
         public.study_packs.processing_run_id,
+        public.study_packs.chunking_version,
         public.study_packs.generation_version,
+        public.study_packs.prompt_version,
         public.study_packs.status,
         public.study_packs.attempt_count
     INTO v_pack;
 
     RETURN QUERY
-    SELECT v_pack.id, v_pack.document_id, v_pack.user_id, v_pack.processing_run_id, v_pack.generation_version, v_pack.status, v_pack.attempt_count;
+    SELECT v_pack.id, v_pack.document_id, v_pack.user_id, v_pack.processing_run_id, v_pack.chunking_version, v_pack.generation_version, v_pack.prompt_version, v_pack.status, v_pack.attempt_count;
 END;
 $$;
 
-REVOKE ALL ON FUNCTION public.enqueue_study_pack_privileged(UUID, UUID, TEXT) FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.enqueue_study_pack_privileged(UUID, UUID, TEXT) TO service_role;
+REVOKE ALL ON FUNCTION public.enqueue_study_pack_privileged(UUID, UUID, TEXT, TEXT, TEXT) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.enqueue_study_pack_privileged(UUID, UUID, TEXT, TEXT, TEXT) TO service_role;
 
 -- ============================================================================
 -- 10. Privileged Function: public.claim_next_study_pack()
@@ -706,7 +775,7 @@ DECLARE
     v_new_item_id UUID;
 BEGIN
     -- Verify active claim lease and token
-    SELECT sp.id, sp.document_id, sp.user_id, sp.status, sp.claim_token, sp.lease_expires_at
+    SELECT sp.id, sp.document_id, sp.user_id, sp.processing_run_id, sp.chunking_version, sp.status, sp.claim_token, sp.lease_expires_at
     INTO v_pack
     FROM public.study_packs sp
     WHERE sp.id = p_study_pack_id
@@ -776,24 +845,52 @@ BEGIN
     LOOP
         v_new_item_id := (v_item_id_map->>v_citation.item_temp_key)::UUID;
 
-        IF v_new_item_id IS NOT NULL THEN
-            INSERT INTO public.study_pack_item_citations (
-                study_pack_item_id,
-                study_pack_id,
-                document_chunk_id,
-                user_id,
-                ordinal
-            )
-            VALUES (
-                v_new_item_id,
-                p_study_pack_id,
-                v_citation.document_chunk_id,
-                v_pack.user_id,
-                COALESCE(v_citation.ordinal, 0)
-            )
-            ON CONFLICT (study_pack_item_id, document_chunk_id) DO NOTHING;
+        -- Reject unknown item_temp_key (Item 9)
+        IF v_new_item_id IS NULL THEN
+            RAISE EXCEPTION 'Unknown citation item_temp_key: %', v_citation.item_temp_key USING ERRCODE = '22023';
         END IF;
+
+        -- Enforce cross-document citation integrity (Item 8)
+        IF NOT EXISTS (
+            SELECT 1 FROM public.document_chunks dc
+            WHERE dc.id = v_citation.document_chunk_id
+              AND dc.document_id = v_pack.document_id
+              AND dc.processing_run_id = v_pack.processing_run_id
+              AND dc.user_id = v_pack.user_id
+              AND dc.chunking_version = v_pack.chunking_version
+        ) THEN
+            RAISE EXCEPTION 'Citation chunk % does not belong to study pack document % (run %, version %)',
+                v_citation.document_chunk_id, v_pack.document_id, v_pack.processing_run_id, v_pack.chunking_version
+                USING ERRCODE = '22023';
+        END IF;
+
+        INSERT INTO public.study_pack_item_citations (
+            study_pack_item_id,
+            study_pack_id,
+            document_chunk_id,
+            user_id,
+            ordinal
+        )
+        VALUES (
+            v_new_item_id,
+            p_study_pack_id,
+            v_citation.document_chunk_id,
+            v_pack.user_id,
+            COALESCE(v_citation.ordinal, 0)
+        )
+        ON CONFLICT (study_pack_item_id, document_chunk_id) DO NOTHING;
     END LOOP;
+
+    -- Verify every item has at least one citation (Item 9)
+    IF EXISTS (
+        SELECT 1
+        FROM public.study_pack_items spi
+        LEFT JOIN public.study_pack_item_citations spic ON spic.study_pack_item_id = spi.id
+        WHERE spi.study_pack_id = p_study_pack_id
+          AND spic.id IS NULL
+    ) THEN
+        RAISE EXCEPTION 'Study pack cannot be marked READY with uncited items' USING ERRCODE = '55000';
+    END IF;
 
     -- Update study_packs record to READY
     UPDATE public.study_packs
@@ -942,6 +1039,13 @@ BEGIN
         finished_at = NOW(),
         updated_at = NOW()
     WHERE document_id = p_document_id;
+
+    -- Delete derived study content (Item 10)
+    DELETE FROM public.study_pack_item_citations
+    WHERE study_pack_id IN (SELECT id FROM public.study_packs WHERE document_id = p_document_id);
+
+    DELETE FROM public.study_pack_items
+    WHERE study_pack_id IN (SELECT id FROM public.study_packs WHERE document_id = p_document_id);
 
     -- Delete document chunks
     DELETE FROM public.document_chunks WHERE document_id = p_document_id;

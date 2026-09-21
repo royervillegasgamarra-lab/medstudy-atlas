@@ -33,12 +33,7 @@ export function getAIProvider(options?: ProviderFactoryOptions): AIProvider {
     return options.forceProvider;
   }
 
-  // Tests always use MockAIProvider
-  if (process.env.NODE_ENV === "test" || serverEnv.AI_PROVIDER === "mock") {
-    return getMockAIProvider();
-  }
-
-  // Safety kill-switch check
+  // 1. Safety kill-switch check MUST come first
   if (!serverEnv.AI_GENERATION_ENABLED) {
     throw new AIProviderError(
       "AI_DISABLED",
@@ -47,7 +42,39 @@ export function getAIProvider(options?: ProviderFactoryOptions): AIProvider {
     );
   }
 
-  // Mandatory credential check
+  // 2. Mock provider is ONLY allowed in test environments OR when explicitly allowed
+  const isTest = process.env.NODE_ENV === "test";
+  const allowMock = isTest || options?.allowMockInNonTest === true;
+
+  if (serverEnv.AI_PROVIDER === "mock") {
+    if (!allowMock) {
+      throw new AIProviderError(
+        "AI_NOT_CONFIGURED",
+        "Mock AI provider is only permitted in test environments or when explicitly allowed.",
+        false
+      );
+    }
+    return getMockAIProvider();
+  }
+
+  // In test environment, default to mock provider if no provider is configured
+  if (
+    isTest &&
+    (!serverEnv.AI_PROVIDER || serverEnv.AI_PROVIDER.trim() === "")
+  ) {
+    return getMockAIProvider();
+  }
+
+  // 3. Outside tests, provider must not be empty/none
+  if (!serverEnv.AI_PROVIDER || serverEnv.AI_PROVIDER.trim() === "") {
+    throw new AIProviderError(
+      "AI_NOT_CONFIGURED",
+      "No AI provider configured. Study Pack generation is unavailable.",
+      false
+    );
+  }
+
+  // 4. Mandatory credential check
   if (!serverEnv.AI_API_KEY || serverEnv.AI_API_KEY.trim() === "") {
     throw new AIProviderError(
       "AI_NOT_CONFIGURED",

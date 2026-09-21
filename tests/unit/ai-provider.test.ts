@@ -191,4 +191,112 @@ describe("AI Telemetry & Factory", () => {
     // After reset, queue is cleared
     expect(p1.callCount).toBe(0);
   });
+
+  it("kill switch: throws AI_DISABLED when AI_GENERATION_ENABLED is false", async () => {
+    const { serverEnv } = await import("@/config/server-env");
+    const originalEnabled = serverEnv.AI_GENERATION_ENABLED;
+    try {
+      (serverEnv as Record<string, unknown>).AI_GENERATION_ENABLED = false;
+      expect(() => getAIProvider()).toThrow(AIProviderError);
+      try {
+        getAIProvider();
+      } catch (err) {
+        expect((err as AIProviderError).code).toBe("AI_DISABLED");
+        expect((err as AIProviderError).retryable).toBe(false);
+      }
+    } finally {
+      (serverEnv as Record<string, unknown>).AI_GENERATION_ENABLED =
+        originalEnabled;
+    }
+  });
+
+  it("mock gating: rejects Mock provider outside test environment unless allowMockInNonTest is true", async () => {
+    const { serverEnv } = await import("@/config/server-env");
+    const originalNodeEnv = process.env.NODE_ENV;
+    const originalProvider = serverEnv.AI_PROVIDER;
+    try {
+      (process.env as Record<string, string | undefined>).NODE_ENV =
+        "production";
+      (serverEnv as Record<string, unknown>).AI_PROVIDER = "mock";
+
+      expect(() => getAIProvider()).toThrow(AIProviderError);
+      try {
+        getAIProvider();
+      } catch (err) {
+        expect((err as AIProviderError).code).toBe("AI_NOT_CONFIGURED");
+        expect((err as AIProviderError).retryable).toBe(false);
+      }
+
+      // Allowed when explicit allowMockInNonTest option is provided
+      const allowed = getAIProvider({ allowMockInNonTest: true });
+      expect(allowed).toBeInstanceOf(MockAIProvider);
+    } finally {
+      (process.env as Record<string, string | undefined>).NODE_ENV =
+        originalNodeEnv;
+      (serverEnv as Record<string, unknown>).AI_PROVIDER = originalProvider;
+    }
+  });
+});
+
+describe("Study Pack Candidate & Verification Schemas", () => {
+  it("rejects candidate payloads exceeding length and count bounds", async () => {
+    const { studyPackCandidateSchema } =
+      await import("@/modules/study-packs/types");
+
+    // Over-length paragraph (> 1000 chars)
+    const longParagraph = "a".repeat(1001);
+    const candidateInvalid = {
+      summaryParagraphs: [
+        {
+          paragraph: longParagraph,
+          evidenceChunkIds: ["00000000-0000-0000-0000-000000000001"],
+        },
+      ],
+      learningObjectives: [
+        {
+          objective: "Valid objective",
+          evidenceChunkIds: ["00000000-0000-0000-0000-000000000001"],
+        },
+      ],
+      keyConcepts: [
+        {
+          title: "Concept",
+          explanation: "Valid explanation that is sufficiently long",
+          evidenceChunkIds: ["00000000-0000-0000-0000-000000000001"],
+        },
+      ],
+      highYieldPoints: [
+        {
+          point: "Valid high yield point",
+          evidenceChunkIds: ["00000000-0000-0000-0000-000000000001"],
+        },
+      ],
+      keyTerms: [
+        {
+          term: "Term",
+          definition: "Valid definition",
+          evidenceChunkIds: ["00000000-0000-0000-0000-000000000001"],
+        },
+      ],
+    };
+
+    const res = studyPackCandidateSchema.safeParse(candidateInvalid);
+    expect(res.success).toBe(false);
+  });
+
+  it("rejects verification evaluations exceeding explanation length limit (500 chars)", async () => {
+    const { studyPackVerificationSchema } =
+      await import("@/modules/study-packs/types");
+
+    const res = studyPackVerificationSchema.safeParse({
+      evaluations: [
+        {
+          itemKey: "summary-0",
+          verdict: "SUPPORTED",
+          rationale: "e".repeat(501),
+        },
+      ],
+    });
+    expect(res.success).toBe(false);
+  });
 });

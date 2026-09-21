@@ -6,7 +6,7 @@ BEGIN;
 
 CREATE EXTENSION IF NOT EXISTS pgtap;
 
-SELECT plan(54);
+SELECT plan(64);
 
 -- ============================================================================
 -- 1. Setup Test Fixture Data (Users, Profiles, Subjects, Documents, Runs, Pages)
@@ -97,10 +97,10 @@ VALUES
     'TEXT_BASED',
     'NATIVE',
     'Estenosis aórtica: la etiología más frecuente en mayores de 70 años es la degenerativa calcificada.',
-    98,
+    99,
     595.28,
     841.89,
-    'page1_sha256'
+    'cc2d470eb7e6042ad0662e474959e51e2b50a60374e04aa45d8e86ac93753fee'
 ),
 (
     '11111111-0002-aaaa-aaaa-000000000002',
@@ -111,10 +111,10 @@ VALUES
     'TEXT_BASED',
     'NATIVE',
     'Tratamiento: TAVI o reemplazo quirúrgico cuando el área valvular es menor a 1 cm2 o hay síntomas.',
-    96,
+    97,
     595.28,
     841.89,
-    'page2_sha256'
+    '17c033ffb881257437ae37e4a0974eca3473911efde253f91b04ad80a7c37259'
 )
 ON CONFLICT (id) DO NOTHING;
 
@@ -204,20 +204,20 @@ SELECT is(
                 "page_number": 1,
                 "chunk_index": 0,
                 "start_char": 0,
-                "end_char": 98,
+                "end_char": 99,
                 "content": "Estenosis aórtica: la etiología más frecuente en mayores de 70 años es la degenerativa calcificada.",
-                "char_count": 98,
-                "content_sha256": "chunk1_sha256"
+                "char_count": 99,
+                "content_sha256": "cc2d470eb7e6042ad0662e474959e51e2b50a60374e04aa45d8e86ac93753fee"
             },
             {
                 "document_page_id": "11111111-0002-aaaa-aaaa-000000000002",
                 "page_number": 2,
                 "chunk_index": 0,
                 "start_char": 0,
-                "end_char": 96,
+                "end_char": 97,
                 "content": "Tratamiento: TAVI o reemplazo quirúrgico cuando el área valvular es menor a 1 cm2 o hay síntomas.",
-                "char_count": 96,
-                "content_sha256": "chunk2_sha256"
+                "char_count": 97,
+                "content_sha256": "17c033ffb881257437ae37e4a0974eca3473911efde253f91b04ad80a7c37259"
             }
         ]'::jsonb
     ),
@@ -234,6 +234,46 @@ SELECT is(
     ),
     2,
     'Chunk Creation Idempotency: Repeated call returns existing count'
+);
+
+-- Chunk Provenance Adversarial Tests (Item 7)
+SELECT throws_ok(
+    $$
+    SELECT public.create_document_chunks_privileged(
+        '11111111-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+        'chunk-v2',
+        '[{"document_page_id": "11111111-0001-aaaa-aaaa-000000000001", "page_number": 1, "chunk_index": 0, "start_char": 0, "end_char": 999, "content": "text", "char_count": 4, "content_sha256": "sha"}]'::jsonb
+    )
+    $$,
+    '22023',
+    NULL,
+    'Provenance Adversarial: Out of bounds offsets rejected'
+);
+
+SELECT throws_ok(
+    $$
+    SELECT public.create_document_chunks_privileged(
+        '11111111-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+        'chunk-v2',
+        '[{"document_page_id": "11111111-0001-aaaa-aaaa-000000000001", "page_number": 1, "chunk_index": 0, "start_char": 0, "end_char": 10, "content": "FORGED_TXT", "char_count": 10, "content_sha256": "sha"}]'::jsonb
+    )
+    $$,
+    '22023',
+    NULL,
+    'Provenance Adversarial: Forged chunk content slice rejected'
+);
+
+SELECT throws_ok(
+    $$
+    SELECT public.create_document_chunks_privileged(
+        '11111111-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+        'chunk-v2',
+        '[{"document_page_id": "11111111-0001-aaaa-aaaa-000000000001", "page_number": 1, "chunk_index": 0, "start_char": 0, "end_char": 18, "content": "Estenosis aórtica:", "char_count": 18, "content_sha256": "0000000000000000000000000000000000000000000000000000000000000000"}]'::jsonb
+    )
+    $$,
+    '22023',
+    NULL,
+    'Provenance Adversarial: Forged chunk SHA-256 hash rejected'
 );
 
 -- Verify Full-Text Search tsvector generated
@@ -357,6 +397,52 @@ SELECT throws_ok(
     NULL,
     'FK Integrity: document_chunks rejects mismatched document_page_id / document_id / user_id'
 );
+
+-- FK Integrity: ai_usages composite foreign key rejects mismatched (document_id, user_id)
+SELECT throws_ok(
+    $$
+    INSERT INTO public.ai_usages (
+        user_id, document_id, feature, provider, model, status
+    ) VALUES (
+        '22222222-2222-2222-2222-222222222222', -- Bob user
+        'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', -- Alice doc
+        'STUDY_PACK_GEN', 'mock-p', 'mock-m', 'SUCCESS'
+    )
+    $$,
+    '23503',
+    NULL,
+    'FK Integrity: ai_usages rejects mismatched document_id and user_id'
+);
+
+-- Telemetry RPC: record_ai_usage_privileged rejects mismatched document_id and user_id
+SELECT throws_ok(
+    $$
+    SELECT public.record_ai_usage_privileged(
+        '22222222-2222-2222-2222-222222222222', -- Bob user
+        'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', -- Alice doc
+        NULL,
+        'STUDY_PACK_GEN', 'mock-p', 'mock-m',
+        100, 50, 0, 0.001, 100, 'SUCCESS'
+    )
+    $$,
+    '22023',
+    NULL,
+    'Telemetry RPC Integrity: record_ai_usage_privileged rejects mismatched document_id and user_id'
+);
+
+-- Insert a Bob chunk for cross-document citation testing in Section 8
+INSERT INTO public.document_chunks (
+    id, user_id, document_id, processing_run_id, document_page_id,
+    page_number, chunk_index, start_char, end_char,
+    content, char_count, content_sha256, chunking_version
+) VALUES (
+    '22222222-cccc-0001-0000-000000000001',
+    '22222222-2222-2222-2222-222222222222',
+    'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+    '22222222-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+    '22222222-0001-bbbb-bbbb-000000000001',
+    1, 0, 0, 10, 'Neumonía a', 10, 'bob_chunk_sha', 'chunk-v1'
+) ON CONFLICT (id) DO NOTHING;
 
 -- ============================================================================
 -- 5. Test enqueue_study_pack_privileged RPC
@@ -548,6 +634,73 @@ SELECT id AS chunk_id FROM public.document_chunks WHERE document_id = 'aaaaaaaa-
 CREATE TEMP TABLE second_chunk AS
 SELECT id AS chunk_id FROM public.document_chunks WHERE document_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' AND page_number = 2 LIMIT 1;
 
+-- Persist Adversarial: Unknown item_temp_key rejected (Item 9)
+SELECT throws_ok(
+    $$
+    SELECT public.persist_study_pack_results_privileged(
+        (SELECT study_pack_id FROM claimed_pack),
+        (SELECT claim_token FROM claimed_pack),
+        'mock-provider', 'mock-model',
+        500, 250, 50, 0.0005,
+        2, 2, 2, 194,
+        jsonb_build_array(
+            jsonb_build_object('temp_key', 'summary-0', 'item_type', 'SUMMARY', 'ordinal', 0, 'payload', jsonb_build_object('paragraph', 'Test.'))
+        ),
+        jsonb_build_array(
+            jsonb_build_object('item_temp_key', 'unknown-key-999', 'document_chunk_id', (SELECT chunk_id FROM first_chunk), 'ordinal', 0)
+        )
+    )
+    $$,
+    '22023',
+    NULL,
+    'Persist Integrity: Unknown item_temp_key rejected'
+);
+
+-- Persist Adversarial: Cross-document citation rejected (Item 8)
+SELECT throws_ok(
+    $$
+    SELECT public.persist_study_pack_results_privileged(
+        (SELECT study_pack_id FROM claimed_pack),
+        (SELECT claim_token FROM claimed_pack),
+        'mock-provider', 'mock-model',
+        500, 250, 50, 0.0005,
+        2, 2, 2, 194,
+        jsonb_build_array(
+            jsonb_build_object('temp_key', 'summary-0', 'item_type', 'SUMMARY', 'ordinal', 0, 'payload', jsonb_build_object('paragraph', 'Test.'))
+        ),
+        jsonb_build_array(
+            jsonb_build_object('item_temp_key', 'summary-0', 'document_chunk_id', '22222222-cccc-0001-0000-000000000001'::UUID, 'ordinal', 0)
+        )
+    )
+    $$,
+    '22023',
+    NULL,
+    'Persist Integrity: Cross-document citation rejected'
+);
+
+-- Persist Adversarial: Uncited item in ready pack rejected (Item 9)
+SELECT throws_ok(
+    $$
+    SELECT public.persist_study_pack_results_privileged(
+        (SELECT study_pack_id FROM claimed_pack),
+        (SELECT claim_token FROM claimed_pack),
+        'mock-provider', 'mock-model',
+        500, 250, 50, 0.0005,
+        2, 2, 2, 194,
+        jsonb_build_array(
+            jsonb_build_object('temp_key', 'summary-0', 'item_type', 'SUMMARY', 'ordinal', 0, 'payload', jsonb_build_object('paragraph', 'Citated')),
+            jsonb_build_object('temp_key', 'summary-1', 'item_type', 'SUMMARY', 'ordinal', 1, 'payload', jsonb_build_object('paragraph', 'Uncited'))
+        ),
+        jsonb_build_array(
+            jsonb_build_object('item_temp_key', 'summary-0', 'document_chunk_id', (SELECT chunk_id FROM first_chunk), 'ordinal', 0)
+        )
+    )
+    $$,
+    '55000',
+    NULL,
+    'Persist Integrity: Uncited item in ready pack rejected'
+);
+
 SELECT is(
     public.persist_study_pack_results_privileged(
         (SELECT study_pack_id FROM claimed_pack),
@@ -590,7 +743,10 @@ SELECT is(
         ),
         jsonb_build_array(
             jsonb_build_object('item_temp_key', 'summary-0', 'document_chunk_id', (SELECT chunk_id FROM first_chunk), 'ordinal', 0),
-            jsonb_build_object('item_temp_key', 'concept-0', 'document_chunk_id', (SELECT chunk_id FROM second_chunk), 'ordinal', 0)
+            jsonb_build_object('item_temp_key', 'obj-0', 'document_chunk_id', (SELECT chunk_id FROM first_chunk), 'ordinal', 0),
+            jsonb_build_object('item_temp_key', 'concept-0', 'document_chunk_id', (SELECT chunk_id FROM second_chunk), 'ordinal', 0),
+            jsonb_build_object('item_temp_key', 'hy-0', 'document_chunk_id', (SELECT chunk_id FROM second_chunk), 'ordinal', 0),
+            jsonb_build_object('item_temp_key', 'term-0', 'document_chunk_id', (SELECT chunk_id FROM second_chunk), 'ordinal', 0)
         )
     ),
     true,
@@ -614,8 +770,8 @@ SELECT is(
 -- Verify item citations inserted
 SELECT is(
     (SELECT COUNT(*) FROM public.study_pack_item_citations WHERE study_pack_id = (SELECT study_pack_id FROM claimed_pack)),
-    2::bigint,
-    'Citations: Exactly 2 chunk citations persisted'
+    5::bigint,
+    'Citations: Exactly 5 chunk citations persisted'
 );
 
 -- Verify server-derived page numbers through chunk relation
@@ -682,7 +838,7 @@ SELECT is(
 
 SELECT is(
     (SELECT COUNT(*) FROM public.study_pack_item_citations WHERE user_id = '11111111-1111-1111-1111-111111111111'),
-    2::bigint,
+    5::bigint,
     'RLS: Alice can SELECT her own citations'
 );
 
@@ -797,6 +953,19 @@ SELECT throws_ok(
     '55000',
     NULL,
     'Archive Race: Stale worker persist denied on archived document'
+);
+
+-- Verify derived study content deleted on archive (Item 10)
+SELECT is(
+    (SELECT COUNT(*) FROM public.study_pack_items WHERE user_id = '22222222-2222-2222-2222-222222222222'),
+    0::bigint,
+    'Archive Cascade: Derived study_pack_items deleted on document archive'
+);
+
+SELECT is(
+    (SELECT COUNT(*) FROM public.study_pack_item_citations WHERE user_id = '22222222-2222-2222-2222-222222222222'),
+    0::bigint,
+    'Archive Cascade: Derived study_pack_item_citations deleted on document archive'
 );
 
 -- ============================================================================

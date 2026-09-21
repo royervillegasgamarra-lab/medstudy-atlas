@@ -339,4 +339,65 @@ describe("Study Pack Worker & Evidence Layer Integration (Phase 1E)", () => {
     expect(pack?.error_code).toBe("AI_RATE_LIMITED");
     expect(pack?.attempt_count).toBe(1);
   });
+
+  it("fails immediately as FAILED_FINAL when AI generation is disabled (kill switch)", async () => {
+    const { docId } = await createSucceededDocumentWithPages();
+    const enqueueRes = await requestStudyPackGeneration(docId, testUserId);
+
+    const { serverEnv } = await import("@/config/server-env");
+    const originalEnabled = serverEnv.AI_GENERATION_ENABLED;
+
+    try {
+      // Trip the kill switch
+      (serverEnv as Record<string, unknown>).AI_GENERATION_ENABLED = false;
+
+      // Process job without passing forced provider so it attempts getAIProvider()
+      const workerRes = await processNextStudyPackJob();
+
+      expect(workerRes.claimed).toBe(true);
+      expect(workerRes.status).toBe("FAILED");
+      expect(workerRes.errorCode).toBe("AI_DISABLED");
+
+      // Verify the study pack transitioned immediately to FAILED_FINAL
+      const { data: pack } = await adminClient
+        .from("study_packs")
+        .select("status, error_code")
+        .eq("id", enqueueRes.studyPackId)
+        .single();
+
+      expect(pack?.status).toBe("FAILED_FINAL");
+      expect(pack?.error_code).toBe("AI_DISABLED");
+    } finally {
+      (serverEnv as Record<string, unknown>).AI_GENERATION_ENABLED =
+        originalEnabled;
+    }
+  });
+
+  it("rejects version mismatch immediately with STUDY_PACK_VERSION_UNSUPPORTED", async () => {
+    const { docId } = await createSucceededDocumentWithPages();
+    const enqueueRes = await requestStudyPackGeneration(docId, testUserId);
+
+    // Tamper with job version in database
+    await adminClient
+      .from("study_packs")
+      .update({ chunking_version: "chunk-v999" })
+      .eq("id", enqueueRes.studyPackId);
+
+    const workerRes = await processNextStudyPackJob({
+      aiProvider: mockAiProvider,
+    });
+
+    expect(workerRes.claimed).toBe(true);
+    expect(workerRes.status).toBe("FAILED");
+    expect(workerRes.errorCode).toBe("STUDY_PACK_VERSION_UNSUPPORTED");
+
+    const { data: pack } = await adminClient
+      .from("study_packs")
+      .select("status, error_code")
+      .eq("id", enqueueRes.studyPackId)
+      .single();
+
+    expect(pack?.status).toBe("FAILED_FINAL");
+    expect(pack?.error_code).toBe("STUDY_PACK_VERSION_UNSUPPORTED");
+  });
 });

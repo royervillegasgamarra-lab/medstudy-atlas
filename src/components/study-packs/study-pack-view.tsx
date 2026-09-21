@@ -280,11 +280,11 @@ export function StudyPackViewComponent({
               <div className="p-4 rounded-lg border border-border/50 bg-background/50 space-y-1.5">
                 <div className="flex items-center gap-2 text-primary font-semibold text-xs">
                   <ShieldCheck className="w-4 h-4" />
-                  100% Fundamentado
+                  Verificación de Evidencia
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  Cada afirmación se verifica contra el texto original del
-                  documento. Cero invención de datos.
+                  Citas validadas contra el documento fuente con verificación
+                  automatizada de evidencia.
                 </p>
               </div>
 
@@ -424,7 +424,17 @@ export function StudyPackViewComponent({
 
       {/* State 5: READY — Full Study Pack Display */}
       {studyPack && studyPack.status === "READY" && (
-        <div className="space-y-8">
+        <div className="space-y-6">
+          {/* Educational Clinical Disclosure Banner */}
+          <div className="flex items-center gap-2.5 p-3.5 text-xs rounded-lg border border-amber-500/30 bg-amber-500/10 text-amber-900 dark:text-amber-200">
+            <AlertCircle className="w-4 h-4 shrink-0 text-amber-600 dark:text-amber-400" />
+            <span>
+              <strong>Aviso Académico:</strong> Material generado como
+              asistencia de estudio. Siempre verifique con las fuentes primarias
+              y criterios clínicos.
+            </span>
+          </div>
+
           {/* Metadata & Coverage Disclosure Panel */}
           <Card className="border-border/60 bg-card/40 shadow-xs">
             <CardContent className="p-4 sm:p-5">
@@ -434,14 +444,17 @@ export function StudyPackViewComponent({
                     <span className="text-sm font-semibold text-foreground">
                       Respaldo y Cobertura Evidencial
                     </span>
-                    <Badge variant="success" className="text-[11px] gap-1">
+                    <Badge
+                      variant="outline"
+                      className="text-[11px] gap-1 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20"
+                    >
                       <ShieldCheck className="w-3 h-3" />
-                      100% Afirmaciones Verificadas
+                      Evidencia Verificada
                     </Badge>
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    Generado de manera determinista sin recurrir a conocimiento
-                    externo no respaldado.
+                    Citas validadas contra el documento fuente con verificación
+                    automatizada de evidencia.
                   </p>
                 </div>
                 <div className="flex items-center gap-2 text-xs text-muted-foreground">

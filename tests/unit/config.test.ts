@@ -37,3 +37,52 @@ describe("Application Configuration & Configurable Assumptions", () => {
     expect(LEARNING_ASSUMPTIONS.defaultRetentionRate).toBe(0.9);
   });
 });
+
+describe("AI & Study Pack Worker Configuration Invariants", () => {
+  it("enforces worker lease invariant against provider timeouts", async () => {
+    const { STUDY_PACK_WORKER_LIMITS } =
+      await import("@/config/study-pack-limits");
+    // Lease duration must comfortably exceed 2 consecutive provider timeouts plus processing margin
+    const minRequiredLease =
+      STUDY_PACK_WORKER_LIMITS.providerTimeoutSeconds * 2 + 30;
+    expect(STUDY_PACK_WORKER_LIMITS.workerLeaseSeconds).toBeGreaterThanOrEqual(
+      minRequiredLease
+    );
+    expect(STUDY_PACK_WORKER_LIMITS.workerLeaseSeconds).toBeLessThanOrEqual(
+      STUDY_PACK_WORKER_LIMITS.maxLeaseSeconds
+    );
+    expect(STUDY_PACK_WORKER_LIMITS.maxRetries).toBe(3);
+  });
+
+  it("safely parses AI_GENERATION_ENABLED without truthy coercion", async () => {
+    const { parseAIGenerationEnabled } = await import("@/config/server-env");
+
+    // Explicit true values
+    expect(parseAIGenerationEnabled("true")).toBe(true);
+    expect(parseAIGenerationEnabled(true)).toBe(true);
+
+    // Explicit false / falsy defaults
+    expect(parseAIGenerationEnabled("false")).toBe(false);
+    expect(parseAIGenerationEnabled(false)).toBe(false);
+    expect(parseAIGenerationEnabled("")).toBe(false);
+    expect(parseAIGenerationEnabled(undefined)).toBe(false);
+    expect(parseAIGenerationEnabled(null)).toBe(false);
+
+    // Invalid non-boolean representations throw configuration error
+    expect(() => parseAIGenerationEnabled("1")).toThrow(
+      /Invalid AI_GENERATION_ENABLED value/
+    );
+    expect(() => parseAIGenerationEnabled("0")).toThrow(
+      /Invalid AI_GENERATION_ENABLED value/
+    );
+    expect(() => parseAIGenerationEnabled("yes")).toThrow(
+      /Invalid AI_GENERATION_ENABLED value/
+    );
+    expect(() => parseAIGenerationEnabled("no")).toThrow(
+      /Invalid AI_GENERATION_ENABLED value/
+    );
+    expect(() => parseAIGenerationEnabled("TRUE")).toThrow(
+      /Invalid AI_GENERATION_ENABLED value/
+    );
+  });
+});

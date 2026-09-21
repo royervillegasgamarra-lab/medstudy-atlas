@@ -28,6 +28,7 @@ export interface AIStructuredRequest<T> {
   userPrompt: string;
   temperature?: number;
   maxTokens?: number;
+  abortSignal?: AbortSignal;
 }
 
 export interface AIStructuredResult<T> {

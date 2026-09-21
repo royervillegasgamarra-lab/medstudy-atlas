@@ -145,13 +145,13 @@ Study Pack creation uses a bounded two-call model to prevent hallucinations and 
    - It outputs candidate study pack sections: General Summary, Learning Objectives, Key Concepts, High-Yield Points, and Key Terms Glossary.
    - For every claim, the model attaches candidate chunk IDs.
 2. **CALL 2: Evidence-Support Verification**:
-   - An independent verification prompt inspects candidate items alongside the cited source text chunks.
-   - Each item is classified: `SUPPORTED`, `CONTRADICTED`, or `UNSUPPORTED`.
-   - Items lacking direct textual grounding are stripped from the pack.
+   - An independent verification prompt inspects candidate items alongside cited source text chunks.
+   - Each item is classified: `SUPPORTED` or `UNSUPPORTED`.
+   - Items lacking direct textual grounding (`UNSUPPORTED`) are stripped from the pack.
 3. **Deterministic Citation Validation**:
    - The model is **never** trusted to provide page numbers. The server maps validated `chunk_id` values to their authoritative database `page_number` in `document_chunks`.
 4. **Strict QA Status Gate**:
-   - A Study Pack is rejected (`FAILED_FINAL`, `INSUFFICIENT_EVIDENCE`) unless it satisfies:
+   - A Study Pack is rejected (`FAILED_FINAL`, `STUDY_PACK_EVIDENCE_QA_FAILED`) unless it satisfies:
      - $\ge 1$ General Summary paragraph
      - $\ge 1$ Learning Objective
      - $\ge 1$ Key Concept

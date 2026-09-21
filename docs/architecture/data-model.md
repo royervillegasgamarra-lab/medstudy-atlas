@@ -482,6 +482,7 @@ CREATE TABLE ai_usages (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
     document_id UUID,
+    study_pack_id UUID,
     feature TEXT NOT NULL CHECK (feature IN (
         'STUDY_PACK_GEN',
         'STUDY_PACK_VERIFY',
@@ -501,6 +502,10 @@ CREATE TABLE ai_usages (
     status TEXT NOT NULL CHECK (status IN ('SUCCESS', 'FAILED', 'RATE_LIMITED')),
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT fk_ai_usages_doc_owner FOREIGN KEY (document_id, user_id)
+        REFERENCES public.documents(id, user_id) ON DELETE SET NULL,
+    CONSTRAINT fk_ai_usages_pack_owner FOREIGN KEY (study_pack_id, user_id)
+        REFERENCES public.study_packs(id, user_id) ON DELETE SET NULL,
     CONSTRAINT chk_ai_usages_tokens_non_negative CHECK (input_tokens >= 0 AND output_tokens >= 0 AND cached_tokens >= 0),
     CONSTRAINT chk_ai_usages_cost_non_negative CHECK (estimated_cost_usd >= 0)
 );

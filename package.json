@@ -26,11 +26,11 @@
     "verify": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm db:test && pnpm build"
   },
   "dependencies": {
-    "@ai-sdk/openai-compatible": "^3.0.53",
+    "@ai-sdk/openai-compatible": "3.0.53",
     "@base-ui/react": "1.8.0",
     "@supabase/ssr": "0.12.7",
     "@supabase/supabase-js": "2.116.0",
-    "ai": "^7.0.107",
+    "ai": "7.0.107",
     "class-variance-authority": "0.7.1",
     "cn": "0.3.0",
     "lucide-react": "1.47.0",

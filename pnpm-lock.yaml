@@ -9,7 +9,7 @@ importers:
   .:
     dependencies:
       '@ai-sdk/openai-compatible':
-        specifier: ^3.0.53
+        specifier: 3.0.53
         version: 3.0.53(zod@4.6.5)
       '@base-ui/react':
         specifier: 1.8.0
@@ -21,7 +21,7 @@ importers:
         specifier: 2.116.0
         version: 2.116.0
       ai:
-        specifier: ^7.0.107
+        specifier: 7.0.107
         version: 7.0.107(zod@4.6.5)
       class-variance-authority:
         specifier: 0.7.1

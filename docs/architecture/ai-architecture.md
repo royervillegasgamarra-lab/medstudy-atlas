@@ -112,17 +112,17 @@ All operations are logged to `public.ai_usages` with `estimated_cost_usd` tracke
 
 ### Hard Cost Controls Matrix (Configurable Safeguards)
 1. **Hard Token Ceilings** (`INITIAL CONFIGURABLE ASSUMPTION`):
-   - Tutor Query: Max 1,500 input context tokens + max 500 completion tokens.
-   - Study Pack: Max 8,000 input tokens + max 2,500 output tokens (chunked and cached).
+   - Tutor Query (Phase 1F): Max 1,500 input context tokens + max 500 completion tokens.
+   - Study Pack (Phase 1E): Max candidate tokens: 4,096, max verifier tokens: 2,048 (`STUDY_PACK_WORKER_LIMITS`), input evidence bounded by `maxEvidenceChars`: 100,000 and `maxEvidenceChunks`: 80 (`STUDY_PACK_BUDGET_LIMITS`).
 2. **Feature Quotas (Enforced in Database)** (`INITIAL CONFIGURABLE ASSUMPTION`):
    - Free Tier: Max 5 document uploads/month, max 10 Tutor messages/day, 1 Study Pack/document.
    - PRO Tier: Max 50 document uploads/month, max 50 Tutor messages/day.
 3. **Generation Caching**:
-   - A Study Pack is generated **once** upon request and stored in PostgreSQL (`study_packs`). It is never regenerated on page views.
+   - A Study Pack is generated **once** upon request and stored in PostgreSQL (`study_packs`). It is served from database cache on subsequent page views with zero AI provider calls.
 4. **Prompt Caching**:
-   - Leverage provider prompt caching (e.g., cached tokens) for static medical system prompts.
-5. **Circuit Breaker** (`INITIAL CONFIGURABLE ASSUMPTION`):
-   - If a user's monthly AI consumption exceeds $1.50 USD in telemetry tracking (`ai_usages`), AI requests are throttled with a friendly rate-limit notice until billing cycle renewal.
+   - Leverage provider prompt caching (tracked via `cached_tokens` in `ai_usages`) for static medical system prompts.
+5. **Spend Telemetry & Circuit Breaker Tracking**:
+   - All token consumption and estimated costs are logged to `public.ai_usages` with composite foreign keys to user and document/study pack. Per-call tokens are strictly capped, provider timeouts are enforced with `AbortSignal`, and worker retries are bounded to 3 attempts.
 
 ---
 

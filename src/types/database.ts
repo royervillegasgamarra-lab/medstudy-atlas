@@ -85,18 +85,18 @@ export type Database = {
         };
         Relationships: [
           {
-            foreignKeyName: "ai_usages_document_id_fkey";
-            columns: ["document_id"];
+            foreignKeyName: "fk_ai_usages_doc_owner";
+            columns: ["document_id", "user_id"];
             isOneToOne: false;
             referencedRelation: "documents";
-            referencedColumns: ["id"];
+            referencedColumns: ["id", "user_id"];
           },
           {
-            foreignKeyName: "ai_usages_study_pack_id_fkey";
-            columns: ["study_pack_id"];
+            foreignKeyName: "fk_ai_usages_pack_owner";
+            columns: ["study_pack_id", "user_id"];
             isOneToOne: false;
             referencedRelation: "study_packs";
-            referencedColumns: ["id"];
+            referencedColumns: ["id", "user_id"];
           },
         ];
       };
@@ -772,15 +772,19 @@ export type Database = {
       };
       enqueue_study_pack_privileged: {
         Args: {
+          p_chunking_version?: string;
           p_document_id: string;
           p_generation_version?: string;
+          p_prompt_version?: string;
           p_user_id: string;
         };
         Returns: {
           attempt_count: number;
+          chunking_version: string;
           document_id: string;
           generation_version: string;
           processing_run_id: string;
+          prompt_version: string;
           status: string;
           study_pack_id: string;
           user_id: string;

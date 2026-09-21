@@ -29,14 +29,25 @@ export interface StudyPackBudgetLimits {
   minKeyTerms: number;
   minCitationsPerItem: number;
   maxCitationsPerItem: number;
+  maxSummaryParagraphChars: number;
+  maxLearningObjectiveChars: number;
+  maxKeyConceptTitleChars: number;
+  maxKeyConceptExplanationChars: number;
+  maxHighYieldPointChars: number;
+  maxKeyTermChars: number;
+  maxKeyTermDefinitionChars: number;
+  maxVerificationExplanationChars: number;
 }
 
 export interface StudyPackWorkerLimits {
   maxRetries: number;
   defaultLeaseSeconds: number;
+  workerLeaseSeconds: number;
   minLeaseSeconds: number;
   maxLeaseSeconds: number;
   providerTimeoutSeconds: number;
+  maxCandidateTokens: number;
+  maxVerifierTokens: number;
 }
 
 export const CHUNKING_LIMITS: ChunkingLimits = {
@@ -61,14 +72,25 @@ export const STUDY_PACK_BUDGET_LIMITS: StudyPackBudgetLimits = {
   minKeyTerms: 1,
   minCitationsPerItem: 1,
   maxCitationsPerItem: 5,
+  maxSummaryParagraphChars: 1000,
+  maxLearningObjectiveChars: 300,
+  maxKeyConceptTitleChars: 150,
+  maxKeyConceptExplanationChars: 1000,
+  maxHighYieldPointChars: 500,
+  maxKeyTermChars: 100,
+  maxKeyTermDefinitionChars: 500,
+  maxVerificationExplanationChars: 500,
 };
 
 export const STUDY_PACK_WORKER_LIMITS: StudyPackWorkerLimits = {
   maxRetries: 3,
   defaultLeaseSeconds: 300,
+  workerLeaseSeconds: 300,
   minLeaseSeconds: 30,
   maxLeaseSeconds: 1800,
   providerTimeoutSeconds: 60,
+  maxCandidateTokens: 4096,
+  maxVerifierTokens: 2048,
 };
 
 /**

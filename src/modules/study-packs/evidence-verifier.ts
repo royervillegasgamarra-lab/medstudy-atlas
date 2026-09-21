@@ -1,4 +1,5 @@
 import type { AIProvider, AIRequestContext } from "../ai/types";
+import { STUDY_PACK_WORKER_LIMITS } from "@/config/study-pack-limits";
 import {
   studyPackVerificationSchema,
   type StudyPackVerification,
@@ -30,7 +31,12 @@ export interface EvidenceVerificationResult {
   error?: string;
   items: VerifiedStudyPackItem[];
   citations: VerifiedCitation[];
-  telemetryTokens: { input: number; output: number; cost: number };
+  telemetryTokens: {
+    input: number;
+    output: number;
+    cached: number;
+    cost: number;
+  };
 }
 
 /**
@@ -91,6 +97,10 @@ CRITICAL RULES:
         systemPrompt,
         userPrompt,
         temperature: 0.0,
+        maxTokens: STUDY_PACK_WORKER_LIMITS.maxVerifierTokens,
+        abortSignal: AbortSignal.timeout(
+          STUDY_PACK_WORKER_LIMITS.providerTimeoutSeconds * 1000
+        ),
       },
       context
         ? {
@@ -141,6 +151,7 @@ CRITICAL RULES:
       telemetryTokens: {
         input: verificationRes.telemetry.inputTokens,
         output: verificationRes.telemetry.outputTokens,
+        cached: verificationRes.telemetry.cachedTokens,
         cost: verificationRes.telemetry.estimatedCostUsd,
       },
     };
@@ -179,6 +190,7 @@ CRITICAL RULES:
     telemetryTokens: {
       input: verificationRes.telemetry.inputTokens,
       output: verificationRes.telemetry.outputTokens,
+      cached: verificationRes.telemetry.cachedTokens,
       cost: verificationRes.telemetry.estimatedCostUsd,
     },
   };

@@ -31,6 +31,8 @@ export default defineConfig({
       NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY:
         process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
         "sb_publishable_test_dummy_key",
+      AI_GENERATION_ENABLED: "true",
+      AI_PROVIDER: "mock",
     },
   },
 });

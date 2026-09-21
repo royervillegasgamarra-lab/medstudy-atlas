@@ -12,7 +12,12 @@ if (typeof procWithEnv.loadEnvFile === "function") {
 
 import * as crypto from "crypto";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { STUDY_PACK_WORKER_LIMITS } from "@/config/study-pack-limits";
+import {
+  STUDY_PACK_WORKER_LIMITS,
+  CHUNKING_VERSION,
+  STUDY_PACK_GENERATION_VERSION,
+  STUDY_PACK_PROMPT_VERSION,
+} from "@/config/study-pack-limits";
 import {
   createOrGetDocumentChunks,
   generateStudyPackContent,
@@ -137,10 +142,24 @@ export async function processNextStudyPackJob(
     `[StudyPacksWorker] Claimed job ${job.study_pack_id} for document ${job.document_id} (Attempt ${job.attempt_count})`
   );
 
-  const provider = options.aiProvider ?? getAIProvider();
-
   try {
-    // 1. Ensure canonical chunks exist for the document
+    // 0. Explicit versioning contract verification
+    if (
+      job.chunking_version !== CHUNKING_VERSION ||
+      job.generation_version !== STUDY_PACK_GENERATION_VERSION ||
+      job.prompt_version !== STUDY_PACK_PROMPT_VERSION
+    ) {
+      throw new StudyPackServiceError(
+        "STUDY_PACK_VERSION_UNSUPPORTED",
+        `Job version mismatch (chunking: ${job.chunking_version}, gen: ${job.generation_version}, prompt: ${job.prompt_version})`,
+        false
+      );
+    }
+
+    // 1. Acquire AI provider inside failure boundary
+    const provider = options.aiProvider ?? getAIProvider();
+
+    // 2. Ensure canonical chunks exist for the document
     const chunks = await createOrGetDocumentChunks(job.processing_run_id);
     if (!chunks || chunks.length === 0) {
       throw new StudyPackServiceError(
@@ -149,7 +168,7 @@ export async function processNextStudyPackJob(
       );
     }
 
-    // 2. Generate and verify Study Pack content
+    // 3. Generate and verify Study Pack content
     const genResult = await generateStudyPackContent({
       documentId: job.document_id,
       userId: job.user_id,

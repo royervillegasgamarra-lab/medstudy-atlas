@@ -18,6 +18,8 @@ import {
   type CanonicalChunk,
 } from "@/modules/study-packs/chunking";
 import { generateStudyPackContent } from "@/modules/study-packs/service";
+import { serverEnv } from "@/config/server-env";
+import { MockAIProvider } from "@/modules/ai/mock-provider";
 import { getAIProvider } from "@/modules/ai";
 
 interface BenchmarkFixture {
@@ -47,17 +49,43 @@ interface BenchmarkResult {
 }
 
 async function runBenchmark() {
+  const isLiveOptIn =
+    serverEnv.AI_GENERATION_ENABLED &&
+    Boolean(serverEnv.AI_PROVIDER) &&
+    serverEnv.AI_PROVIDER !== "mock" &&
+    Boolean(serverEnv.AI_API_KEY);
+
+  const provider = isLiveOptIn ? getAIProvider() : new MockAIProvider();
+  const isMock = provider.name === "mock-provider";
+
   console.log(
     "==============================================================="
   );
   console.log("MEDSTUDY ATLAS — STUDY PACK BENCHMARK HARNESS (PHASE 1E)");
-  console.log("Evaluating synthetic medical fixtures with zero private data.");
+  if (isMock) {
+    console.log(
+      "Mode: (A) Mock Pipeline Smoke ($0.00 spend, structural mechanics check)"
+    );
+    console.log(
+      "AI_API_KEY is not configured or AI_GENERATION_ENABLED=false. Running Mode A automatically."
+    );
+    console.log(
+      "Verifying deterministic chunking, schema conformity & chunk ID resolution."
+    );
+  } else {
+    console.log(
+      `Mode: (B) Live Model Benchmark (${provider.name} / ${provider.model})`
+    );
+    console.log(
+      "Evaluating live model evidence grounding on synthetic fixtures."
+    );
+  }
+  console.log("Zero private user documents are sent during benchmarking.");
   console.log(
     "===============================================================\n"
   );
 
-  const provider = getAIProvider({ allowMockInNonTest: true });
-  console.log(`Using AI Provider: ${provider.name} (${provider.model})\n`);
+  console.log(`Active AI Provider: ${provider.name} (${provider.model})\n`);
 
   const fixturesDir = path.resolve(process.cwd(), "tests/fixtures/benchmark");
   if (!fs.existsSync(fixturesDir)) {
@@ -137,7 +165,7 @@ async function runBenchmark() {
         chunksCount: genResult.sourceChunkCount,
         candidateItemsCount: totalItems,
         verifiedItemsCount: totalItems,
-        supportedRatio: 100, // All surviving items passed evidence verification
+        supportedRatio: isMock ? -1 : 100, // -1 signals N/A in mock mode
         citationValidity: 100, // Verified citations match source chunks
         inputTokens: genResult.inputTokens,
         outputTokens: genResult.outputTokens,
@@ -169,7 +197,11 @@ async function runBenchmark() {
   console.log(
     "\n==============================================================="
   );
-  console.log("BENCHMARK RESULTS SUMMARY");
+  console.log(
+    isMock
+      ? "SMOKE TEST SUMMARY (Structural Pipeline Mechanics)"
+      : "BENCHMARK RESULTS SUMMARY (Live Model Quality)"
+  );
   console.log(
     "==============================================================="
   );
@@ -180,8 +212,11 @@ async function runBenchmark() {
       Págs: r.pagesCount,
       Chunks: r.chunksCount,
       Items: r.verifiedItemsCount,
-      "Soporte (%)": r.supportedRatio.toFixed(1) + "%",
-      "Citas Válidas (%)": r.citationValidity.toFixed(1) + "%",
+      "Soporte Factual":
+        r.supportedRatio < 0
+          ? "N/A (Mock smoke verifies structural invariants only)"
+          : `${r.supportedRatio.toFixed(1)}%`,
+      "Citas Válidas": `${r.citationValidity.toFixed(1)}%`,
       Tokens: `${r.inputTokens}in / ${r.outputTokens}out`,
       Costo: `$${r.estimatedCostUsd.toFixed(5)}`,
       Latencia: `${r.latencyMs}ms`,
@@ -193,6 +228,11 @@ async function runBenchmark() {
   console.log(
     `\nOverall Result: ${allPassed ? "PASS (All fixtures within bounds)" : "FAIL"}`
   );
+  if (isMock) {
+    console.log(
+      "Note: Mock smoke verifies structural mechanics and pipeline schema validation with $0.00 spend."
+    );
+  }
 
   if (!allPassed) {
     process.exit(1);

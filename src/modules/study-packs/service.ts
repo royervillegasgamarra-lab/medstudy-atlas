@@ -1,8 +1,10 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import {
   STUDY_PACK_BUDGET_LIMITS,
+  STUDY_PACK_WORKER_LIMITS,
   CHUNKING_VERSION,
   STUDY_PACK_GENERATION_VERSION,
+  STUDY_PACK_PROMPT_VERSION,
 } from "@/config/study-pack-limits";
 import {
   chunkDocumentPages,
@@ -50,6 +52,60 @@ export class StudyPackServiceError extends Error {
     super(message);
     this.name = "StudyPackServiceError";
   }
+}
+
+/**
+ * Shared deterministic error mapper translating AIProviderError into canonical StudyPackServiceError.
+ */
+export function mapAIProviderErrorToStudyPackError(
+  err: unknown,
+  defaultMessage: string
+): StudyPackServiceError {
+  if (err instanceof AIProviderError) {
+    switch (err.code) {
+      case "AI_SCHEMA_INVALID":
+        return new StudyPackServiceError(
+          "STUDY_PACK_SCHEMA_INVALID",
+          err.message,
+          true
+        );
+      case "AI_RATE_LIMITED":
+        return new StudyPackServiceError("AI_RATE_LIMITED", err.message, true);
+      case "AI_TIMEOUT":
+        return new StudyPackServiceError("AI_TIMEOUT", err.message, true);
+      case "AI_PROVIDER_UNAVAILABLE":
+        return new StudyPackServiceError(
+          "AI_PROVIDER_UNAVAILABLE",
+          err.message,
+          true
+        );
+      case "AI_PROVIDER_AUTH_ERROR":
+        return new StudyPackServiceError(
+          "AI_PROVIDER_AUTH_ERROR",
+          err.message,
+          false
+        );
+      case "AI_DISABLED":
+        return new StudyPackServiceError("AI_DISABLED", err.message, false);
+      case "AI_NOT_CONFIGURED":
+        return new StudyPackServiceError(
+          "AI_NOT_CONFIGURED",
+          err.message,
+          false
+        );
+      default:
+        return new StudyPackServiceError(
+          "WORKER_INTERNAL_ERROR",
+          err.message,
+          err.retryable
+        );
+    }
+  }
+  return new StudyPackServiceError(
+    "WORKER_INTERNAL_ERROR",
+    `${defaultMessage}: ${err instanceof Error ? err.message : String(err)}`,
+    true
+  );
 }
 
 /**
@@ -244,43 +300,17 @@ CRITICAL INVARIANTS:
         systemPrompt,
         userPrompt,
         temperature: 0.1,
+        maxTokens: STUDY_PACK_WORKER_LIMITS.maxCandidateTokens,
+        abortSignal: AbortSignal.timeout(
+          STUDY_PACK_WORKER_LIMITS.providerTimeoutSeconds * 1000
+        ),
       },
       context
     );
   } catch (err) {
-    if (err instanceof AIProviderError) {
-      if (err.code === "AI_SCHEMA_INVALID") {
-        throw new StudyPackServiceError(
-          "STUDY_PACK_SCHEMA_INVALID",
-          err.message,
-          true
-        );
-      }
-      if (err.code === "AI_RATE_LIMITED") {
-        throw new StudyPackServiceError("AI_RATE_LIMITED", err.message, true);
-      }
-      if (err.code === "AI_TIMEOUT") {
-        throw new StudyPackServiceError("AI_TIMEOUT", err.message, true);
-      }
-      if (err.code === "AI_PROVIDER_UNAVAILABLE") {
-        throw new StudyPackServiceError(
-          "AI_PROVIDER_UNAVAILABLE",
-          err.message,
-          true
-        );
-      }
-      if (err.code === "AI_PROVIDER_AUTH_ERROR") {
-        throw new StudyPackServiceError(
-          "AI_PROVIDER_AUTH_ERROR",
-          err.message,
-          false
-        );
-      }
-    }
-    throw new StudyPackServiceError(
-      "WORKER_INTERNAL_ERROR",
-      `Candidate generation failed: ${String(err)}`,
-      true
+    throw mapAIProviderErrorToStudyPackError(
+      err,
+      "Candidate generation failed"
     );
   }
 
@@ -307,19 +337,7 @@ CRITICAL INVARIANTS:
       context
     );
   } catch (err) {
-    if (err instanceof AIProviderError) {
-      if (err.code === "AI_RATE_LIMITED") {
-        throw new StudyPackServiceError("AI_RATE_LIMITED", err.message, true);
-      }
-      if (err.code === "AI_TIMEOUT") {
-        throw new StudyPackServiceError("AI_TIMEOUT", err.message, true);
-      }
-    }
-    throw new StudyPackServiceError(
-      "WORKER_INTERNAL_ERROR",
-      `Verification call failed: ${String(err)}`,
-      true
-    );
+    throw mapAIProviderErrorToStudyPackError(err, "Verification call failed");
   }
 
   if (!verificationRes.passed) {
@@ -337,6 +355,9 @@ CRITICAL INVARIANTS:
   const totalOutputTokens =
     candidateRes.telemetry.outputTokens +
     verificationRes.telemetryTokens.output;
+  const totalCachedTokens =
+    candidateRes.telemetry.cachedTokens +
+    verificationRes.telemetryTokens.cached;
   const totalCost =
     candidateRes.telemetry.estimatedCostUsd +
     verificationRes.telemetryTokens.cost;
@@ -349,7 +370,7 @@ CRITICAL INVARIANTS:
     citations: verificationRes.citations,
     inputTokens: totalInputTokens,
     outputTokens: totalOutputTokens,
-    cachedTokens: 0,
+    cachedTokens: totalCachedTokens,
     estimatedCostUsd: totalCost,
     sourcePageCount: uniquePages.size,
     sourceChunkCount: chunks.length,
@@ -470,7 +491,9 @@ export async function requestStudyPackGeneration(
     {
       p_document_id: documentId,
       p_user_id: userId,
+      p_chunking_version: CHUNKING_VERSION,
       p_generation_version: STUDY_PACK_GENERATION_VERSION,
+      p_prompt_version: STUDY_PACK_PROMPT_VERSION,
     }
   );
 
