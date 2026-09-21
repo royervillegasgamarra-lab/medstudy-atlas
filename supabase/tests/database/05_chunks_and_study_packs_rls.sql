@@ -6,7 +6,7 @@ BEGIN;
 
 CREATE EXTENSION IF NOT EXISTS pgtap;
 
-SELECT plan(64);
+SELECT plan(81);
 
 -- ============================================================================
 -- 1. Setup Test Fixture Data (Users, Profiles, Subjects, Documents, Runs, Pages)
@@ -900,6 +900,93 @@ SELECT throws_ok(
     'Privilege: Authenticated INSERT denied on ai_usages'
 );
 
+-- study_pack_items mutations denied
+SELECT throws_ok(
+    $$ INSERT INTO public.study_pack_items (study_pack_id, user_id, item_type, ordinal, payload) VALUES ('22222222-2222-2222-2222-222222222222', '22222222-2222-2222-2222-222222222222', 'SUMMARY', 0, '{}'::jsonb) $$,
+    '42501',
+    NULL,
+    'Privilege: Authenticated INSERT denied on study_pack_items'
+);
+
+SELECT throws_ok(
+    $$ UPDATE public.study_pack_items SET payload = '{"hacked": true}'::jsonb $$,
+    '42501',
+    NULL,
+    'Privilege: Authenticated UPDATE denied on study_pack_items'
+);
+
+SELECT throws_ok(
+    $$ DELETE FROM public.study_pack_items $$,
+    '42501',
+    NULL,
+    'Privilege: Authenticated DELETE denied on study_pack_items'
+);
+
+-- study_pack_item_citations mutations denied
+SELECT throws_ok(
+    $$ INSERT INTO public.study_pack_item_citations (study_pack_item_id, study_pack_id, document_chunk_id, user_id) VALUES ('22222222-2222-2222-2222-222222222222', '22222222-2222-2222-2222-222222222222', '22222222-2222-2222-2222-222222222222', '22222222-2222-2222-2222-222222222222') $$,
+    '42501',
+    NULL,
+    'Privilege: Authenticated INSERT denied on study_pack_item_citations'
+);
+
+SELECT throws_ok(
+    $$ UPDATE public.study_pack_item_citations SET ordinal = 99 $$,
+    '42501',
+    NULL,
+    'Privilege: Authenticated UPDATE denied on study_pack_item_citations'
+);
+
+SELECT throws_ok(
+    $$ DELETE FROM public.study_pack_item_citations $$,
+    '42501',
+    NULL,
+    'Privilege: Authenticated DELETE denied on study_pack_item_citations'
+);
+
+-- Phase 1E privileged RPC execution denied for authenticated role
+SELECT throws_ok(
+    $$ SELECT public.create_document_chunks_privileged('11111111-aaaa-aaaa-aaaa-aaaaaaaaaaaa'::uuid, 'chunk-v1', '[]'::jsonb) $$,
+    '42501',
+    NULL,
+    'Privilege: Authenticated EXECUTE denied on create_document_chunks_privileged'
+);
+
+SELECT throws_ok(
+    $$ SELECT public.enqueue_study_pack_privileged('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'::uuid, '11111111-1111-1111-1111-111111111111'::uuid, 'sp-gen-v1') $$,
+    '42501',
+    NULL,
+    'Privilege: Authenticated EXECUTE denied on enqueue_study_pack_privileged'
+);
+
+SELECT throws_ok(
+    $$ SELECT public.claim_next_study_pack('rogue-worker', 300) $$,
+    '42501',
+    NULL,
+    'Privilege: Authenticated EXECUTE denied on claim_next_study_pack'
+);
+
+SELECT throws_ok(
+    $$ SELECT public.persist_study_pack_results_privileged('11111111-aaaa-aaaa-aaaa-aaaaaaaaaaaa'::uuid, gen_random_uuid(), 'mock', 'mock', 0, 0, 0, 0, 0, 0, 0, 0, '[]'::jsonb, '[]'::jsonb) $$,
+    '42501',
+    NULL,
+    'Privilege: Authenticated EXECUTE denied on persist_study_pack_results_privileged'
+);
+
+SELECT throws_ok(
+    $$ SELECT public.fail_study_pack_privileged('11111111-aaaa-aaaa-aaaa-aaaaaaaaaaaa'::uuid, gen_random_uuid(), 'AI_TIMEOUT', true) $$,
+    '42501',
+    NULL,
+    'Privilege: Authenticated EXECUTE denied on fail_study_pack_privileged'
+);
+
+SELECT throws_ok(
+    $$ SELECT public.record_ai_usage_privileged('11111111-1111-1111-1111-111111111111'::uuid, NULL, NULL, 'STUDY_PACK_GEN', 'mock', 'mock', 0, 0, 0, 0, 0, 'SUCCESS') $$,
+    '42501',
+    NULL,
+    'Privilege: Authenticated EXECUTE denied on record_ai_usage_privileged'
+);
+
 -- ============================================================================
 -- 11. Archive vs Study Pack Race Closure
 -- ============================================================================
@@ -1031,7 +1118,74 @@ SELECT throws_ok(
 );
 
 -- ============================================================================
--- 13. End of Test Suite
+-- 13. ai_usages Composite FK SET NULL Lifecycle (PostgreSQL 17)
+-- ============================================================================
+
+RESET ROLE;
+
+-- Setup test user and entities for composite FK lifecycle
+INSERT INTO auth.users (id, email)
+VALUES ('44444444-4444-4444-4444-444444444444', 'fk_test@medstudy.test')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO public.user_profiles (id, email, full_name, onboarding_completed_at)
+VALUES ('44444444-4444-4444-4444-444444444444', 'fk_test@medstudy.test', 'FK Student', NOW())
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO public.documents (id, user_id, original_filename, storage_key, size_bytes, status)
+VALUES ('dddddddd-dddd-dddd-dddd-dddddddddddd', '44444444-4444-4444-4444-444444444444', 'fk.pdf', '44/fk.pdf', 1000, 'READY')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO public.document_processing_runs (id, document_id, user_id, status)
+VALUES ('44444444-dddd-dddd-dddd-dddddddddddd', 'dddddddd-dddd-dddd-dddd-dddddddddddd', '44444444-4444-4444-4444-444444444444', 'SUCCEEDED')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO public.study_packs (id, user_id, document_id, processing_run_id, chunking_version, generation_version, prompt_version, status)
+VALUES ('44444444-5555-5555-5555-444444444444', '44444444-4444-4444-4444-444444444444', 'dddddddd-dddd-dddd-dddd-dddddddddddd', '44444444-dddd-dddd-dddd-dddddddddddd', 'chunk-v1', 'sp-gen-v1', 'sp-prompt-v1', 'READY')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO public.ai_usages (id, user_id, document_id, study_pack_id, feature, provider, model, status)
+VALUES ('44444444-6666-6666-6666-444444444444', '44444444-4444-4444-4444-444444444444', 'dddddddd-dddd-dddd-dddd-dddddddddddd', '44444444-5555-5555-5555-444444444444', 'STUDY_PACK_GEN', 'mock-provider', 'mock-model', 'SUCCESS')
+ON CONFLICT (id) DO NOTHING;
+
+-- Test 1: Delete study pack -> ai_usages row survives with study_pack_id NULL, user_id intact
+DELETE FROM public.study_packs WHERE id = '44444444-5555-5555-5555-444444444444';
+
+SELECT is(
+    (SELECT study_pack_id FROM public.ai_usages WHERE id = '44444444-6666-6666-6666-444444444444'),
+    NULL::uuid,
+    'FK SET NULL (study_pack_id): study_pack_id is set to NULL on study_pack deletion'
+);
+
+SELECT is(
+    (SELECT user_id FROM public.ai_usages WHERE id = '44444444-6666-6666-6666-444444444444'),
+    '44444444-4444-4444-4444-444444444444'::uuid,
+    'FK SET NULL (study_pack_id): user_id remains unchanged and NOT NULL on study_pack deletion'
+);
+
+SELECT is(
+    (SELECT document_id FROM public.ai_usages WHERE id = '44444444-6666-6666-6666-444444444444'),
+    'dddddddd-dddd-dddd-dddd-dddddddddddd'::uuid,
+    'FK SET NULL (study_pack_id): document_id remains intact'
+);
+
+-- Test 2: Delete document -> ai_usages row survives with document_id NULL, user_id intact
+DELETE FROM public.documents WHERE id = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
+
+SELECT is(
+    (SELECT document_id FROM public.ai_usages WHERE id = '44444444-6666-6666-6666-444444444444'),
+    NULL::uuid,
+    'FK SET NULL (document_id): document_id is set to NULL on document deletion'
+);
+
+SELECT is(
+    (SELECT user_id FROM public.ai_usages WHERE id = '44444444-6666-6666-6666-444444444444'),
+    '44444444-4444-4444-4444-444444444444'::uuid,
+    'FK SET NULL (document_id): user_id remains unchanged and NOT NULL on document deletion'
+);
+
+-- ============================================================================
+-- 14. End of Test Suite
 -- ============================================================================
 
 SELECT * FROM finish();

@@ -29,6 +29,7 @@ export interface AIStructuredRequest<T> {
   temperature?: number;
   maxTokens?: number;
   abortSignal?: AbortSignal;
+  maxRetries?: number;
 }
 
 export interface AIStructuredResult<T> {

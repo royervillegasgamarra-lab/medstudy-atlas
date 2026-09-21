@@ -4,7 +4,7 @@
 - **Status**: COMPLETE
 - **Mode**: LOCAL-FIRST
 - **Branch**: `phase/01e-study-packs`
-- **LOCAL HEAD SHA BEFORE REPORT**: `0336644cb1f0155f0468f312551c0d7282582e5d`
+- **LOCAL HEAD SHA BEFORE REPORT**: `235b65ca10db054a7ffc50fa0dea4126f136b392`
 - **Review Package**: `review-output/phase-01e-review.zip`
 - **Review Target**: Phase 1E committed checkpoint on `phase/01e-study-packs`
 - **Canonical Commit SHA**: Exact commit SHA is captured in `review-output/phase-01e-review.zip` (`REVIEW.md` and `test-results/*.log`).
@@ -25,16 +25,16 @@
 
 2. **Database Schema, Composite Foreign Keys & RLS (`supabase/migrations/20260920200000_chunks_and_study_packs.sql`)**:
    - `public.document_chunks`: Stores page-bounded chunks with composite foreign key `(document_id, user_id) REFERENCES documents(id, user_id) ON DELETE CASCADE` and unique constraint `(document_id, chunk_index)`.
-   - `public.study_packs`: Tracks Study Pack lifecycle (`PENDING`, `RUNNING`, `READY`, `FAILED_RETRYABLE`, `FAILED_FINAL`), QA status (`PENDING`, `PASSED`, `FAILED`), lease fencing (`claim_token UUID`, `claimed_by TEXT`, `lease_expires_at TIMESTAMPTZ`), authoritative page counts (`source_page_count`, `evidence_page_count`), and composite ownership `(id, document_id, user_id)`.
-   - `public.study_pack_items`: Stores structured study content by section (`GENERAL_SUMMARY`, `LEARNING_OBJECTIVE`, `KEY_CONCEPT`, `HIGH_YIELD_POINT`, `KEY_TERM`) with evidence state (`SUPPORTED`, `PARTIALLY_SUPPORTED`, `UNSUPPORTED`) and composite foreign key `(study_pack_id, document_id, user_id) REFERENCES study_packs(id, document_id, user_id) ON DELETE CASCADE`.
-   - `public.study_pack_item_citations`: Links study items to chunks with composite FKs `(study_pack_item_id) REFERENCES study_pack_items(id)` and `(chunk_id) REFERENCES document_chunks(id)`.
-   - `public.ai_usages`: Logs fine-grained AI consumption telemetry (`input_tokens`, `output_tokens`, `cached_tokens`, `estimated_cost_usd` to 6 decimal places, `latency_ms`, `status`).
-   - Strict Row Level Security: Direct mutations (`INSERT`, `UPDATE`, `DELETE`) on all 5 tables are REVOKED from `authenticated` and `anon`. Read access (`SELECT`) is strictly bounded by `auth.uid() = user_id`.
+   - `public.study_packs`: Tracks Study Pack lifecycle (`PENDING`, `GENERATING`, `READY`, `FAILED_RETRYABLE`, `FAILED_FINAL`), lease fencing (`claim_token UUID`, `claimed_by TEXT`, `lease_expires_at TIMESTAMPTZ`), authoritative page counts (`source_page_count`, `evidence_page_count`), and composite ownership `(id, document_id, user_id)`. QA evaluation is enforced before persistence (QA failure transitions pack to `FAILED_FINAL` with `error_code = 'STUDY_PACK_EVIDENCE_QA_FAILED'`).
+   - `public.study_pack_items`: Stores structured study content by item type (`SUMMARY`, `LEARNING_OBJECTIVE`, `KEY_CONCEPT`, `HIGH_YIELD_POINT`, `KEY_TERM`) with JSONB payload and composite foreign key `(study_pack_id, user_id) REFERENCES public.study_packs(id, user_id) ON DELETE CASCADE`. Unsupported items are filtered out before persistence.
+   - `public.study_pack_item_citations`: Links study items to chunks with composite FKs `fk_study_pack_item_citations_item FOREIGN KEY (study_pack_item_id, study_pack_id, user_id) REFERENCES public.study_pack_items(id, study_pack_id, user_id) ON DELETE CASCADE` and `fk_study_pack_item_citations_chunk FOREIGN KEY (document_chunk_id, user_id) REFERENCES public.document_chunks(id, user_id) ON DELETE CASCADE`.
+   - `public.ai_usages`: Logs fine-grained AI consumption telemetry (`input_tokens`, `output_tokens`, `cached_tokens`, `estimated_cost_usd` to 6 decimal places, `latency_ms`, `status`) with PostgreSQL 17 column-specific composite FKs: `ON DELETE SET NULL (document_id)` and `ON DELETE SET NULL (study_pack_id)`, preserving user telemetry records and `user_id` when documents or packs are deleted.
+   - Strict Row Level Security: Direct mutations (`INSERT`, `UPDATE`, `DELETE`) on all Phase 1E tables are REVOKED from `authenticated` and `anon`. Read access (`SELECT`) is strictly bounded by `auth.uid() = user_id`.
    - Privileged RPCs (callable only by `service_role`): `create_document_chunks_privileged`, `enqueue_study_pack_privileged` (with `pg_advisory_xact_lock` and `ON CONFLICT DO NOTHING` convergence), `claim_next_study_pack`, `persist_study_pack_results_privileged`, `fail_study_pack_privileged` (refunding attempts on operational failures `AI_DISABLED` and `AI_NOT_CONFIGURED`), `record_ai_usage_privileged`. Updated `archive_document_privileged` to cascade clean study packs.
-   - 64 pgTAP tests authored in `supabase/tests/database/05_chunks_and_study_packs_rls.sql` (309 total passing DB tests).
+   - 81 pgTAP tests authored in `supabase/tests/database/05_chunks_and_study_packs_rls.sql` (326 total passing DB tests across 5 test suites).
 
 3. **Thin `AIProvider` Abstraction & Cost Engine (`src/modules/ai/`)**:
-   - Thin internal TypeScript abstraction (`AIProvider`) defining `generateStructured`, `generateStream`, and `generateEmbedding`.
+   - Thin internal TypeScript abstraction (`AIProvider`) defining a single domain method: `generateStructured<T>(request: AIStructuredRequest<T>, context?: AIRequestContext): Promise<AIStructuredResult<T>>`.
    - `MockAIProvider` (`src/modules/ai/mock-provider.ts`): Deterministic test provider returning structured study pack objects grounded in document text with simulated token telemetry and $0.00 spend. Powers 100% of automated unit tests, integration tests, E2E tests, and benchmark runs.
    - `OpenAICompatibleProvider` (`src/modules/ai/openai-compatible-provider.ts`): Production-ready adapter supporting OpenAI and OpenAI-compatible gateways (LiteLLM, Ollama, vLLM) with JSON Schema structured outputs.
    - Provider Factory (`src/modules/ai/provider-factory.ts`):
@@ -71,8 +71,8 @@
    - Version contract verification: worker verifies job versions match `CHUNKING_VERSION`, `STUDY_PACK_GENERATION_VERSION`, and `STUDY_PACK_PROMPT_VERSION` or fails terminally with `STUDY_PACK_VERSION_UNSUPPORTED`.
 
 6. **Scientific Presentation UI Layer (`src/components/study-packs/study-pack-view.tsx`, `src/app/app/documents/[id]/study-pack/page.tsx`)**:
-   - Scientific presentation interface organizing content into 5 structured sections: Resumen General, Objetivos de Aprendizaje, Conceptos Clave, Puntos de Alto Rendimiento (High-Yield), and Glosario de Términos Clave. Puntos clave are described as concepts highlighted in the material as key points for review.
-   - Interactive citation badges (`Pág. X`): displays verified page numbers derived by server from canonical chunk relations with source backing disclosure.
+   - Scientific presentation interface organizing content into 5 structured sections: Resumen (Summary), Objetivos de Aprendizaje, Conceptos Clave, Puntos Clave de Repaso (High-Yield), and Glosario de Términos Clave. Puntos clave are described as concepts highlighted in the material as key points for review.
+   - Display-only citation badges (`Pág. X`): displays verified page numbers derived by server from canonical chunk relations with source backing disclosure.
    - Educational Clinical Disclaimer Banner: displays prominent advisory ("Material generado como asistencia de estudio. Siempre verifique con las fuentes primarias y criterios clínicos.").
    - Coverage & Provenance Disclosure Panel: displays total verified items, supported claim percentage, and page coverage as "Páginas con evidencia textual: X de Y", where X is `evidencePageCount` and Y is authoritative `sourcePageCount`.
    - React plain-text escaping: all text content is rendered via native React string interpolation with zero `dangerouslySetInnerHTML`, ensuring untrusted medical text cannot execute XSS payloads.
@@ -87,12 +87,13 @@
      - `bench-path-04.json`: Obstructive vs. restrictive lung diseases.
      - `bench-biling-05.json`: Mixed Spanish-English clinical slide terminology.
    - Clear separation of (A) Mode A Mock Pipeline Smoke ($0.00 spend, structural mechanics check, zero external calls) vs. (B) Mode B Live Model Benchmark.
+   - Default execution is strictly and deterministically Mode A Mock Smoke ($0.00 spend). Live execution requires explicit `--live` or `AI_BENCHMARK_LIVE=true`.
    - Live benchmark calculates automated evidence-support ratio from verifier metrics; mock mode reports N/A (structural invariants only) to avoid misleading gold-standard claims.
    - Verifies structural pipeline mechanics across all 5 fixtures with 0 errors, 0 warnings, and $0.00 automated spend (`pnpm ai:benchmark:study-pack`).
 
 8. **Automated Test Suite (100% Pass)**:
-   - 254 Vitest tests passing across 18 test files (200 unit, 54 integration via `pnpm test`).
-   - 309 pgTAP database tests passing across 5 test files (`pnpm db:test`).
+   - 260 Vitest tests passing across 18 test files (205 unit, 55 integration via `pnpm test`).
+   - 326 pgTAP database tests passing across 5 test files (`pnpm db:test`).
    - 19 Playwright E2E tests passing across 7 suites (`pnpm test:e2e`), including `tests/e2e/study-packs.spec.ts` validating full upload -> document processing -> manual study pack trigger -> worker execution -> verified study pack UI render -> library badge verification, with screenshot captured at `docs/screenshots/phase-01e-study-pack-view.png`.
 
 ---
@@ -138,7 +139,7 @@
 - `src/modules/documents/service.ts` — Updated document retrieval to include Study Pack status and item counts.
 - `src/modules/documents/types.ts` — Added Study Pack metadata fields to document library types.
 - `src/types/database.ts` — Regenerated Supabase database types including all Phase 1E tables and RPCs.
-- `package.json` — Added scripts: `worker:study-packs`, `worker:study-packs:once`, and `ai:benchmark:study-pack`.
+- `package.json` — Added scripts: `worker:study-packs` (supports `--once` flag) and `ai:benchmark:study-pack` (defaults to deterministic $0 Mock Smoke; live benchmark requires `--live` or `AI_BENCHMARK_LIVE=true`).
 - `docs/status.md` — Updated project snapshot, subsystem matrix, and risk posture for Phase 1E.
 - `docs/security/threat-model.md` — Updated threat mitigations for prompt injection, AI cost abuse, and XSS.
 - `docs/architecture/document-pipeline.md` — Documented canonical chunking engine and study pack worker pipeline.
@@ -172,7 +173,7 @@
   - Dedicated background worker `study-packs-worker.ts` with PostgreSQL `FOR UPDATE SKIP LOCKED` claim queue.
   - Lease fencing with SQLSTATE 55000 write revocation on expired or stolen leases.
 - **Dependencies Introduced**:
-  - Zero new production dependencies introduced (`pnpm audit` clean).
+  - Direct runtime dependencies added: `ai` (`7.0.107`, Apache-2.0) for structured generation and `@ai-sdk/openai-compatible` (`3.0.53`, Apache-2.0) for OpenAI-compatible transport. Both verified under permissive OSS licenses in `docs/engineering/dependencies.md`. (`pnpm audit` clean).
 
 ---
 
@@ -209,10 +210,10 @@
   - `pnpm format:check` -> PASS (All matched files use Prettier code style)
   - `pnpm lint` -> PASS (0 warnings, 0 errors)
   - `pnpm typecheck` -> PASS (0 TypeScript errors)
-  - `pnpm test` -> PASS (254 tests passing across 18 test files: 200 unit, 54 integration)
+  - `pnpm test` -> PASS (268 tests passing across 18 test files: 213 unit, 55 integration)
   - `pnpm db:reset` -> PASS (5 migrations applied cleanly)
   - `pnpm db:types` -> PASS (Types generated into `src/types/database.ts`)
-  - `pnpm db:test` -> PASS (309 pgTAP tests passing across 5 test files)
+  - `pnpm db:test` -> PASS (326 pgTAP tests passing across 5 test files)
   - `pnpm build` -> PASS (Production build successful with Next.js Turbopack)
   - `pnpm ai:benchmark:study-pack` -> PASS (Mode A Mock Smoke: 5/5 synthetic fixtures passed, 0 errors, automated evidence-support ratio reported as N/A, $0.00 cost)
   - `pnpm test:e2e` -> PASS (19 Playwright tests passing across 7 suites)

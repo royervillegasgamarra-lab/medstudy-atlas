@@ -353,9 +353,9 @@ export function StudyPackViewComponent({
                     : "Sintetizando y verificando evidencia..."}
                 </h3>
                 <p className="text-xs text-muted-foreground max-w-md mx-auto">
-                  El motor determinista está fragmentando las páginas, generando
-                  conceptos clave y verificando que cada afirmación cuente con
-                  respaldo explícito en tu documento.
+                  Fragmentando el material de forma determinista, generando el
+                  Study Pack y ejecutando verificación automática de
+                  evidencia...
                 </p>
               </div>
               <Button

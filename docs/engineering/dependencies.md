@@ -21,6 +21,8 @@ This document maintains the official record of all direct dependencies introduce
 | `zod` | `4.6.5` | TypeScript-first schema declaration and validation. | MIT | Runtime | Strongly-typed environment variable parsing and configuration boundaries. |
 | `@supabase/supabase-js` | `2.116.0` | Supabase JavaScript client for database and auth communication. | MIT | Runtime | Official Supabase client for PostgreSQL operations, authentication, and RLS. |
 | `@supabase/ssr` | `0.12.7` | Supabase SSR package providing cookie-based session management. | MIT | Runtime | Manages server-side cookie persistence and token rotation in Next.js 16 App Router. |
+| `ai` | `7.0.107` | Vercel AI SDK Core for structured schema generation and provider abstractions. | Apache-2.0 | Runtime | Standard structured output generation library, Zod-compatible, provider-agnostic. |
+| `@ai-sdk/openai-compatible` | `3.0.53` | OpenAI-compatible provider adapter for Vercel AI SDK. | Apache-2.0 | Runtime | Provides standard HTTP transport to any OpenAI-compatible inference endpoint. |
 
 ---
 

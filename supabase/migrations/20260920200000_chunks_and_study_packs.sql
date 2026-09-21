@@ -245,9 +245,9 @@ CREATE TABLE IF NOT EXISTS public.ai_usages (
     status TEXT NOT NULL CHECK (status IN ('SUCCESS', 'FAILED', 'RATE_LIMITED')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT fk_ai_usages_doc_owner FOREIGN KEY (document_id, user_id)
-        REFERENCES public.documents(id, user_id) ON DELETE SET NULL,
+        REFERENCES public.documents(id, user_id) ON DELETE SET NULL (document_id),
     CONSTRAINT fk_ai_usages_pack_owner FOREIGN KEY (study_pack_id, user_id)
-        REFERENCES public.study_packs(id, user_id) ON DELETE SET NULL
+        REFERENCES public.study_packs(id, user_id) ON DELETE SET NULL (study_pack_id)
 );
 
 -- Indexes

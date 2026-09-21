@@ -6,19 +6,20 @@ import type {
   AIStructuredResult,
   AICompletionTelemetry,
   AIRequestContext,
-  AIErrorCode,
 } from "./types";
 import { AIProviderError } from "./types";
 import { calculateEstimatedCostUsd } from "./pricing";
 import { recordAITelemetry } from "./telemetry";
 
 import { validateAIProviderEndpoint } from "./provider-factory";
+import { classifyAIError } from "./error-classifier";
 
 export interface OpenAICompatibleConfig {
   providerName?: string;
   model: string;
   apiKey: string;
   baseURL?: string;
+  fetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 }
 
 export class OpenAICompatibleProvider implements AIProvider {
@@ -41,6 +42,9 @@ export class OpenAICompatibleProvider implements AIProvider {
       name: this.name,
       apiKey: config.apiKey,
       baseURL: resolvedBaseURL,
+      fetch: config.fetch as Parameters<
+        typeof createOpenAICompatible
+      >[0]["fetch"],
     });
   }
 
@@ -62,6 +66,7 @@ export class OpenAICompatibleProvider implements AIProvider {
         temperature: request.temperature ?? 0.1,
         maxTokens: request.maxTokens,
         abortSignal: request.abortSignal,
+        maxRetries: request.maxRetries,
       });
 
       const latencyMs = Date.now() - startTime;
@@ -106,42 +111,9 @@ export class OpenAICompatibleProvider implements AIProvider {
       };
     } catch (err: unknown) {
       const latencyMs = Date.now() - startTime;
-      const errorObj = err as {
-        name?: string;
-        status?: number;
-        statusCode?: number;
-        message?: string;
-      };
-      const status = errorObj?.status || errorObj?.statusCode;
-      const message = errorObj?.message || String(err);
-      const isAborted =
-        request.abortSignal?.aborted ||
-        errorObj?.name === "AbortError" ||
-        errorObj?.name === "TimeoutError" ||
-        message.toLowerCase().includes("abort") ||
-        message.toLowerCase().includes("timeout") ||
-        message.includes("ETIMEDOUT") ||
-        message.includes("ESOCKETTIMEDOUT");
-
-      let code: AIErrorCode = "AI_UNKNOWN_ERROR";
-      let retryable = false;
-
-      if (isAborted) {
-        code = "AI_TIMEOUT";
-        retryable = true;
-      } else if (status === 401 || status === 403) {
-        code = "AI_PROVIDER_AUTH_ERROR";
-        retryable = false;
-      } else if (status === 429) {
-        code = "AI_RATE_LIMITED";
-        retryable = true;
-      } else if (status && status >= 500) {
-        code = "AI_PROVIDER_UNAVAILABLE";
-        retryable = true;
-      } else if (message.includes("schema") || message.includes("validation")) {
-        code = "AI_SCHEMA_INVALID";
-        retryable = true;
-      }
+      const { code, retryable, message } = classifyAIError(err, {
+        abortSignal: request.abortSignal,
+      });
 
       const telemetry: AICompletionTelemetry = {
         provider: this.name,

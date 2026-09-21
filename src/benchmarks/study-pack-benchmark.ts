@@ -48,15 +48,69 @@ interface BenchmarkResult {
   passed: boolean;
 }
 
-async function runBenchmark() {
-  const isLiveOptIn =
-    serverEnv.AI_GENERATION_ENABLED &&
-    Boolean(serverEnv.AI_PROVIDER) &&
-    serverEnv.AI_PROVIDER !== "mock" &&
-    Boolean(serverEnv.AI_API_KEY);
+export interface BenchmarkPlanParams {
+  argv?: string[];
+  env?: Record<string, string | undefined>;
+  config?: {
+    AI_GENERATION_ENABLED: boolean;
+    AI_PROVIDER: string;
+    AI_MODEL: string;
+    AI_API_KEY?: string;
+  };
+}
 
-  const provider = isLiveOptIn ? getAIProvider() : new MockAIProvider();
-  const isMock = provider.name === "mock-provider";
+export interface BenchmarkPlan {
+  mode: "MOCK" | "LIVE";
+  provider: import("@/modules/ai/types").AIProvider;
+  reason: string;
+}
+
+export function resolveBenchmarkExecutionPlan(
+  params?: BenchmarkPlanParams
+): BenchmarkPlan {
+  const argv = params?.argv ?? process.argv;
+  const env = params?.env ?? process.env;
+  const config = params?.config ?? serverEnv;
+
+  const isLiveFlagPassed =
+    argv.includes("--live") || env.AI_BENCHMARK_LIVE === "true";
+
+  // By default, the benchmark ALWAYS executes deterministic $0 Mock Smoke.
+  // API key presence alone NEVER implies live benchmark consent.
+  if (!isLiveFlagPassed) {
+    return {
+      mode: "MOCK",
+      provider: new MockAIProvider(),
+      reason:
+        "Default execution: running deterministic Mode A Mock Smoke ($0.00 spend). Pass --live or set AI_BENCHMARK_LIVE=true for live benchmark.",
+    };
+  }
+
+  // If live flag was explicitly passed, verify configuration is present
+  const isConfigured =
+    config.AI_GENERATION_ENABLED &&
+    Boolean(config.AI_PROVIDER) &&
+    config.AI_PROVIDER !== "mock" &&
+    Boolean(config.AI_API_KEY);
+
+  if (!isConfigured) {
+    throw new Error(
+      "Explicit live benchmark was requested (--live or AI_BENCHMARK_LIVE=true), but live AI configuration is not enabled or missing credentials (requires AI_GENERATION_ENABLED=true, non-mock AI_PROVIDER, and AI_API_KEY)."
+    );
+  }
+
+  return {
+    mode: "LIVE",
+    provider: getAIProvider(),
+    reason:
+      "Explicit live opt-in confirmed: running Mode B Live Model Benchmark.",
+  };
+}
+
+export async function runBenchmark(planOverride?: BenchmarkPlan) {
+  const plan = planOverride ?? resolveBenchmarkExecutionPlan();
+  const provider = plan.provider;
+  const isMock = plan.mode === "MOCK";
 
   console.log(
     "==============================================================="
@@ -66,9 +120,7 @@ async function runBenchmark() {
     console.log(
       "Mode: (A) Mock Pipeline Smoke ($0.00 spend, structural mechanics check)"
     );
-    console.log(
-      "AI_API_KEY is not configured or AI_GENERATION_ENABLED=false. Running Mode A automatically."
-    );
+    console.log(plan.reason);
     console.log(
       "Verifying deterministic chunking, schema conformity & chunk ID resolution."
     );
@@ -251,7 +303,16 @@ async function runBenchmark() {
   }
 }
 
-runBenchmark().catch((err) => {
-  console.error("Benchmark failed with unexpected error:", err);
-  process.exit(1);
-});
+const isInvokedDirectly =
+  typeof process !== "undefined" &&
+  Boolean(process.argv[1]) &&
+  (process.argv[1].endsWith("study-pack-benchmark.ts") ||
+    process.argv[1].endsWith("study-pack-benchmark.js") ||
+    process.argv[1].includes("study-pack-benchmark"));
+
+if (isInvokedDirectly) {
+  runBenchmark().catch((err) => {
+    console.error("Benchmark failed with unexpected error:", err);
+    process.exit(1);
+  });
+}

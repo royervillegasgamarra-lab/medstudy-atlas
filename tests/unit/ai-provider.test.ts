@@ -3,12 +3,22 @@ import { z } from "zod";
 import { MockAIProvider } from "@/modules/ai/mock-provider";
 import { calculateEstimatedCostUsd } from "@/modules/ai/pricing";
 import { recordAITelemetry } from "@/modules/ai/telemetry";
-import { AIProviderError } from "@/modules/ai/types";
+import {
+  AIProviderError,
+  type AIProvider,
+  type AIStructuredRequest,
+  type AIStructuredResult,
+} from "@/modules/ai/types";
+import type { CanonicalChunk } from "@/modules/study-packs/chunking";
 import {
   getAIProvider,
   getMockAIProvider,
   resetMockAIProvider,
 } from "@/modules/ai/provider-factory";
+import { classifyAIError } from "@/modules/ai/error-classifier";
+import { OpenAICompatibleProvider } from "@/modules/ai/openai-compatible-provider";
+import { resolveBenchmarkExecutionPlan } from "@/benchmarks/study-pack-benchmark";
+import { serverEnv } from "@/config/server-env";
 
 describe("MockAIProvider", () => {
   let mock: MockAIProvider;
@@ -510,5 +520,335 @@ describe("Study Pack Candidate & Verification Schemas", () => {
       ],
     });
     expect(res.success).toBe(false);
+  });
+});
+
+describe("AI Error Classifier & Transport Resilience (Item 1)", () => {
+  it("classifies HTTP 503 as AI_PROVIDER_UNAVAILABLE with retryable: true", () => {
+    const error503 = { status: 503, message: "Service Unavailable" };
+    const res = classifyAIError(error503);
+    expect(res.code).toBe("AI_PROVIDER_UNAVAILABLE");
+    expect(res.retryable).toBe(true);
+  });
+
+  it("classifies ECONNRESET transport failure as AI_PROVIDER_UNAVAILABLE with retryable: true", () => {
+    const errConnReset = new Error("fetch failed");
+    (
+      errConnReset as unknown as {
+        cause: { code: string; message: string };
+      }
+    ).cause = {
+      code: "ECONNRESET",
+      message: "read ECONNRESET",
+    };
+    const res = classifyAIError(errConnReset);
+    expect(res.code).toBe("AI_PROVIDER_UNAVAILABLE");
+    expect(res.retryable).toBe(true);
+  });
+
+  it("classifies ENOTFOUND DNS failure as AI_PROVIDER_UNAVAILABLE with retryable: true", () => {
+    const errDns = new Error("getaddrinfo ENOTFOUND api.openai.com");
+    (errDns as unknown as { code: string }).code = "ENOTFOUND";
+    const res = classifyAIError(errDns);
+    expect(res.code).toBe("AI_PROVIDER_UNAVAILABLE");
+    expect(res.retryable).toBe(true);
+  });
+
+  it("classifies HTTP 401 as AI_PROVIDER_AUTH_ERROR with retryable: false (final)", () => {
+    const error401 = { statusCode: 401, message: "Incorrect API key provided" };
+    const res = classifyAIError(error401);
+    expect(res.code).toBe("AI_PROVIDER_AUTH_ERROR");
+    expect(res.retryable).toBe(false);
+  });
+
+  it("classifies HTTP 403 as AI_PROVIDER_AUTH_ERROR with retryable: false (final)", () => {
+    const error403 = { status: 403, message: "Forbidden" };
+    const res = classifyAIError(error403);
+    expect(res.code).toBe("AI_PROVIDER_AUTH_ERROR");
+    expect(res.retryable).toBe(false);
+  });
+
+  it("classifies HTTP 429 as AI_RATE_LIMITED with retryable: true", () => {
+    const error429 = { status: 429, message: "Rate limit reached" };
+    const res = classifyAIError(error429);
+    expect(res.code).toBe("AI_RATE_LIMITED");
+    expect(res.retryable).toBe(true);
+  });
+
+  it("classifies timeout / abort as AI_TIMEOUT with retryable: true", () => {
+    const abortErr = new Error("The operation was aborted");
+    abortErr.name = "AbortError";
+    const res = classifyAIError(abortErr);
+    expect(res.code).toBe("AI_TIMEOUT");
+    expect(res.retryable).toBe(true);
+  });
+
+  it("classifies transport error as AI_PROVIDER_UNAVAILABLE with retryable: true via OpenAICompatibleProvider", async () => {
+    const provider = new OpenAICompatibleProvider({
+      model: "test-model",
+      apiKey: "sk-test",
+      baseURL: "http://127.0.0.1:54329/v1",
+      fetch: async () => {
+        const err = new TypeError("fetch failed");
+        (err as unknown as { cause: { code: string } }).cause = {
+          code: "ECONNRESET",
+        };
+        throw err;
+      },
+    });
+
+    await expect(
+      provider.generateStructured({
+        schema: z.object({ title: z.string() }),
+        schemaName: "Test",
+        systemPrompt: "Sys",
+        userPrompt: "User",
+        maxRetries: 0,
+      })
+    ).rejects.toMatchObject({
+      code: "AI_PROVIDER_UNAVAILABLE",
+      retryable: true,
+    });
+  });
+});
+
+describe("Benchmark Execution Plan Opt-In (Item 2)", () => {
+  it("defaults to Mode A Mock Smoke ($0.00 spend) even when real-looking provider and key are configured", () => {
+    const plan = resolveBenchmarkExecutionPlan({
+      argv: ["node", "study-pack-benchmark.ts"],
+      env: { AI_BENCHMARK_LIVE: undefined },
+      config: {
+        AI_GENERATION_ENABLED: true,
+        AI_PROVIDER: "openai",
+        AI_MODEL: "gpt-4o",
+        AI_API_KEY: "sk-live-secret-key-that-must-not-be-used",
+      },
+    });
+
+    expect(plan.mode).toBe("MOCK");
+    expect(plan.provider.name).toBe("mock-provider");
+    expect(plan.reason).toContain("Mode A Mock Smoke");
+  });
+
+  it("throws error when --live is passed but AI configuration is disabled or missing", () => {
+    expect(() =>
+      resolveBenchmarkExecutionPlan({
+        argv: ["node", "study-pack-benchmark.ts", "--live"],
+        env: {},
+        config: {
+          AI_GENERATION_ENABLED: false,
+          AI_PROVIDER: "mock",
+          AI_MODEL: "mock-model",
+        },
+      })
+    ).toThrow(/Explicit live benchmark was requested/);
+  });
+
+  it("selects Mode B Live Benchmark only when explicitly requested via --live or AI_BENCHMARK_LIVE=true with valid config", () => {
+    const origEnv = process.env.NODE_ENV;
+    try {
+      (process.env as Record<string, string | undefined>).NODE_ENV =
+        "development";
+      const plan = resolveBenchmarkExecutionPlan({
+        argv: ["node", "study-pack-benchmark.ts", "--live"],
+        env: { AI_BENCHMARK_LIVE: "true" },
+        config: {
+          AI_GENERATION_ENABLED: true,
+          AI_PROVIDER: "openai-compatible",
+          AI_MODEL: "custom-model",
+          AI_API_KEY: "sk-test",
+        },
+      });
+
+      expect(plan.mode).toBe("LIVE");
+      expect(plan.reason).toContain("Mode B Live Model Benchmark");
+    } finally {
+      (process.env as Record<string, string | undefined>).NODE_ENV = origEnv;
+    }
+  });
+});
+
+describe("Kill Switch on Injected Providers in Product Runtime (Item 4)", () => {
+  it("enforces kill switch in production even when an AI provider is injected: throws AI_DISABLED and calls provider 0 times", async () => {
+    const origNodeEnv = process.env.NODE_ENV;
+    const origEnabled = serverEnv.AI_GENERATION_ENABLED;
+
+    try {
+      (process.env as Record<string, string | undefined>).NODE_ENV =
+        "production";
+      (serverEnv as Record<string, unknown>).AI_GENERATION_ENABLED = false;
+
+      let calls = 0;
+      const fakeProvider: AIProvider = {
+        name: "injected-custom-provider",
+        model: "custom-model",
+        generateStructured: async <T>() => {
+          calls++;
+          return {} as unknown as AIStructuredResult<T>;
+        },
+      };
+
+      // getAIProvider with forceProvider must throw AI_DISABLED when AI_GENERATION_ENABLED=false
+      expect(() => getAIProvider({ forceProvider: fakeProvider })).toThrow(
+        AIProviderError
+      );
+
+      try {
+        getAIProvider({ forceProvider: fakeProvider });
+      } catch (e: unknown) {
+        expect((e as AIProviderError).code).toBe("AI_DISABLED");
+      }
+
+      expect(calls).toBe(0);
+    } finally {
+      (process.env as Record<string, string | undefined>).NODE_ENV =
+        origNodeEnv;
+      (serverEnv as Record<string, unknown>).AI_GENERATION_ENABLED =
+        origEnabled;
+    }
+  });
+});
+
+describe("CALL 1 / CALL 2 Request Bounds in generateStudyPackContent (Item 5)", () => {
+  it("passes exact bounds: maxTokens=4096 on candidate (CALL 1) and maxTokens=2048 on verifier (CALL 2) with non-null AbortSignal", async () => {
+    const { generateStudyPackContent } =
+      await import("@/modules/study-packs/service");
+
+    const recordedRequests: Array<AIStructuredRequest<unknown>> = [];
+
+    const instrumentedProvider: AIProvider = {
+      name: "instrumented-provider",
+      model: "instrumented-model",
+      generateStructured: async <T>(req: AIStructuredRequest<T>) => {
+        recordedRequests.push(req as AIStructuredRequest<unknown>);
+
+        if (req.schemaName === "StudyPackCandidate") {
+          const candidateData = {
+            summaryParagraphs: [
+              {
+                paragraph:
+                  "El nódulo sinusal es el marcapasos primario del corazón.",
+                evidenceChunkIds: ["c-1"],
+              },
+            ],
+            learningObjectives: [
+              {
+                objective: "Identificar el marcapasos primario.",
+                evidenceChunkIds: ["c-1"],
+              },
+            ],
+            keyConcepts: [
+              {
+                title: "Nódulo Sinusal",
+                explanation:
+                  "Estructura especializada que genera los impulsos eléctricos cardiacos.",
+                evidenceChunkIds: ["c-1"],
+              },
+            ],
+            highYieldPoints: [
+              {
+                point: "Frecuencia intrínseca 60-100 lpm.",
+                evidenceChunkIds: ["c-1"],
+              },
+            ],
+            keyTerms: [
+              {
+                term: "Automatismo",
+                definition:
+                  "Capacidad de despolarizarse espontáneamente sin estímulo externo.",
+                evidenceChunkIds: ["c-1"],
+              },
+            ],
+          };
+          return {
+            data: candidateData as unknown as T,
+            telemetry: {
+              provider: "instrumented-provider",
+              model: "instrumented-model",
+              inputTokens: 100,
+              outputTokens: 50,
+              cachedTokens: 0,
+              estimatedCostUsd: 0.0001,
+              latencyMs: 50,
+              status: "SUCCESS" as const,
+            },
+          };
+        }
+
+        if (req.schemaName === "StudyPackVerification") {
+          const parsed = JSON.parse(req.userPrompt) as {
+            candidates: Array<{ itemKey: string }>;
+          };
+          const evaluations = parsed.candidates.map((c) => ({
+            itemKey: c.itemKey,
+            verdict: "SUPPORTED",
+            rationale: "Directly in chunk c-1",
+          }));
+          const verificationData = { evaluations };
+          return {
+            data: verificationData as unknown as T,
+            telemetry: {
+              provider: "instrumented-provider",
+              model: "instrumented-model",
+              inputTokens: 120,
+              outputTokens: 40,
+              cachedTokens: 0,
+              estimatedCostUsd: 0.0001,
+              latencyMs: 40,
+              status: "SUCCESS" as const,
+            },
+          };
+        }
+
+        throw new Error(`Unexpected schemaName: ${req.schemaName}`);
+      },
+    };
+
+    const dummyChunks: CanonicalChunk[] = [
+      {
+        id: "c-1",
+        document_id: "doc-1",
+        user_id: "user-1",
+        document_page_id: "page-1",
+        processing_run_id: "run-1",
+        page_number: 1,
+        chunk_index: 0,
+        content:
+          "El nódulo sinusal es el marcapasos primario del corazón, localizado en la aurícula derecha. Posee automatismo intrínseco con una frecuencia de 60 a 100 lpm.",
+        char_count: 147,
+        start_char: 0,
+        end_char: 147,
+        content_sha256: "dummy-sha",
+        chunking_version: "chunk-v1",
+      },
+    ];
+
+    const result = await generateStudyPackContent({
+      documentId: "doc-1",
+      userId: "user-1",
+      processingRunId: "run-1",
+      studyPackId: "pack-1",
+      chunks: dummyChunks,
+      aiProvider: instrumentedProvider,
+    });
+
+    expect(result.items.length).toBe(5);
+    expect(recordedRequests.length).toBe(2);
+
+    // Assert CALL 1 (Candidate generation)
+    const call1 = recordedRequests[0];
+    expect(call1.schemaName).toBe("StudyPackCandidate");
+    expect(call1.maxTokens).toBe(4096);
+    expect(call1.abortSignal).toBeDefined();
+    expect(call1.abortSignal).toBeInstanceOf(AbortSignal);
+    expect(call1.abortSignal?.aborted).toBe(false);
+
+    // Assert CALL 2 (Evidence verification)
+    const call2 = recordedRequests[1];
+    expect(call2.schemaName).toBe("StudyPackVerification");
+    expect(call2.maxTokens).toBe(2048);
+    expect(call2.abortSignal).toBeDefined();
+    expect(call2.abortSignal).toBeInstanceOf(AbortSignal);
+    expect(call2.abortSignal?.aborted).toBe(false);
   });
 });

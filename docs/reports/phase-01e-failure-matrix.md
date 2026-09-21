@@ -59,8 +59,8 @@ The canonical source of truth for error codes is `STUDY_PACK_ERROR_CODES` in `sr
 | **PACK-05** | Cross-user `ai_usages` read | User B cannot SELECT User A AI telemetry records; RLS enforces `auth.uid() = user_id` | Database (pgTAP) | `supabase/tests/database/05_chunks_and_study_packs_rls.sql` (`Isolation: Bob cannot view Alice ai_usages`) | **PASS** |
 | **PACK-06** | Authenticated direct mutation on `document_chunks` | Denied with SQLSTATE 42501 (permission denied); direct table writes revoked | Database (pgTAP) | `supabase/tests/database/05_chunks_and_study_packs_rls.sql` (`Privilege: Authenticated INSERT/UPDATE/DELETE denied on document_chunks`) | **PASS** |
 | **PACK-07** | Authenticated direct mutation on `study_packs` | Denied with SQLSTATE 42501; direct table writes revoked | Database (pgTAP) | `supabase/tests/database/05_chunks_and_study_packs_rls.sql` (`Privilege: Authenticated INSERT/UPDATE/DELETE denied on study_packs`) | **PASS** |
-| **PACK-08** | Authenticated direct mutation on `study_pack_items` & citations | Denied with SQLSTATE 42501; direct table writes revoked | Database (pgTAP) | `supabase/tests/database/05_chunks_and_study_packs_rls.sql` (`Privilege: Authenticated INSERT denied on ai_usages`) | **PASS** |
-| **PACK-09** | Authenticated call to privileged Study Pack RPCs | Denied with SQLSTATE 42501; executable strictly by `service_role` | Database (pgTAP) | `supabase/tests/database/05_chunks_and_study_packs_rls.sql` (`Privilege: REVOKE ALL FROM authenticated`) | **PASS** |
+| **PACK-08** | Authenticated direct mutation on `study_pack_items` & citations | Denied with SQLSTATE 42501; direct table writes revoked | Database (pgTAP) | `supabase/tests/database/05_chunks_and_study_packs_rls.sql` (`Privilege: Authenticated INSERT/UPDATE/DELETE denied on study_pack_items and study_pack_item_citations`) | **PASS** |
+| **PACK-09** | Authenticated call to privileged Study Pack RPCs | Denied with SQLSTATE 42501; executable strictly by `service_role` | Database (pgTAP) | `supabase/tests/database/05_chunks_and_study_packs_rls.sql` (`Privilege: Authenticated EXECUTE denied on 6 Phase 1E privileged RPCs`) | **PASS** |
 | **PACK-10** | Composite FK enforcement on chunks & study packs | Rejects mismatched `(document_id, user_id)` and `(processing_run_id, document_id, user_id)` | Database (pgTAP) | `supabase/tests/database/05_chunks_and_study_packs_rls.sql` (`FK Integrity: document_chunks and ai_usages composite FK checks`) | **PASS** |
 | **PACK-11** | Worker claim concurrency & SKIP LOCKED | Serialized via `FOR UPDATE SKIP LOCKED`; exactly one worker claims job, second receives null/empty | Integration (Vitest) | `tests/integration/study-packs-worker.test.ts` (`Worker Concurrency: Active leased job cannot be claimed by competing worker`) | **PASS** |
 | **PACK-12** | Lease expiration & write authority revocation | Persist/fail RPCs reject expired leases (`lease_expires_at <= NOW()`) or null leases, raising SQLSTATE 55000 | Database & Integration | `supabase/tests/database/05_chunks_and_study_packs_rls.sql` & `tests/integration/study-packs-worker.test.ts` (`Write Revocation: Persist rejected when lease expired`) | **PASS** |
@@ -88,10 +88,10 @@ The canonical source of truth for error codes is `STUDY_PACK_ERROR_CODES` in `sr
 ---
 
 ## 3. Verification Summary
-- **Database Test Suite (`supabase/tests/database/`)**: 309 pgTAP tests passing across 5 suites (64 in `05_chunks_and_study_packs_rls.sql`).
-- **Unit Test Suite (`tests/unit/`)**: 200 unit tests passing across 15 suites (including `chunking.test.ts`, `ai-provider.test.ts`, `evidence-verifier.test.ts`, `citation-validator.test.ts`, `config.test.ts`).
-- **Integration Test Suite (`tests/integration/`)**: 54 tests passing across 3 suites (10 in `study-packs-worker.test.ts`, 17 in `processing-worker.test.ts`, 27 in `storage-security.test.ts`).
-- **Vitest Total (`pnpm test`)**: 254 tests passing across 18 test files.
+- **Database Test Suite (`supabase/tests/database/`)**: 326 pgTAP tests passing across 5 suites (81 in `05_chunks_and_study_packs_rls.sql`).
+- **Unit Test Suite (`tests/unit/`)**: 213 unit tests passing across 15 suites (including `chunking.test.ts`, `ai-provider.test.ts`, `evidence-verifier.test.ts`, `citation-validator.test.ts`, `config.test.ts`).
+- **Integration Test Suite (`tests/integration/`)**: 55 tests passing across 3 suites (11 in `study-packs-worker.test.ts`, 17 in `processing-worker.test.ts`, 27 in `storage-security.test.ts`).
+- **Vitest Total (`pnpm test`)**: 268 tests passing across 18 test files.
 - **Benchmark Suite (`pnpm ai:benchmark:study-pack`)**: Mode A Mock Pipeline Smoke passed with 5/5 synthetic fixtures, structural mechanics verified, automated evidence-support ratio reported as N/A in mock mode, and $0.00 spend.
 - **End-to-End Suite (`tests/e2e/`)**: 19 Playwright tests passing across 7 suites.
 - **Zero Secrets**: Automated audit confirms no secrets, tokens, or credentials committed.

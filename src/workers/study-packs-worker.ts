@@ -27,7 +27,10 @@ import {
   isStudyPackErrorRetryable,
   type StudyPackErrorCode,
 } from "@/modules/study-packs/types";
-import { getAIProvider } from "@/modules/ai/provider-factory";
+import {
+  getAIProvider,
+  assertAIGenerationAvailable,
+} from "@/modules/ai/provider-factory";
 import { AIProviderError, type AIProvider } from "@/modules/ai/types";
 
 export interface StudyPackJobClaim {
@@ -157,6 +160,19 @@ export async function processNextStudyPackJob(
     }
 
     // 1. Acquire AI provider inside failure boundary
+    if (process.env.NODE_ENV !== "test") {
+      assertAIGenerationAvailable();
+      if (
+        process.env.NODE_ENV === "production" &&
+        options.aiProvider?.name === "mock-provider"
+      ) {
+        throw new AIProviderError(
+          "AI_NOT_CONFIGURED",
+          "Mock AI provider is strictly prohibited in production environment.",
+          false
+        );
+      }
+    }
     const provider = options.aiProvider ?? getAIProvider();
 
     // 2. Ensure canonical chunks exist for the document

@@ -11,6 +11,7 @@ import {
   getStudyPack,
 } from "@/modules/study-packs/service";
 import { MockAIProvider } from "@/modules/ai/mock-provider";
+import type { AIProvider, AIStructuredResult } from "@/modules/ai/types";
 
 // Load local environment variables if available
 const procWithEnv = process as unknown as {
@@ -434,6 +435,58 @@ describe("Study Pack Worker & Evidence Layer Integration (Phase 1E)", () => {
       expect(pack?.error_code).toBe("AI_DISABLED");
       expect(pack?.attempt_count).toBe(0);
     } finally {
+      (serverEnv as Record<string, unknown>).AI_GENERATION_ENABLED =
+        originalEnabled;
+    }
+  });
+
+  it("in production, worker enforces kill switch even if a provider is injected: transitions to AI_DISABLED and calls provider 0 times", async () => {
+    const { docId } = await createSucceededDocumentWithPages();
+    const enqueueRes = await requestStudyPackGeneration(docId, testUserId);
+    expect(enqueueRes.status).toBe("PENDING");
+
+    const { serverEnv } = await import("@/config/server-env");
+    const originalEnabled = serverEnv.AI_GENERATION_ENABLED;
+    const originalNodeEnv = process.env.NODE_ENV;
+
+    let calls = 0;
+    const injectedProvider: AIProvider = {
+      name: "injected-mock-or-custom",
+      model: "custom-model",
+      generateStructured: async <T>() => {
+        calls++;
+        return {} as unknown as AIStructuredResult<T>;
+      },
+    };
+
+    try {
+      (process.env as Record<string, string | undefined>).NODE_ENV =
+        "production";
+      (serverEnv as Record<string, unknown>).AI_GENERATION_ENABLED = false;
+
+      // Process job passing injected provider
+      const workerRes = await processNextStudyPackJob({
+        aiProvider: injectedProvider,
+      });
+
+      expect(workerRes.claimed).toBe(true);
+      expect(workerRes.status).toBe("FAILED");
+      expect(workerRes.errorCode).toBe("AI_DISABLED");
+      expect(calls).toBe(0);
+
+      // Verify study pack transitioned to FAILED_RETRYABLE and attempt_count was refunded (0)
+      const { data: pack } = await adminClient
+        .from("study_packs")
+        .select("status, error_code, attempt_count")
+        .eq("id", enqueueRes.studyPackId)
+        .single();
+
+      expect(pack?.status).toBe("FAILED_RETRYABLE");
+      expect(pack?.error_code).toBe("AI_DISABLED");
+      expect(pack?.attempt_count).toBe(0);
+    } finally {
+      (process.env as Record<string, string | undefined>).NODE_ENV =
+        originalNodeEnv;
       (serverEnv as Record<string, unknown>).AI_GENERATION_ENABLED =
         originalEnabled;
     }

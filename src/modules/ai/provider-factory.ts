@@ -186,6 +186,10 @@ export function assertAIGenerationAvailable(
  * Automated tests receive MockAIProvider with $0.00 spend.
  */
 export function getAIProvider(options?: ProviderFactoryOptions): AIProvider {
+  if (process.env.NODE_ENV !== "test") {
+    assertAIGenerationAvailable(options);
+  }
+
   if (options?.forceProvider) {
     if (
       process.env.NODE_ENV === "production" &&
@@ -200,7 +204,9 @@ export function getAIProvider(options?: ProviderFactoryOptions): AIProvider {
     return options.forceProvider;
   }
 
-  assertAIGenerationAvailable(options);
+  if (process.env.NODE_ENV === "test") {
+    assertAIGenerationAvailable(options);
+  }
 
   if (
     serverEnv.AI_PROVIDER === "mock" ||
