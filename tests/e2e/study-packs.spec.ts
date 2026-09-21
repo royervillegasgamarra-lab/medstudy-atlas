@@ -104,7 +104,7 @@ test.describe("Phase 1E: Study Pack Generation & Citation Evidence UI", () => {
         name: "Generar Study Pack de Alto Rendimiento",
       })
     ).toBeVisible();
-    await expect(page.getByText("100% Fundamentado")).toBeVisible();
+    await expect(page.getByText("Verificación de Evidencia")).toBeVisible();
 
     // Click "Comenzar Generación Manual"
     const generateButton = page.getByRole("button", {
@@ -115,7 +115,16 @@ test.describe("Phase 1E: Study Pack Generation & Citation Evidence UI", () => {
 
     // 6. Run the Study Pack worker once
     try {
-      execSync("pnpm worker:study-packs --once", { stdio: "inherit" });
+      execSync("pnpm worker:study-packs --once", {
+        stdio: "inherit",
+        env: {
+          ...process.env,
+          NODE_ENV: "test",
+          AI_GENERATION_ENABLED: "true",
+          AI_PROVIDER: "mock",
+          ALLOW_MOCK_AI: "true",
+        },
+      });
     } catch (err) {
       console.warn("worker:study-packs --once warning/error:", err);
     }

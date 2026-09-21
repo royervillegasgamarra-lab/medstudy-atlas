@@ -230,6 +230,15 @@ describe("AI Telemetry & Factory", () => {
       // Allowed when explicit allowMockInNonTest option is provided
       const allowed = getAIProvider({ allowMockInNonTest: true });
       expect(allowed).toBeInstanceOf(MockAIProvider);
+
+      // Allowed when explicit ALLOW_MOCK_AI=true env flag is provided
+      try {
+        process.env.ALLOW_MOCK_AI = "true";
+        const allowedEnv = getAIProvider();
+        expect(allowedEnv).toBeInstanceOf(MockAIProvider);
+      } finally {
+        delete process.env.ALLOW_MOCK_AI;
+      }
     } finally {
       (process.env as Record<string, string | undefined>).NODE_ENV =
         originalNodeEnv;

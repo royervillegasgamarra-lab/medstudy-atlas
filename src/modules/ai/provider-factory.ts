@@ -44,7 +44,10 @@ export function getAIProvider(options?: ProviderFactoryOptions): AIProvider {
 
   // 2. Mock provider is ONLY allowed in test environments OR when explicitly allowed
   const isTest = process.env.NODE_ENV === "test";
-  const allowMock = isTest || options?.allowMockInNonTest === true;
+  const allowMock =
+    isTest ||
+    options?.allowMockInNonTest === true ||
+    process.env.ALLOW_MOCK_AI === "true";
 
   if (serverEnv.AI_PROVIDER === "mock") {
     if (!allowMock) {
