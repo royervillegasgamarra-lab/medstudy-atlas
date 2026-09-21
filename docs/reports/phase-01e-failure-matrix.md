@@ -89,14 +89,15 @@ The canonical source of truth for error codes is `STUDY_PACK_ERROR_CODES` in `sr
 | **PACK-35** | Complete Verifier Input Length Bound | Preflight check enforces `maxVerifierInputChars = 180_000`; payloads exceeding bound immediately throw `STUDY_PACK_INPUT_LIMIT` before invoking provider ($0.00 spend) | Unit (Vitest) | `tests/unit/evidence-verifier.test.ts` (`rejects verifier payload exceeding maxVerifierInputChars with STUDY_PACK_INPUT_LIMIT and 0 AI calls`) | **PASS** |
 | **PACK-36** | Non-Retryable Worker Internal Error Contract | Unknown non-`AIProviderError` exceptions thrown during generation map to `WORKER_INTERNAL_ERROR` with `retryable: false` | Unit (Vitest) | `tests/unit/ai-provider.test.ts` (`maps unknown non-AIProviderError to WORKER_INTERNAL_ERROR with retryable = false`) | **PASS** |
 | **PACK-37** | Safe Server Action Error Sanitization | Server Actions map all 19 error codes via `toPublicStudyPackError()`; raw database errors, connection strings, URLs, and stack traces are sanitized to safe Spanish messages with zero internal leakage | Unit (Vitest) | `tests/unit/study-packs-actions.test.ts` (`sanitizes all 19 error codes and hides database connection/query details`) | **PASS** |
+| **PACK-38** | Database-Authoritative Evidence Page Count | `evidence_page_count = COALESCE(v_calculated_evidence_pages, 0)` strictly enforced in DB RPC; caller-supplied override parameters (e.g. 999) are ignored in favor of the distinct chunk page count | Integration & Database (pgTAP) | `supabase/tests/database/05_chunks_and_study_packs_rls.sql` & `tests/integration/study-packs-worker.test.ts` (`enforces database-authoritative evidence_page_count`) | **PASS** |
 
 ---
 
 ## 3. Verification Summary
-- **Database Test Suite (`supabase/tests/database/`)**: 326 pgTAP tests passing across 5 suites (81 in `05_chunks_and_study_packs_rls.sql`).
+- **Database Test Suite (`supabase/tests/database/`)**: 327 pgTAP tests passing across 5 suites (82 in `05_chunks_and_study_packs_rls.sql`).
 - **Unit Test Suite (`tests/unit/`)**: 228 unit tests passing across 16 suites (including `chunking.test.ts`, `ai-provider.test.ts`, `evidence-verifier.test.ts`, `citation-validator.test.ts`, `study-packs-actions.test.ts`, `config.test.ts`).
-- **Integration Test Suite (`tests/integration/`)**: 55 tests passing across 3 suites (11 in `study-packs-worker.test.ts`, 17 in `processing-worker.test.ts`, 27 in `storage-security.test.ts`).
-- **Vitest Total (`pnpm test`)**: 283 tests passing across 19 test files.
+- **Integration Test Suite (`tests/integration/`)**: 56 tests passing across 3 suites (12 in `study-packs-worker.test.ts`, 17 in `processing-worker.test.ts`, 27 in `storage-security.test.ts`).
+- **Vitest Total (`pnpm test`)**: 284 tests passing across 19 test files.
 - **Benchmark Suite (`pnpm ai:benchmark:study-pack`)**: Mode A Mock Pipeline Smoke passed with 5/5 synthetic fixtures, structural mechanics verified, automated evidence-support ratio reported as N/A in mock mode, and $0.00 spend.
 - **End-to-End Suite (`tests/e2e/`)**: 19 Playwright tests passing across 7 suites.
 - **Zero Secrets**: Automated audit confirms no secrets, tokens, or credentials committed.

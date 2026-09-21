@@ -53,15 +53,15 @@ classDiagram
     }
 
     class TutorModule {
-        +askTutor()
-        +streamResponse()
-        +verifyCitations()
+        +askTutor() Future_Phase1F
+        +streamResponse() Future_Phase1F
+        +verifyCitations() Future_Phase1F
     }
 
     class AIGatewayModule {
-        +generateStructured()
-        +generateEmbedding()
-        +trackUsage()
+        +generateStructured() Phase1E_Implemented
+        +generateEmbedding() Future_Phase1F
+        +trackUsage() Phase1E_Implemented
     }
 
     class BillingModule {
@@ -113,7 +113,7 @@ classDiagram
   - Orchestration of the text extraction pipeline (classification, extraction, selective OCR).
   - Document structural normalization (pages, sections, chunks).
   - Grounded provenance tracking (bounding boxes, page coordinates).
-- **Dependencies**: Object Storage, Database (Document, DocumentVersion, DocumentPage, DocumentSection, DocumentChunk), AI Gateway (embeddings).
+- **Dependencies**: Object Storage, Database (Document, DocumentVersion, DocumentPage, DocumentSection, DocumentChunk). (Future Phase 1F+: AI Gateway for embeddings).
 
 ### 4. Knowledge Module (`src/modules/knowledge`)
 - **Responsibilities**:
@@ -150,7 +150,9 @@ classDiagram
 ### 8. AI Gateway Module (`src/modules/ai`)
 - **Responsibilities**:
   - Unified, thin `AIProvider` interface isolating third-party LLM APIs.
-  - Centralized telemetry logging (prompt tokens, completion tokens, cached tokens, latency, cost estimate).
+  - Phase 1E implements deterministic structured output via `generateStructured()` for candidate generation and evidence verification ($0.00 spend via `MockAIProvider` in local test/dev; `OpenAICompatibleProvider` with bound internal retries and timeout in live environments).
+  - Centralized telemetry logging in `ai_usages` (prompt tokens, completion tokens, cached tokens, latency, cost estimate).
+  - (Future Phase 1F+: `generateEmbedding()` and streaming tutor endpoints).
   - Hard token ceilings, quota enforcement, request deduplication, and generation caching.
   - Fallback and circuit-breaker handling.
 - **Dependencies**: External AI APIs (OpenAI / Anthropic / Gemini).

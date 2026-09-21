@@ -196,7 +196,7 @@ $reviewCriteria = switch -Regex ($PhaseSlug) {
             '7. [ ] **Mandatory RLS Test Matrix**: 57 pgTAP in-database tests verify schema, function privileges, anon denial, user A/B isolation, column-level restrictions, manual insert denial, cascade deletion, and trigger execution (`pnpm db:test`).',
             '8. [ ] **Generated Database Types**: `src/types/database.ts` generated via `pnpm db:types` and wired to Supabase clients and domain types.',
             '9. [ ] **Sanitized Backend Errors**: User-visible actions map backend/database errors to safe product messages with zero SQL/stack leaks.',
-            '10. [ ] **Roadmap Consistency**: Next slice aligned as 1B — Onboarding / Curriculum / Exam Target.',
+            '10. [ ] **Roadmap Consistency**: Next slice aligned as 1B -- Onboarding / Curriculum / Exam Target.',
             '11. [ ] **Password Policy Baseline**: Minimum 8 characters synchronized across config, schemas, UI, and tests.',
             '12. [ ] **Zero Cloud Resources & Paid Services**: No Supabase Cloud project, no external hosting, zero spend ($0.00).'
         )
@@ -260,7 +260,7 @@ $reviewCriteria = switch -Regex ($PhaseSlug) {
             '7. [ ] **Cost Engine & Telemetry Tracking**: `pricing.ts` accurately computes token costs with cached token discounting (`uncachedInput = Math.max(0, inputTokens - cachedTokens)`). Telemetry logged to `public.ai_usages` with costs tracked to 6 decimal places.',
             '8. [ ] **Database Schema, Composite Foreign Keys & RLS**: 5 tables (`document_chunks`, `study_packs`, `study_pack_items`, `study_pack_item_citations`, `ai_usages`) with composite FKs. Direct mutations revoked; privileged RPCs control queue and writes. Hardened pgTAP test suite in `05_chunks_and_study_packs_rls.sql` (all assertions verified against PostgreSQL 17).',
             '9. [ ] **Worker Lease Fencing & Concurrency Control**: `study-packs-worker.ts` claims jobs via `claim_next_study_pack` (`FOR UPDATE SKIP LOCKED`) with fencing token `claim_token UUID` and lease expiration. Expired or missing leases immediately revoke write authority with SQLSTATE 55000.',
-            '10. [ ] **Scientific Presentation UI**: Responsive study pack view with display citation badges (`Pág. X`), coverage & provenance disclosure panel, library status badges, and React plain-text escaping (zero `dangerouslySetInnerHTML`).',
+            '10. [ ] **Scientific Presentation UI**: Responsive study pack view with display citation badges (`Pag. X`), coverage & provenance disclosure panel, library status badges, and React plain-text escaping (zero `dangerouslySetInnerHTML`).',
             '11. [ ] **Synthetic Medical Lecture Benchmark Harness**: Opt-in developer CLI (`pnpm ai:benchmark:study-pack`) evaluates 5 realistic medical fixtures as structural pipeline smoke in Mock mode ($0.00 cost, factual quality N/A).',
             '12. [ ] **Automated Test Suite**: Vitest unit & integration tests, pgTAP database tests, and Playwright E2E test pass cleanly with zero secrets committed.'
         )

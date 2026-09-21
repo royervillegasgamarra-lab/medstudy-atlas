@@ -139,7 +139,7 @@ Building on the verified page provenance layer established in Phase 1D, Phase 1E
 4. **Zero-Vector Design in 1E**: The chunking engine requires zero embeddings and zero `pgvector` dependencies in Phase 1E. Embeddings and vector indices are strictly deferred to Phase 1F (Tutor RAG).
 
 ### 7.2 Two-Call Generation & Evidence Verification Pipeline
-Study Pack creation uses a bounded two-call model to prevent hallucinations and ungrounded clinical claims:
+Study Pack creation uses a bounded two-call model to reduce unsupported-content risk and hallucination:
 1. **CALL 1: Candidate Generation**:
    - The LLM receives untrusted document chunks serialized as structured JSON data blocks.
    - It outputs candidate study pack sections: General Summary, Learning Objectives, Key Concepts, High-Yield Points, and Key Terms Glossary.

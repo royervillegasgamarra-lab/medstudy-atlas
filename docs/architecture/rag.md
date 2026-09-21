@@ -117,7 +117,7 @@ A citation is NOT an opaque or unverified model output. It is a verifiable spati
 - **`chunk_id`**: Foreign key referencing `document_chunks(id, user_id)` via composite key integrity.
 - **`page_number`**: Exact page number in the original PDF, derived strictly by server-side query from `document_chunks.page_number` (the AI model is never trusted with page numbers).
 - **`document_id`**: Foreign key ensuring chunk belongs to the active document.
-- **Phase 1E Presentation**: Rendered as display-only page-level badges (`Pág. X`). (Interactive navigation, deep-linking into PDF viewer coordinates, and quote snippet extraction are reserved for future phases).
+- **Phase 1E Presentation**: Rendered as display-only page-level badges (`Pag. X` / `Pág. X`). (Interactive navigation, deep-linking into PDF viewer coordinates, and quote snippet extraction are reserved for future phases).
 
 ### 5.1 Deterministic Citation Validation (`citation-validator.ts`)
 1. **Server-Derived Page Numbers**: The AI model is **never** trusted to provide page numbers. The model outputs only candidate `chunk_id` values. The server looks up each valid chunk ID against authoritative database records (`document_chunks`) and populates `page_number` directly from the database row.
@@ -134,7 +134,7 @@ A citation is NOT an opaque or unverified model output. It is a verifiable spati
      - $\ge 1$ Learning Objective
      - $\ge 1$ Key Concept
      - $\ge 50\%$ of generated candidate items are verified as `SUPPORTED`.
-   - If these criteria are not met, the run transitions to `FAILED_FINAL` (`STUDY_PACK_EVIDENCE_QA_FAILED`), ensuring no ungrounded medical study pack reaches the student.
+   - If these criteria are not met, the run transitions to `FAILED_FINAL` (`STUDY_PACK_EVIDENCE_QA_FAILED`), reducing unsupported-content risk and ensuring only items passing automated evidence-support verification are persisted.
 
 ---
 

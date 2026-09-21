@@ -97,50 +97,69 @@ $$\text{Priority}(c) = w_1 \cdot \text{ExamUrgency} + w_2 \cdot \text{Forgetting
 
 ## 5. Study Pack Architecture & Lifecycle
 
-A **Study Pack** is a pre-generated, cached learning unit produced from an uploaded document. It prevents redundant, expensive AI inference.
+### 5.1 IMPLEMENTED Phase 1E: Normalized Study Pack Model & Lifecycle
+A **Study Pack** is a pre-generated, cached learning unit produced deterministically from an uploaded document's chunks. It prevents redundant, expensive AI inference.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> PENDING: Document Uploaded (qa_status: PENDING)
-    PENDING --> GENERATING: Worker starts pipeline
-    GENERATING --> VALIDATING: LLM produces cards & MCQs
-    VALIDATING --> READY: Automated QA passes (qa_status: PASSED)
-    VALIDATING --> FAILED: Structural/Safety check fails (qa_status: FAILED)
+    [*] --> PENDING: Document Processed
+    PENDING --> GENERATING: Worker claims job (claim_token, lease)
+    GENERATING --> READY: Generation + Verification succeed (persisted)
+    GENERATING --> FAILED_RETRYABLE: Transient error (attempts < max_retries)
+    FAILED_RETRYABLE --> GENERATING: Worker retries after backoff
+    GENERATING --> FAILED_FINAL: Terminal error / empty pack / retries exhausted
     READY --> [*]
-    READY --> INVALIDATED: User re-uploads updated PDF
-    INVALIDATED --> GENERATING: Regeneration triggered
 ```
 
-### Mandatory QA Status Lifecycle
-Both `study_packs.qa_status` and `questions.qa_status` strictly default to `'PENDING'` (unverified):
-- **Lifecycle Values**: `'PENDING'`, `'PASSED'`, `'FAILED'`.
-- **Default Invariant**: No generated learning material is marked `'PASSED'` by default. It must undergo automated verification.
-- **Exposure Invariant**: Only items with `qa_status = 'PASSED'` are presented to students in default study loops.
+#### Implemented Status Lifecycle (`study_packs.status`)
+The database-enforced lifecycle for study packs uses `StudyPackStatus`:
+- **`PENDING`**: Initial state upon enqueueing.
+- **`GENERATING`**: Claimed by a worker with an active lease and claim token.
+- **`READY`**: Candidate generation and automated verifier succeeded; verified items are persisted.
+- **`FAILED_RETRYABLE`**: Transient failure (e.g. rate limit or network timeout) with retry attempts remaining.
+- **`FAILED_FINAL`**: Terminal failure (e.g. unretryable error, zero supported items / empty pack, or exhausted retries).
 
-### Study Pack Contents (JSONB Cached)
-1. **Clinical Summary**: High-yield overview of key mechanisms, diagnostic criteria, and management.
-2. **Learning Objectives**: 3–5 verifiable learning outcomes aligned with national medical standards.
-3. **Core Concepts & Glossary**: 10–20 key medical terms mapped to canonical concepts.
-4. **Flashcards**: 15–30 atomic front/back cards with exact page citations (`INITIAL CONFIGURABLE ASSUMPTION`).
-5. **Multiple-Choice Questions**: 5–10 clinical vignette MCQs with 5 options (A–E) and rationales (`INITIAL CONFIGURABLE ASSUMPTION`).
+#### Implemented Normalized Item Types (`study_pack_items.item_type`)
+Phase 1E implements five normalized item types:
+1. `SUMMARY`: Clinical synthesis and high-yield overview.
+2. `LEARNING_OBJECTIVE`: Competency-based medical learning outcome.
+3. `KEY_CONCEPT`: Core pathophysiological or clinical concept.
+4. `HIGH_YIELD_POINT`: High-yield clinical pearl or board-relevant takeaway.
+5. `KEY_TERM`: Key medical vocabulary with definition.
+
+#### Implemented Automated Verification (Two-Call Pipeline)
+Rather than a single status column, verification is performed by a dedicated second AI call:
+- **Binary Decision**: Each candidate item is evaluated strictly as `SUPPORTED` or `UNSUPPORTED` against retrieved source evidence chunks.
+- **Persistence Invariant**: Only items verified as `SUPPORTED` with valid chunk citations are persisted to `study_pack_items`.
+- **Empty Pack Invariant**: If all candidate items are judged `UNSUPPORTED`, the pack transitions to `FAILED_FINAL` with error code `EMPTY_PACK`.
+- **Display-Only Citation Invariant**: In UI presentation, items render display-only page citation badges (`Pag. X`) linking the item to its underlying document evidence.
 
 ---
 
-## 6. Question Generation & Minimum Viable QA
+### 5.2 FUTURE Learning Engine (Target Slices 1F+)
+The downstream interactive learning modalities build upon the verified Phase 1E foundation:
+- **Questions & MCQs (Phase 1G)**: 5-option clinical vignette MCQs with plausible distractors, rationales, and automated QA gates.
+- **Flashcards & FSRS Spaced Repetition (Phase 1H)**: Atomic front/back cards scheduled via the FSRS algorithm (`open-spaced-repetition/ts-fsrs`) using isolated `user_flashcard_states`.
+- **Error Notebook (Phase 1I)**: Automated capture of student mistakes, misconception tagging (`KNOWLEDGE_GAP`, `MISREAD_QUESTION`, `CONFUSED_CONCEPTS`, `REASONING_ERROR`), and targeted review queues.
+- **Today Engine (Phase 1J)**: Daily prioritized learning plan synthesizing forgetting risk, exam proximity, and knowledge gaps.
+
+---
+
+## 6. Question Generation & Minimum Viable QA (Future Phase 1G Target)
 
 AI-generated medical questions must pass automated validation checks before being presented to students:
 
 | QA Gate | Validation Rule | Action on Failure |
 | :--- | :--- | :--- |
 | `structureValid` | Exactly 1 correct option, 4 plausible distractors, non-empty vignette. | Reject output; re-prompt with JSON schema. |
-| `evidenceSupported` | Correct answer must cite an exact chunk quote in the document. | Flag question; exclude from Study Pack (`qa_status = 'FAILED'`). |
+| `evidenceSupported` | Correct answer must cite an exact chunk quote in the document. | Flag question; exclude from Question Bank. |
 | `distractorsValid` | Distractors must represent real clinical misconceptions, not joke answers. | Filter out low-plausibility distractors. |
-| `medicalSafety` | Check against banned clinical recommendations (e.g., dangerous drug dosages). | Immediate discard; alert in QA log (`qa_status = 'FAILED'`). |
+| `medicalSafety` | Check against banned clinical recommendations (e.g., dangerous drug dosages). | Immediate discard; alert in QA log. |
 | `duplicateRisk` | Jaccard / embedding similarity with existing questions < 0.85. | Discard duplicate question. |
 
 ---
 
-## 7. The Error Notebook
+## 7. The Error Notebook (Future Phase 1I Target)
 When a student answers a question incorrectly, an `ErrorRecord` is automatically created:
 1. **Misconception Tagging**: Student or AI tags the failure:
    - `KNOWLEDGE_GAP`: Did not know the medical fact.

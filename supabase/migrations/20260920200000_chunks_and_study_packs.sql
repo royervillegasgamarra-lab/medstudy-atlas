@@ -928,7 +928,7 @@ BEGIN
         cached_tokens = p_cached_tokens,
         estimated_cost_usd = p_estimated_cost_usd,
         source_page_count = COALESCE(v_authoritative_page_count, p_source_page_count),
-        evidence_page_count = COALESCE(p_evidence_page_count, v_calculated_evidence_pages, 0),
+        evidence_page_count = COALESCE(v_calculated_evidence_pages, 0),
         source_chunk_count = p_source_chunk_count,
         evidence_chunk_count = p_evidence_chunk_count,
         evidence_char_count = p_evidence_char_count,

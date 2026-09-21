@@ -1,34 +1,82 @@
-# MedStudy Atlas — Conceptual & Logical Data Model
+## Scope & Implementation Status: Current Runtime vs Future Target
+
+To prevent architectural ambiguity between current runtime code and target MVP specifications, the data model is explicitly partitioned into two scopes:
+
+### Phase 1E Implemented Runtime (Current)
+The following tables, constraints, RPCs, and RLS policies are fully migrated and tested in PostgreSQL 17:
+- **Identity & Curriculum**: `auth.users` (Supabase managed), `public.user_profiles`, `public.subjects`, `public.exam_targets`.
+- **Documents & Processing Runs**: `public.documents`, `public.document_processing_runs`, `public.document_pages`.
+- **Deterministic Chunking & Study Packs**: `public.document_chunks`, `public.study_packs`, `public.study_pack_items`, `public.study_pack_item_citations`.
+- **AI Telemetry**: `public.ai_usages` (with PostgreSQL 17 column-specific `ON DELETE SET NULL`).
+- **Phase 1E `document_chunks` invariants**:
+  - Partitioned strictly by physical PDF page boundaries (single `document_page_id`, `page_number`, `start_char`, `end_char`).
+  - Target 1800 characters (max 2800 characters) with 200 character sliding overlap.
+  - Native PostgreSQL Spanish Full-Text Search (`tsv_content` + GIN index).
+  - **NO embedding column and NO `pgvector` dependencies in Phase 1E runtime**.
+
+### Target Future Schemas (Phases 1F–1K)
+The following entities represent architectural blueprints for subsequent phases and are **NOT** part of the Phase 1E database runtime:
+- **Vector Embeddings & Semantic Search (`pgvector`)**: Deferred to Phase 1F (Tutor RAG).
+- **Knowledge Graph**: `concepts`, `concept_relations`, `document_concepts` (Phase 1I).
+- **AI Tutor Chat**: `tutor_conversations`, `tutor_messages`, `citations` (Phase 1F).
+- **Assessments & Error Notebook**: `questions`, `question_options`, `question_attempts`, `error_records` (Phase 1G).
+- **Flashcards & Spaced Repetition**: `flashcards`, `user_flashcard_states`, `flashcard_reviews` (Phase 1H).
+- **Learner Model & Today Plan**: `learner_concept_states`, `study_sessions`, `study_plans`, `study_plan_items` (Phase 1J).
+- **Monetization & Billing**: `subscriptions`, `entitlements`, `payment_events`, `webhook_events` (Phase 1K).
+
+---
 
 ## 1. Overview & System of Record
 PostgreSQL (hosted on Supabase) serves as the primary system of record for MedStudy Atlas.
-- **Relational Integrity**: Foreign keys, check constraints, and transactional consistency.
+- **Relational Integrity**: Foreign keys, composite constraints, and transactional consistency.
 - **Multi-Model In-Database Capabilities**:
-  - `JSONB` for flexible, schema-versioned Study Pack contents and question metadata.
-  - `tsvector` + GIN indexes for full-text lexical search (Spanish config).
-  - `vector` (via `pgvector`) for semantic embedding search.
+  - `JSONB` for flexible, schema-versioned Study Pack contents and metadata.
+  - `tsvector` + GIN indexes for full-text lexical search (Spanish config, implemented in Phase 1E).
+  - `vector` (via `pgvector`) for semantic embedding search (reserved for Phase 1F Tutor RAG).
 - **Tenant Isolation**: Row Level Security (RLS) policies enforce strict per-user data isolation based on `auth.uid()`.
 
 ---
 
-## 2. Entity Categorization (MVP vs Later)
+## 2. Entity Categorization (Implemented vs Future Target)
 
-| Entity | Domain | Classification | Notes |
+| Entity | Domain | Scope / Classification | Notes |
 | :--- | :--- | :--- | :--- |
-| `User` | Identity | **MVP REQUIRED** | Supabase `auth.users` managed. |
-| `UserProfile` | Identity | **MVP REQUIRED** | Medical student metadata, academic context, onboarding completion marker. |
+| `User` | Identity | **IMPLEMENTED (Phase 1A)** | Supabase `auth.users` managed. |
+| `UserProfile` | Identity | **IMPLEMENTED (Phase 1A)** | Medical student metadata, academic context, onboarding completion marker. |
 | `Course` | Curriculum | **DEFERRED** | Course hierarchy deferred until real curriculum requirements justify it; Subject serves as primary container. |
-| `Subject` | Curriculum | **MVP REQUIRED** | User-owned academic subject/course/module (e.g., Anatomía, Fisiología) with RLS and active unique index. |
-| `ExamTarget` | Curriculum | **MVP REQUIRED** | Upcoming exam blueprint with composite foreign key enforcing subject owner integrity. |
-| `Document` | Documents | **MVP REQUIRED** | Top-level uploaded file record. |
-| `DocumentVersion` | Documents | **MVP REQUIRED** | Versioning for document re-uploads / updates. |
-| `DocumentPage` | Documents | **MVP REQUIRED** | Page-level metadata, classification (text vs scan), image ref. |
-| `DocumentSection` | Documents | **LATER** | Structural chapter/heading hierarchy (flattened to Chunks in MVP). |
-| `DocumentChunk` | Documents | **MVP REQUIRED** | Token-bounded text chunk with embedding and FTS tsvector. |
-| `Concept` | Knowledge | **MVP REQUIRED** | Core medical concept (disease, symptom, drug, structure). |
-| `ConceptRelation` | Knowledge | **MVP REQUIRED** | Edge in PostgreSQL concept graph (`IS_A`, `CAUSES`, etc.). |
-| `DocumentConcept` | Knowledge | **MVP REQUIRED** | Join table linking document chunks to concepts. |
-| `StudyPack` | Learning | **MVP REQUIRED** | Cached aggregate study pack for a document. |
+| `Subject` | Curriculum | **IMPLEMENTED (Phase 1B)** | User-owned academic subject/course/module with RLS and active unique index. |
+| `ExamTarget` | Curriculum | **IMPLEMENTED (Phase 1B)** | Upcoming exam blueprint with composite foreign key enforcing subject owner integrity. |
+| `Document` | Documents | **IMPLEMENTED (Phase 1C)** | Top-level uploaded file record. |
+| `DocumentProcessingRun` | Documents | **IMPLEMENTED (Phase 1D)** | Bounded parser runs with attempt tracking and lease fencing. |
+| `DocumentPage` | Documents | **IMPLEMENTED (Phase 1D)** | Authoritative page provenance, character counts, and classification. |
+| `DocumentChunk` | Documents | **IMPLEMENTED (Phase 1E)** | Character-bounded page-partitioned text chunk with FTS tsvector. No embedding column, no pgvector. |
+| `StudyPack` | Learning | **IMPLEMENTED (Phase 1E)** | Cached aggregate study pack with lease fencing and QA gate. |
+| `StudyPackItem` | Learning | **IMPLEMENTED (Phase 1E)** | Normalized verified study items (Summary, Objectives, Concepts, High-Yield, Glossary). |
+| `StudyPackItemCitation` | Learning | **IMPLEMENTED (Phase 1E)** | Verified chunk provenance linking items to `document_chunks`. |
+| `AIUsage` | AI / Billing | **IMPLEMENTED (Phase 1E)** | Token telemetry, feature type, estimated cost per request. |
+| `Concept` | Knowledge | **FUTURE (Phase 1I)** | Core medical concept (disease, symptom, drug, structure). |
+| `ConceptRelation` | Knowledge | **FUTURE (Phase 1I)** | Edge in PostgreSQL concept graph (`IS_A`, `CAUSES`, etc.). |
+| `DocumentConcept` | Knowledge | **FUTURE (Phase 1I)** | Join table linking document chunks to concepts. |
+| `Flashcard` | Learning | **FUTURE (Phase 1H)** | Front/back retrieval practice item. |
+| `UserFlashcardState` | Learning | **FUTURE (Phase 1H)** | FSRS scheduling state (stability, difficulty, due date). |
+| `FlashcardReview` | Learning | **FUTURE (Phase 1H)** | Historical log of spaced repetition review attempts. |
+| `Question` | Assessment | **FUTURE (Phase 1G)** | Multiple-choice clinical vignette or question. |
+| `QuestionOption` | Assessment | **FUTURE (Phase 1G)** | Distractors and correct answer with explanations. |
+| `QuestionAttempt` | Assessment | **FUTURE (Phase 1G)** | Student response, response time, correctness. |
+| `ErrorRecord` | Assessment | **FUTURE (Phase 1G)** | Error Notebook: recurring misconception and rationale. |
+| `LearnerConceptState` | Learning | **FUTURE (Phase 1J)** | Deterministic mastery, confidence, forgetting risk per concept. |
+| `StudySession` | Learning | **FUTURE (Phase 1J)** | Active study time block tracking. |
+| `StudyPlan` | Learning | **FUTURE (Phase 1J)** | Daily "Today" plan container. |
+| `StudyPlanItem` | Learning | **FUTURE (Phase 1J)** | Individual task in the Today plan (cards to review, MCQs). |
+| `TutorConversation` | Tutor | **FUTURE (Phase 1F)** | Thread of chat with the context-grounded AI Tutor. |
+| `TutorMessage` | Tutor | **FUTURE (Phase 1F)** | Message in conversation with evidence state and role. |
+| `Citation` | Tutor | **FUTURE (Phase 1F)** | Exact link between TutorMessage and DocumentChunk / Page. |
+| `Subscription` | Billing | **FUTURE (Phase 1K)** | Current subscription status (Free vs PRO), period end. |
+| `Entitlement` | Billing | **FUTURE (Phase 1K)** | Feature quotas and usage counters (uploads, AI calls). |
+| `PaymentEvent` | Billing | **FUTURE (Phase 1K)** | Record of payments from gateway. |
+| `WebhookEvent` | Billing | **FUTURE (Phase 1K)** | Idempotency log for incoming webhooks. |
+| `MedicalSource` | Provenance | **LATER / OPTIONAL** | Authoritative clinical source (guideline, textbook edition). |
+| `MedicalAssetLicense` | Provenance | **LATER / OPTIONAL** | Specific asset copyright and commercial reuse verification. |
 | `StudyPackVersion` | Learning | **LATER** | Versioned iterations of generated packs (MVP uses 1:1 StudyPack). |
 | `Flashcard` | Learning | **MVP REQUIRED** | Front/back retrieval practice item. |
 | `UserFlashcardState` | Learning | **MVP REQUIRED** | FSRS scheduling state (stability, difficulty, due date). |
@@ -388,7 +436,7 @@ CREATE TABLE questions (
     explanation TEXT NOT NULL,
     difficulty TEXT CHECK (difficulty IN ('EASY', 'MEDIUM', 'HARD')),
     provenance JSONB NOT NULL DEFAULT '{}',
-    qa_status TEXT NOT NULL DEFAULT 'PENDING' CHECK (qa_status IN ('PENDING', 'PASSED', 'FAILED')),
+    status TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'READY', 'REJECTED')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 

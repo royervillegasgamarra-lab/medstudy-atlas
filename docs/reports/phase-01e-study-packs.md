@@ -8,7 +8,7 @@
 - **Review Package**: `review-output/phase-01e-review.zip`
 - **Review Target**: Phase 1E committed checkpoint on `phase/01e-study-packs`
 - **Canonical Commit SHA**: Exact commit SHA is captured in `review-output/phase-01e-review.zip` (`REVIEW.md` and `test-results/*.log`).
-- **Objective**: Implement deterministic page-bounded document chunking, an evidence-grounded Study Pack generation pipeline, a thin AI provider abstraction with zero-cost local testing, a deterministic citation validator enforcing server-derived page provenance, strict QA quality gates, lease-fenced worker orchestration, and scientific presentation UI with interactive citations and coverage disclosure at $0.00 cloud spend.
+- **Objective**: Implement deterministic page-bounded document chunking, an evidence-grounded Study Pack generation pipeline, a thin AI provider abstraction with zero-cost local testing, a deterministic citation validator enforcing server-derived page provenance, strict QA quality gates, lease-fenced worker orchestration, and scientific presentation UI with display-only page citation badges (`Pag. X`) and coverage disclosure at $0.00 cloud spend.
 
 > **Note on SHA Semantics**: Committed reports record the commit SHA of implementation prior to report generation (`LOCAL HEAD SHA BEFORE REPORT`). Committed reports do not contain their own final commit SHA to prevent self-referential commit loops. The final local HEAD SHA is printed in the final agent chat output after all report/status files are committed locally.
 
@@ -25,17 +25,17 @@
 
 2. **Database Schema, Composite Foreign Keys & RLS (`supabase/migrations/20260920200000_chunks_and_study_packs.sql`)**:
    - `public.document_chunks`: Stores page-bounded chunks with composite foreign key `(document_id, user_id) REFERENCES documents(id, user_id) ON DELETE CASCADE` and unique constraint `(document_id, chunk_index)`.
-   - `public.study_packs`: Tracks Study Pack lifecycle (`PENDING`, `GENERATING`, `READY`, `FAILED_RETRYABLE`, `FAILED_FINAL`), lease fencing (`claim_token UUID`, `claimed_by TEXT`, `lease_expires_at TIMESTAMPTZ`), authoritative page counts (`source_page_count`, `evidence_page_count`), and composite ownership `(id, document_id, user_id)`. QA evaluation is enforced before persistence (QA failure transitions pack to `FAILED_FINAL` with `error_code = 'STUDY_PACK_EVIDENCE_QA_FAILED'`).
+   - `public.study_packs`: Tracks Study Pack lifecycle (`PENDING`, `GENERATING`, `READY`, `FAILED_RETRYABLE`, `FAILED_FINAL`), lease fencing (`claim_token UUID`, `claimed_by TEXT`, `lease_expires_at TIMESTAMPTZ`), authoritative page counts (`source_page_count`, `evidence_page_count`), and composite ownership `(id, document_id, user_id)`. QA evaluation is enforced before persistence (QA failure transitions pack to `FAILED_FINAL` with `error_code = 'STUDY_PACK_EVIDENCE_QA_FAILED'`). Distinct page count `evidence_page_count` is strictly database-authoritative via `COALESCE(v_calculated_evidence_pages, 0)` in `persist_study_pack_results_privileged`, ignoring any caller override.
    - `public.study_pack_items`: Stores structured study content by item type (`SUMMARY`, `LEARNING_OBJECTIVE`, `KEY_CONCEPT`, `HIGH_YIELD_POINT`, `KEY_TERM`) with JSONB payload and composite foreign key `(study_pack_id, user_id) REFERENCES public.study_packs(id, user_id) ON DELETE CASCADE`. Unsupported items are filtered out before persistence.
    - `public.study_pack_item_citations`: Links study items to chunks with composite FKs `fk_study_pack_item_citations_item FOREIGN KEY (study_pack_item_id, study_pack_id, user_id) REFERENCES public.study_pack_items(id, study_pack_id, user_id) ON DELETE CASCADE` and `fk_study_pack_item_citations_chunk FOREIGN KEY (document_chunk_id, user_id) REFERENCES public.document_chunks(id, user_id) ON DELETE CASCADE`.
    - `public.ai_usages`: Logs fine-grained AI consumption telemetry (`input_tokens`, `output_tokens`, `cached_tokens`, `estimated_cost_usd` to 6 decimal places, `latency_ms`, `status`) with PostgreSQL 17 column-specific composite FKs: `ON DELETE SET NULL (document_id)` and `ON DELETE SET NULL (study_pack_id)`, preserving user telemetry records and `user_id` when documents or packs are deleted.
    - Strict Row Level Security: Direct mutations (`INSERT`, `UPDATE`, `DELETE`) on all Phase 1E tables are REVOKED from `authenticated` and `anon`. Read access (`SELECT`) is strictly bounded by `auth.uid() = user_id`.
    - Privileged RPCs (callable only by `service_role`): `create_document_chunks_privileged`, `enqueue_study_pack_privileged` (with `pg_advisory_xact_lock` and `ON CONFLICT DO NOTHING` convergence), `claim_next_study_pack`, `persist_study_pack_results_privileged`, `fail_study_pack_privileged` (refunding attempts on operational failures `AI_DISABLED` and `AI_NOT_CONFIGURED`), `record_ai_usage_privileged`. Updated `archive_document_privileged` to cascade clean study packs.
-   - 81 pgTAP assertions in `supabase/tests/database/05_chunks_and_study_packs_rls.sql` (326 total passing DB tests across 5 test suites).
+   - 82 pgTAP assertions in `supabase/tests/database/05_chunks_and_study_packs_rls.sql` (327 total passing DB tests across 5 test suites).
 
 3. **Thin `AIProvider` Abstraction, Bound Retries & Cost Engine (`src/modules/ai/`)**:
    - Thin internal TypeScript abstraction (`AIProvider`) defining a single domain method: `generateStructured<T>(request: AIStructuredRequest<T>, context?: AIRequestContext): Promise<AIStructuredResult<T>>`.
-   - `MockAIProvider` (`src/modules/ai/mock-provider.ts`): Deterministic test provider returning structured study pack objects grounded in document text with simulated token telemetry and $0.00 spend. Powers 100% of automated unit tests, integration tests, E2E tests, and benchmark runs.
+   - `MockAIProvider` (`src/modules/ai/mock-provider.ts`): MockAIProvider is a deterministic structural/test provider with simulated token telemetry and $0.00 spend. It makes no factual grounding or medical accuracy claim unless a specific scripted test constructs grounded output. Powers 100% of automated unit tests, integration tests, E2E tests, and benchmark runs.
    - `OpenAICompatibleProvider` (`src/modules/ai/openai-compatible-provider.ts`): Production-ready adapter supporting OpenAI and OpenAI-compatible gateways (LiteLLM, Ollama, vLLM) with JSON Schema structured outputs.
    - Provider Factory (`src/modules/ai/provider-factory.ts`):
      - Unconditional production mock denial: `MockAIProvider` is strictly and unconditionally prohibited in production under any configuration or bypass flag (`NODE_ENV === "production"`).
@@ -63,7 +63,7 @@
        - $\ge 1$ Learning Objective
        - $\ge 1$ Key Concept
        - $\ge 50\%$ of candidate claims verified as `SUPPORTED`.
-     - If these thresholds are not met, the pack transitions to `FAILED_FINAL` (`STUDY_PACK_EVIDENCE_QA_FAILED`), ensuring no ungrounded medical study pack reaches the student.
+     - If these thresholds are not met, the pack transitions to `FAILED_FINAL` (`STUDY_PACK_EVIDENCE_QA_FAILED`), reducing unsupported-content risk and ensuring only items passing automated evidence-support verification are persisted.
    - Safe Server Actions & Error Sanitization (`src/modules/study-packs/actions.ts`, `errors.ts`):
      - Complete 19-code error taxonomy mapped through `toPublicStudyPackError()`.
      - Zero internal leakage: database error messages, connection strings, URLs, and stack traces are never exposed to the client; sanitized Spanish error messages returned.
@@ -79,7 +79,7 @@
 
 6. **Scientific Presentation UI Layer (`src/components/study-packs/study-pack-view.tsx`, `src/app/app/documents/[id]/study-pack/page.tsx`)**:
    - Scientific presentation interface organizing content into 5 structured sections: Resumen (Summary), Objetivos de Aprendizaje, Conceptos Clave, Puntos Clave de Repaso (High-Yield), and Glosario de Términos Clave. Puntos clave are described as concepts highlighted in the material as key points for review.
-   - Display-only citation badges (`Pág. X`): displays verified page numbers derived by server from canonical chunk relations with source backing disclosure.
+   - Display-only citation badges (`Pag. X`): displays verified page numbers derived by server from canonical chunk relations with source backing disclosure.
    - Educational Clinical Disclaimer Banner: displays prominent advisory ("Material generado como asistencia de estudio. Siempre verifique con las fuentes primarias y criterios clínicos.").
    - Coverage & Provenance Disclosure Panel: displays total verified items, supported claim percentage, and page coverage as "Páginas con evidencia textual: X de Y", where X is `evidencePageCount` and Y is authoritative `sourcePageCount`.
    - React plain-text escaping: all text content is rendered via native React string interpolation with zero `dangerouslySetInnerHTML`, ensuring untrusted medical text cannot execute XSS payloads.
@@ -99,8 +99,8 @@
    - Verifies structural pipeline mechanics across all 5 fixtures with 0 errors, 0 warnings, and $0.00 automated spend (`pnpm ai:benchmark:study-pack`).
 
 8. **Automated Test Suite (100% Pass)**:
-   - 283 Vitest tests passing across 19 test files (228 unit, 55 integration via `pnpm test`).
-   - 326 pgTAP database tests passing across 5 test files (`pnpm db:test`, 81 assertions in `05_chunks_and_study_packs_rls.sql`).
+   - 284 Vitest tests passing across 19 test files (228 unit, 56 integration via `pnpm test`).
+   - 327 pgTAP database tests passing across 5 test files (`pnpm db:test`, 82 assertions in `05_chunks_and_study_packs_rls.sql`).
    - 19 Playwright E2E tests passing across 7 suites (`pnpm test:e2e`), including `tests/e2e/study-packs.spec.ts` validating full upload -> document processing -> manual study pack trigger -> worker execution -> verified study pack UI render -> library badge verification, with screenshot captured at `docs/screenshots/phase-01e-study-pack-view.png`.
 
 ---
@@ -125,20 +125,20 @@
 - `src/modules/study-packs/actions.ts` — Authenticated Server Actions for manual generation CTA and retrieval with sanitized error mapping.
 - `src/modules/study-packs/index.ts` — Public export barrel for study packs module.
 - `src/workers/study-packs-worker.ts` — Background worker orchestrator with lease fencing and retry management.
-- `src/components/study-packs/study-pack-view.tsx` — Scientific presentation UI with display citation badges (`Pág. X`) and coverage disclosure.
+- `src/components/study-packs/study-pack-view.tsx` — Scientific presentation UI with display citation badges (`Pag. X`) and coverage disclosure.
 - `src/app/app/documents/[id]/study-pack/page.tsx` — Protected Server Component page for Study Pack viewing.
 - `src/benchmarks/study-pack-benchmark.ts` — Developer benchmark CLI harness (`pnpm ai:benchmark:study-pack`).
 - `supabase/migrations/20260920200000_chunks_and_study_packs.sql` — Database migration for chunks, study packs, items, citations, and AI usages.
-- `supabase/tests/database/05_chunks_and_study_packs_rls.sql` — 81 pgTAP assertions for chunk and study pack security.
+- `supabase/tests/database/05_chunks_and_study_packs_rls.sql` — 82 pgTAP assertions for chunk and study pack security (including database-authoritative evidence_page_count verification).
 - `tests/fixtures/benchmark/*.json` — 5 synthetic medical lecture fixtures.
 - `tests/unit/chunking.test.ts` — Unit test suite for canonical chunking engine (16 tests).
 - `tests/unit/ai-provider.test.ts` — Unit test suite for AI provider, pricing, retries, and telemetry (19 tests).
 - `tests/unit/citation-validator.test.ts` — Unit test suite for citation validation (5 tests).
 - `tests/unit/evidence-verifier.test.ts` — Unit test suite for evidence verification, deduplication, and QA gate (7 tests).
 - `tests/unit/study-packs-actions.test.ts` — Unit test suite for Server Action error sanitization across all 19 error codes (9 tests).
-- `tests/integration/study-packs-worker.test.ts` — Integration test suite for worker claim fencing, write revocation, archive race closure, and cached reads (5 tests).
+- `tests/integration/study-packs-worker.test.ts` — Integration test suite for worker claim fencing, write revocation, archive race closure, cached reads, and database-authoritative evidence_page_count (12 tests).
 - `tests/e2e/study-packs.spec.ts` — Playwright E2E test suite for full study pack generation and UI rendering (1 test).
-- `docs/reports/phase-01e-failure-matrix.md` — Complete failure matrix covering 19 error codes and 30 failure scenarios.
+- `docs/reports/phase-01e-failure-matrix.md` — Complete failure matrix covering 19 error codes and 38 failure scenarios.
 - `docs/screenshots/phase-01e-study-pack-view.png` — E2E screenshot evidence of rendered Study Pack view.
 
 ### Important Files Modified
@@ -164,7 +164,7 @@
 - **Architecture Decisions**:
   - Implemented thin `AIProvider` abstraction decoupled from heavy agentic frameworks (LangChain, LlamaIndex).
   - Adopted deterministic-first policy: non-generative tasks (token math, pricing, citation validation, page mapping, lease management) remain 100% deterministic code.
-  - Page-bounded canonical chunking: chunks strictly respect physical PDF page boundaries (`page_start === page_end`).
+  - Page-bounded canonical chunking: chunks strictly respect physical PDF page boundaries (single `document_page_id`, `page_number`, `start_char`, `end_char`).
   - Zero-vector architecture for Phase 1E: embeddings and `pgvector` hybrid search deferred to Phase 1F (Tutor RAG).
 - **Database Impact**:
   - Migration `20260920200000_chunks_and_study_packs.sql` applied cleanly.
@@ -196,7 +196,7 @@
   - XSS Defense: Untrusted medical document content rendered with React plain-text escaping; zero `dangerouslySetInnerHTML`.
   - Prompt Injection Defense: Untrusted document chunks serialized as structured JSON data blocks; prompt instructs model to treat evidence strictly as inert data.
 - **Medical & Content Safety**:
-  - Strict QA Quality Gate: Requires $\ge 1$ summary, $\ge 1$ objective, $\ge 1$ concept, and $\ge 50\%$ supported claims; ungrounded packs rejected as `STUDY_PACK_EVIDENCE_QA_FAILED`.
+  - Strict QA Quality Gate: Requires $\ge 1$ summary, $\ge 1$ objective, $\ge 1$ concept, and $\ge 50\%$ supported claims; ungrounded packs rejected as `STUDY_PACK_EVIDENCE_QA_FAILED`, reducing unsupported-content risk.
   - Server-Derived Provenance: AI model outputs only chunk IDs; server maps chunk IDs to database page numbers, preventing hallucinated page citations.
   - Educational Disclaimer: UI explicitly presents content for medical study preparation, not real-patient clinical decision-making.
   - PHI Audit: Zero patient data, credentials, or private keys committed.
@@ -219,10 +219,10 @@
   - `pnpm format:check` -> PASS (All matched files use Prettier code style)
   - `pnpm lint` -> PASS (0 warnings, 0 errors)
   - `pnpm typecheck` -> PASS (0 TypeScript errors)
-  - `pnpm test` -> PASS (283 tests passing across 19 test files: 228 unit, 55 integration)
+  - `pnpm test` -> PASS (284 tests passing across 19 test files: 228 unit, 56 integration)
   - `pnpm db:reset` -> PASS (5 migrations applied cleanly)
   - `pnpm db:types` -> PASS (Types generated into `src/types/database.ts`)
-  - `pnpm db:test` -> PASS (326 pgTAP tests passing across 5 test files, 81 assertions in `05_chunks_and_study_packs_rls.sql`)
+  - `pnpm db:test` -> PASS (327 pgTAP tests passing across 5 test files, 82 assertions in `05_chunks_and_study_packs_rls.sql`)
   - `pnpm build` -> PASS (Production build successful with Next.js Turbopack)
   - `pnpm ai:benchmark:study-pack` -> PASS (Mode A Mock Smoke: 5/5 synthetic fixtures passed, 0 errors, automated evidence-support ratio reported as N/A, $0.00 cost)
   - `pnpm test:e2e` -> PASS (19 Playwright tests passing across 7 suites)

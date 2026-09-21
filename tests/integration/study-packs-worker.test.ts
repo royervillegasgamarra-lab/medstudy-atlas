@@ -9,6 +9,7 @@ import {
 import {
   requestStudyPackGeneration,
   getStudyPack,
+  createOrGetDocumentChunks,
 } from "@/modules/study-packs/service";
 import { MockAIProvider } from "@/modules/ai/mock-provider";
 import type { AIProvider, AIStructuredResult } from "@/modules/ai/types";
@@ -274,6 +275,12 @@ describe("Study Pack Worker & Evidence Layer Integration (Phase 1E)", () => {
     expect(persistErr?.message).toContain(
       "Worker lease expired or null; write revoked"
     );
+
+    // Clean up expired row so it does not interfere with subsequent tests
+    await adminClient
+      .from("study_packs")
+      .delete()
+      .eq("id", enqueueRes.studyPackId);
   });
 
   it("cancels active study pack when document is archived and revokes worker writes", async () => {
@@ -569,5 +576,104 @@ describe("Study Pack Worker & Evidence Layer Integration (Phase 1E)", () => {
 
     expect(pack?.status).toBe("FAILED_FINAL");
     expect(pack?.error_code).toBe("STUDY_PACK_VERSION_UNSUPPORTED");
+  });
+
+  it("enforces database-authoritative evidence_page_count: actual chunks on pages 1 and 3, caller passes evidence_page_count = 999 -> DB persists 2, NOT 999", async () => {
+    // Document with 3 pages: page 1 (text), page 2 (no text), page 3 (text)
+    const { docId, runId } = await createSucceededDocumentWithPages([
+      "Página 1: Los antimicrobianos betalactámicos actúan inhibiendo la síntesis de la pared celular bacteriana.",
+      { text: "   ", classification: "NO_TEXT" },
+      "Página 3: Las cefalosporinas de tercera generación presentan cobertura extendida frente a bacilos gramnegativos.",
+    ]);
+
+    const enqueueRes = await requestStudyPackGeneration(docId, testUserId);
+
+    // Set active claim token and lease on this exact job
+    const claimToken = crypto.randomUUID();
+    await adminClient
+      .from("study_packs")
+      .update({
+        status: "GENERATING",
+        claim_token: claimToken,
+        claimed_by: "test-worker-authoritative-coverage",
+        lease_expires_at: new Date(Date.now() + 300_000).toISOString(),
+      })
+      .eq("id", enqueueRes.studyPackId);
+
+    // Generate canonical chunks directly to ensure we have valid chunk IDs
+    const chunks = await createOrGetDocumentChunks(runId);
+    expect(chunks.length).toBeGreaterThanOrEqual(2);
+    // Chunks cover exactly page 1 and page 3 (2 distinct pages)
+    const chunkPageNumbers = new Set(chunks.map((c) => c.page_number));
+    expect(chunkPageNumbers.has(1)).toBe(true);
+    expect(chunkPageNumbers.has(3)).toBe(true);
+    expect(chunkPageNumbers.size).toBe(2);
+
+    const chunk1 = chunks.find((c) => c.page_number === 1)!;
+    const chunk3 = chunks.find((c) => c.page_number === 3)!;
+
+    // Caller maliciously or erroneously sends p_evidence_page_count = 999
+    const { error: persistErr } = await adminClient.rpc(
+      "persist_study_pack_results_privileged",
+      {
+        p_study_pack_id: enqueueRes.studyPackId,
+        p_claim_token: claimToken,
+        p_provider: "mock-provider",
+        p_model: "mock-model",
+        p_input_tokens: 100,
+        p_output_tokens: 50,
+        p_cached_tokens: 0,
+        p_estimated_cost_usd: 0.001,
+        p_source_page_count: 3,
+        p_source_chunk_count: chunks.length,
+        p_evidence_chunk_count: 2,
+        p_evidence_char_count: chunk1.content.length + chunk3.content.length,
+        p_items: [
+          {
+            temp_key: "sum-1",
+            item_type: "SUMMARY",
+            ordinal: 0,
+            payload: { paragraph: "Resumen de antibióticos." },
+          },
+          {
+            temp_key: "obj-1",
+            item_type: "LEARNING_OBJECTIVE",
+            ordinal: 0,
+            payload: {
+              objective: "Comprender betalactámicos y cefalosporinas.",
+            },
+          },
+          {
+            temp_key: "con-1",
+            item_type: "KEY_CONCEPT",
+            ordinal: 0,
+            payload: {
+              title: "Pared Celular",
+              explanation: "Mecanismo betalactámico.",
+            },
+          },
+        ] as unknown as import("@/types/database").Json,
+        p_citations: [
+          { item_temp_key: "sum-1", document_chunk_id: chunk1.id, ordinal: 0 },
+          { item_temp_key: "obj-1", document_chunk_id: chunk1.id, ordinal: 0 },
+          { item_temp_key: "con-1", document_chunk_id: chunk3.id, ordinal: 0 },
+        ] as unknown as import("@/types/database").Json,
+        p_evidence_page_count: 999, // Attempt to forge coverage metadata
+      }
+    );
+    expect(persistErr).toBeNull();
+
+    // Verify DB authoritative persistence: evidence_page_count must be 2, NOT 999!
+    const { data: packRow, error: packErr } = await adminClient
+      .from("study_packs")
+      .select("status, source_page_count, evidence_page_count")
+      .eq("id", enqueueRes.studyPackId)
+      .single();
+
+    expect(packErr).toBeNull();
+    expect(packRow?.status).toBe("READY");
+    expect(packRow?.source_page_count).toBe(3);
+    expect(packRow?.evidence_page_count).toBe(2);
+    expect(packRow?.evidence_page_count).not.toBe(999);
   });
 });

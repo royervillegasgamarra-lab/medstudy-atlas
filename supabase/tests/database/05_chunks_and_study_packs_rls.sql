@@ -6,7 +6,7 @@ BEGIN;
 
 CREATE EXTENSION IF NOT EXISTS pgtap;
 
-SELECT plan(81);
+SELECT plan(82);
 
 -- ============================================================================
 -- 1. Setup Test Fixture Data (Users, Profiles, Subjects, Documents, Runs, Pages)
@@ -747,7 +747,8 @@ SELECT is(
             jsonb_build_object('item_temp_key', 'concept-0', 'document_chunk_id', (SELECT chunk_id FROM second_chunk), 'ordinal', 0),
             jsonb_build_object('item_temp_key', 'hy-0', 'document_chunk_id', (SELECT chunk_id FROM second_chunk), 'ordinal', 0),
             jsonb_build_object('item_temp_key', 'term-0', 'document_chunk_id', (SELECT chunk_id FROM second_chunk), 'ordinal', 0)
-        )
+        ),
+        999 -- p_evidence_page_count: adversarial caller attempts to forge coverage metadata as 999
     ),
     true,
     'Persist: Successful persist of Study Pack items and citations'
@@ -758,6 +759,13 @@ SELECT is(
     (SELECT status FROM public.study_packs WHERE id = (SELECT study_pack_id FROM claimed_pack)),
     'READY',
     'Status: Study pack transitioned to READY'
+);
+
+-- Authoritative Coverage: DB calculates distinct chunk pages (2) and ignores caller-supplied 999
+SELECT is(
+    (SELECT evidence_page_count FROM public.study_packs WHERE id = (SELECT study_pack_id FROM claimed_pack)),
+    2,
+    'Authoritative Coverage: DB ignores caller evidence_page_count 999 and persists calculated 2'
 );
 
 -- Verify normalized items inserted
