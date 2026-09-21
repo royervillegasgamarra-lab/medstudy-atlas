@@ -191,6 +191,7 @@ export async function processNextStudyPackJob(
         p_cached_tokens: genResult.cachedTokens,
         p_estimated_cost_usd: genResult.estimatedCostUsd,
         p_source_page_count: genResult.sourcePageCount,
+        p_evidence_page_count: genResult.evidencePageCount,
         p_source_chunk_count: genResult.sourceChunkCount,
         p_evidence_chunk_count: genResult.evidenceChunkCount,
         p_evidence_char_count: genResult.evidenceCharCount,
@@ -254,7 +255,7 @@ export async function processNextStudyPackJob(
       else if (err.code === "AI_NOT_CONFIGURED")
         errorCode = "AI_NOT_CONFIGURED";
       else errorCode = "WORKER_INTERNAL_ERROR";
-      retryable = err.retryable;
+      retryable = isStudyPackErrorRetryable(errorCode) || err.retryable;
     }
 
     console.error(`[StudyPacksWorker] Job failed with ${errorCode}:`, err);

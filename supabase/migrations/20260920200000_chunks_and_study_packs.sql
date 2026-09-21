@@ -101,6 +101,7 @@ CREATE TABLE IF NOT EXISTS public.study_packs (
     cached_tokens INT NOT NULL DEFAULT 0,
     estimated_cost_usd NUMERIC(10, 6),
     source_page_count INT,
+    evidence_page_count INT,
     source_chunk_count INT,
     evidence_chunk_count INT,
     evidence_char_count INT,
@@ -522,6 +523,10 @@ DECLARE
     v_existing RECORD;
     v_pack RECORD;
 BEGIN
+    -- Acquire transaction-level advisory lock scoped to (document_id, generation_version)
+    -- to serialize concurrent enqueues and guarantee convergent idempotency
+    PERFORM pg_advisory_xact_lock(hashtext(p_document_id::text || ':' || p_generation_version));
+
     -- Verify document is READY and unarchived
     SELECT d.id, d.status, d.archived_at
     INTO v_doc
@@ -554,7 +559,7 @@ BEGIN
     END IF;
 
     -- Check if a study pack row exists
-    SELECT sp.id, sp.document_id, sp.user_id, sp.processing_run_id, sp.chunking_version, sp.generation_version, sp.prompt_version, sp.status, sp.attempt_count
+    SELECT sp.id, sp.document_id, sp.user_id, sp.processing_run_id, sp.chunking_version, sp.generation_version, sp.prompt_version, sp.status, sp.attempt_count, sp.error_code
     INTO v_existing
     FROM public.study_packs sp
     WHERE sp.document_id = p_document_id
@@ -569,8 +574,8 @@ BEGIN
             RETURN;
         END IF;
 
-        -- If FAILED_RETRYABLE: reset to PENDING
-        IF v_existing.status = 'FAILED_RETRYABLE' THEN
+        -- If FAILED_RETRYABLE OR operational configuration failure: reset to PENDING
+        IF v_existing.status = 'FAILED_RETRYABLE' OR (v_existing.status = 'FAILED_FINAL' AND v_existing.error_code IN ('AI_DISABLED', 'AI_NOT_CONFIGURED')) THEN
             UPDATE public.study_packs sp
             SET status = 'PENDING',
                 chunking_version = p_chunking_version,
@@ -591,13 +596,13 @@ BEGIN
             RETURN;
         END IF;
 
-        -- If FAILED_FINAL: cannot re-enqueue
+        -- If FAILED_FINAL with real content/attempt failures: cannot re-enqueue
         IF v_existing.status = 'FAILED_FINAL' THEN
             RAISE EXCEPTION 'Cannot re-enqueue study pack after % failed attempts', v_existing.attempt_count USING ERRCODE = '22023';
         END IF;
     END IF;
 
-    -- Create new PENDING study pack
+    -- Create new PENDING study pack with ON CONFLICT convergence
     INSERT INTO public.study_packs (
         user_id,
         document_id,
@@ -618,6 +623,7 @@ BEGIN
         'PENDING',
         0
     )
+    ON CONFLICT (document_id, processing_run_id, generation_version) DO NOTHING
     RETURNING
         public.study_packs.id,
         public.study_packs.document_id,
@@ -629,6 +635,16 @@ BEGIN
         public.study_packs.status,
         public.study_packs.attempt_count
     INTO v_pack;
+
+    -- If another concurrent insert won the race, fetch and return the winning row
+    IF v_pack.id IS NULL THEN
+        SELECT sp.id, sp.document_id, sp.user_id, sp.processing_run_id, sp.chunking_version, sp.generation_version, sp.prompt_version, sp.status, sp.attempt_count
+        INTO v_pack
+        FROM public.study_packs sp
+        WHERE sp.document_id = p_document_id
+          AND sp.processing_run_id = v_run.id
+          AND sp.generation_version = p_generation_version;
+    END IF;
 
     RETURN QUERY
     SELECT v_pack.id, v_pack.document_id, v_pack.user_id, v_pack.processing_run_id, v_pack.chunking_version, v_pack.generation_version, v_pack.prompt_version, v_pack.status, v_pack.attempt_count;
@@ -759,7 +775,8 @@ CREATE OR REPLACE FUNCTION public.persist_study_pack_results_privileged(
     p_evidence_chunk_count INT,
     p_evidence_char_count INT,
     p_items JSONB,
-    p_citations JSONB
+    p_citations JSONB,
+    p_evidence_page_count INT DEFAULT NULL
 )
 RETURNS BOOLEAN
 LANGUAGE plpgsql
@@ -773,6 +790,8 @@ DECLARE
     v_citation RECORD;
     v_item_id_map JSONB := '{}'::jsonb;
     v_new_item_id UUID;
+    v_authoritative_page_count INT;
+    v_calculated_evidence_pages INT;
 BEGIN
     -- Verify active claim lease and token
     SELECT sp.id, sp.document_id, sp.user_id, sp.processing_run_id, sp.chunking_version, sp.status, sp.claim_token, sp.lease_expires_at
@@ -793,26 +812,26 @@ BEGIN
         RAISE EXCEPTION 'Worker lease expired or null; write revoked' USING ERRCODE = '55000';
     END IF;
 
-    -- Verify document is READY and unarchived
+    -- Verify parent document is active and unarchived
     SELECT d.id, d.status, d.archived_at
     INTO v_doc
     FROM public.documents d
-    WHERE d.id = v_pack.document_id;
+    WHERE d.id = v_pack.document_id AND d.user_id = v_pack.user_id;
 
-    IF NOT FOUND OR v_doc.archived_at IS NOT NULL OR v_doc.status != 'READY' THEN
-        RAISE EXCEPTION 'Document is archived or not READY; persist denied' USING ERRCODE = '55000';
+    IF NOT FOUND OR v_doc.archived_at IS NOT NULL THEN
+        RAISE EXCEPTION 'Document is archived or missing; write revoked' USING ERRCODE = '55000';
     END IF;
 
-    -- Delete old items/citations if any (idempotency)
+    -- Delete any existing items/citations for this study pack (idempotent overwrite)
     DELETE FROM public.study_pack_items WHERE study_pack_id = p_study_pack_id;
 
-    -- Insert items
+    -- Insert normalized items from JSONB array
     FOR v_item IN
         SELECT
             (i->>'temp_key')::TEXT AS temp_key,
             (i->>'item_type')::TEXT AS item_type,
             (i->>'ordinal')::INT AS ordinal,
-            (i->'payload') AS payload
+            (i->'payload')::JSONB AS payload
         FROM jsonb_array_elements(p_items) AS i
     LOOP
         INSERT INTO public.study_pack_items (
@@ -831,11 +850,11 @@ BEGIN
         )
         RETURNING id INTO v_new_item_id;
 
-        -- Record mapping from temp_key to real item UUID
-        v_item_id_map := v_item_id_map || jsonb_build_object(v_item.temp_key, v_new_item_id::text);
+        -- Record mapping from temp_key to generated UUID
+        v_item_id_map := jsonb_set(v_item_id_map, ARRAY[v_item.temp_key], to_jsonb(v_new_item_id::text));
     END LOOP;
 
-    -- Insert citations
+    -- Insert citations with strict ownership and cross-document verification
     FOR v_citation IN
         SELECT
             (c->>'item_temp_key')::TEXT AS item_temp_key,
@@ -843,14 +862,13 @@ BEGIN
             (c->>'ordinal')::INT AS ordinal
         FROM jsonb_array_elements(p_citations) AS c
     LOOP
+        -- Resolve foreign key to inserted item
         v_new_item_id := (v_item_id_map->>v_citation.item_temp_key)::UUID;
-
-        -- Reject unknown item_temp_key (Item 9)
         IF v_new_item_id IS NULL THEN
-            RAISE EXCEPTION 'Unknown citation item_temp_key: %', v_citation.item_temp_key USING ERRCODE = '22023';
+            RAISE EXCEPTION 'Item temp_key % not found in inserted items', v_citation.item_temp_key USING ERRCODE = '22023';
         END IF;
 
-        -- Enforce cross-document citation integrity (Item 8)
+        -- Verify cited chunk belongs strictly to this document, run, chunking version, and user
         IF NOT EXISTS (
             SELECT 1 FROM public.document_chunks dc
             WHERE dc.id = v_citation.document_chunk_id
@@ -859,9 +877,8 @@ BEGIN
               AND dc.user_id = v_pack.user_id
               AND dc.chunking_version = v_pack.chunking_version
         ) THEN
-            RAISE EXCEPTION 'Citation chunk % does not belong to study pack document % (run %, version %)',
-                v_citation.document_chunk_id, v_pack.document_id, v_pack.processing_run_id, v_pack.chunking_version
-                USING ERRCODE = '22023';
+            RAISE EXCEPTION 'Citation references chunk % not belonging to study pack document % (run %, version %)',
+                v_citation.document_chunk_id, v_pack.document_id, v_pack.processing_run_id, v_pack.chunking_version USING ERRCODE = '22023';
         END IF;
 
         INSERT INTO public.study_pack_item_citations (
@@ -892,6 +909,15 @@ BEGIN
         RAISE EXCEPTION 'Study pack cannot be marked READY with uncited items' USING ERRCODE = '55000';
     END IF;
 
+    -- Authoritative page counts: source_page_count from document_processing_runs, evidence_page_count from distinct pages in document_chunks
+    SELECT pr.page_count INTO v_authoritative_page_count
+    FROM public.document_processing_runs pr
+    WHERE pr.id = v_pack.processing_run_id;
+
+    SELECT COUNT(DISTINCT dc.page_number) INTO v_calculated_evidence_pages
+    FROM public.document_chunks dc
+    WHERE dc.processing_run_id = v_pack.processing_run_id;
+
     -- Update study_packs record to READY
     UPDATE public.study_packs
     SET status = 'READY',
@@ -901,7 +927,8 @@ BEGIN
         output_tokens = p_output_tokens,
         cached_tokens = p_cached_tokens,
         estimated_cost_usd = p_estimated_cost_usd,
-        source_page_count = p_source_page_count,
+        source_page_count = COALESCE(v_authoritative_page_count, p_source_page_count),
+        evidence_page_count = COALESCE(p_evidence_page_count, v_calculated_evidence_pages, 0),
         source_chunk_count = p_source_chunk_count,
         evidence_chunk_count = p_evidence_chunk_count,
         evidence_char_count = p_evidence_char_count,
@@ -917,8 +944,8 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION public.persist_study_pack_results_privileged(UUID, UUID, TEXT, TEXT, INT, INT, INT, NUMERIC, INT, INT, INT, INT, JSONB, JSONB) FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.persist_study_pack_results_privileged(UUID, UUID, TEXT, TEXT, INT, INT, INT, NUMERIC, INT, INT, INT, INT, JSONB, JSONB) TO service_role;
+REVOKE ALL ON FUNCTION public.persist_study_pack_results_privileged(UUID, UUID, TEXT, TEXT, INT, INT, INT, NUMERIC, INT, INT, INT, INT, JSONB, JSONB, INT) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.persist_study_pack_results_privileged(UUID, UUID, TEXT, TEXT, INT, INT, INT, NUMERIC, INT, INT, INT, INT, JSONB, JSONB, INT) TO service_role;
 
 -- ============================================================================
 -- 12. Privileged Function: public.fail_study_pack_privileged()
@@ -958,7 +985,13 @@ BEGIN
         RAISE EXCEPTION 'Worker lease expired or null; write revoked' USING ERRCODE = '55000';
     END IF;
 
-    IF p_retryable AND v_pack.attempt_count < 3 THEN
+    IF p_error_code IN ('AI_DISABLED', 'AI_NOT_CONFIGURED') THEN
+        -- Operational configuration states do not consume attempt budget and are always recoverable
+        v_next_status := 'FAILED_RETRYABLE';
+        UPDATE public.study_packs
+        SET attempt_count = GREATEST(0, attempt_count - 1)
+        WHERE id = p_study_pack_id;
+    ELSIF p_retryable AND v_pack.attempt_count < 3 THEN
         v_next_status := 'FAILED_RETRYABLE';
     ELSE
         v_next_status := 'FAILED_FINAL';

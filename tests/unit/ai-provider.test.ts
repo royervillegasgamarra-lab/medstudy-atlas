@@ -210,15 +210,18 @@ describe("AI Telemetry & Factory", () => {
     }
   });
 
-  it("mock gating: rejects Mock provider outside test environment unless allowMockInNonTest is true", async () => {
+  it("mock gating: unconditionally rejects Mock provider in production environment even with allow flags", async () => {
     const { serverEnv } = await import("@/config/server-env");
     const originalNodeEnv = process.env.NODE_ENV;
     const originalProvider = serverEnv.AI_PROVIDER;
+    const originalEnabled = serverEnv.AI_GENERATION_ENABLED;
     try {
       (process.env as Record<string, string | undefined>).NODE_ENV =
         "production";
       (serverEnv as Record<string, unknown>).AI_PROVIDER = "mock";
+      (serverEnv as Record<string, unknown>).AI_GENERATION_ENABLED = true;
 
+      // In production, getAIProvider must reject mock provider unconditionally
       expect(() => getAIProvider()).toThrow(AIProviderError);
       try {
         getAIProvider();
@@ -227,23 +230,223 @@ describe("AI Telemetry & Factory", () => {
         expect((err as AIProviderError).retryable).toBe(false);
       }
 
-      // Allowed when explicit allowMockInNonTest option is provided
-      const allowed = getAIProvider({ allowMockInNonTest: true });
-      expect(allowed).toBeInstanceOf(MockAIProvider);
-
-      // Allowed when explicit ALLOW_MOCK_AI=true env flag is provided
+      // Overriding options must NOT bypass production denial
+      expect(() => getAIProvider({ allowMockInNonTest: true })).toThrow(
+        AIProviderError
+      );
       try {
-        process.env.ALLOW_MOCK_AI = "true";
-        const allowedEnv = getAIProvider();
-        expect(allowedEnv).toBeInstanceOf(MockAIProvider);
-      } finally {
-        delete process.env.ALLOW_MOCK_AI;
+        getAIProvider({ allowMockInNonTest: true });
+      } catch (err) {
+        expect((err as AIProviderError).code).toBe("AI_NOT_CONFIGURED");
       }
+
+      // Passing MockAIProvider via forceProvider in production must also be rejected
+      const mockInstance = new MockAIProvider();
+      expect(() => getAIProvider({ forceProvider: mockInstance })).toThrow(
+        AIProviderError
+      );
+      expect(mockInstance.callCount).toBe(0);
     } finally {
       (process.env as Record<string, string | undefined>).NODE_ENV =
         originalNodeEnv;
       (serverEnv as Record<string, unknown>).AI_PROVIDER = originalProvider;
+      (serverEnv as Record<string, unknown>).AI_GENERATION_ENABLED =
+        originalEnabled;
     }
+  });
+
+  it("mock gating: allows Mock provider in non-production when explicitly allowed for testing", async () => {
+    const { serverEnv } = await import("@/config/server-env");
+    const originalNodeEnv = process.env.NODE_ENV;
+    const originalProvider = serverEnv.AI_PROVIDER;
+    const originalAllowMock = process.env.ALLOW_MOCK_AI;
+    try {
+      (process.env as Record<string, string | undefined>).NODE_ENV =
+        "development";
+      (serverEnv as Record<string, unknown>).AI_PROVIDER = "mock";
+      delete process.env.ALLOW_MOCK_AI;
+
+      // Denied by default in development without option or flag
+      expect(() => getAIProvider()).toThrow(AIProviderError);
+
+      // Allowed when explicit allowMockInNonTest option is provided
+      const allowed = getAIProvider({ allowMockInNonTest: true });
+      expect(allowed).toBeInstanceOf(MockAIProvider);
+
+      // Allowed when ALLOW_MOCK_AI="true" is set in development
+      process.env.ALLOW_MOCK_AI = "true";
+      const allowedByEnv = getAIProvider();
+      expect(allowedByEnv).toBeInstanceOf(MockAIProvider);
+    } finally {
+      (process.env as Record<string, string | undefined>).NODE_ENV =
+        originalNodeEnv;
+      (serverEnv as Record<string, unknown>).AI_PROVIDER = originalProvider;
+      if (originalAllowMock !== undefined) {
+        process.env.ALLOW_MOCK_AI = originalAllowMock;
+      } else {
+        delete process.env.ALLOW_MOCK_AI;
+      }
+    }
+  });
+
+  describe("AI Provider Endpoint Fail-Closed Validation", () => {
+    it("rejects non-mock provider when model is empty", async () => {
+      const { validateAIProviderEndpoint } =
+        await import("@/modules/ai/provider-factory");
+      expect(() =>
+        validateAIProviderEndpoint({
+          provider: "openai",
+          model: "",
+          apiKey: "test-key",
+        })
+      ).toThrow(AIProviderError);
+    });
+
+    it("rejects non-mock provider when API key is missing", async () => {
+      const { validateAIProviderEndpoint } =
+        await import("@/modules/ai/provider-factory");
+      expect(() =>
+        validateAIProviderEndpoint({
+          provider: "openai",
+          model: "gpt-4o",
+          apiKey: "",
+        })
+      ).toThrow(AIProviderError);
+    });
+
+    it("rejects arbitrary provider without explicit baseURL (no silent fallback to OpenAI)", async () => {
+      const { validateAIProviderEndpoint } =
+        await import("@/modules/ai/provider-factory");
+      expect(() =>
+        validateAIProviderEndpoint({
+          provider: "deepseek",
+          model: "deepseek-chat",
+          apiKey: "ds-key",
+        })
+      ).toThrow(AIProviderError);
+
+      try {
+        validateAIProviderEndpoint({
+          provider: "deepseek",
+          model: "deepseek-chat",
+          apiKey: "ds-key",
+        });
+      } catch (err) {
+        expect((err as AIProviderError).code).toBe("AI_NOT_CONFIGURED");
+        expect((err as AIProviderError).message).toContain(
+          'AI_BASE_URL is required for provider "deepseek"'
+        );
+      }
+    });
+
+    it("allows omitted baseURL only for provider=openai", async () => {
+      const { validateAIProviderEndpoint } =
+        await import("@/modules/ai/provider-factory");
+      const res = validateAIProviderEndpoint({
+        provider: "openai",
+        model: "gpt-4o-mini",
+        apiKey: "sk-valid-key",
+      });
+      expect(res.resolvedBaseURL).toBe("https://api.openai.com/v1");
+    });
+
+    it("rejects malformed baseURL", async () => {
+      const { validateAIProviderEndpoint } =
+        await import("@/modules/ai/provider-factory");
+      expect(() =>
+        validateAIProviderEndpoint({
+          provider: "custom",
+          model: "custom-model",
+          apiKey: "key",
+          baseURL: "not-a-url",
+        })
+      ).toThrow(/Invalid AI_BASE_URL/);
+    });
+
+    it("rejects non-http(s) protocols", async () => {
+      const { validateAIProviderEndpoint } =
+        await import("@/modules/ai/provider-factory");
+      expect(() =>
+        validateAIProviderEndpoint({
+          provider: "custom",
+          model: "custom-model",
+          apiKey: "key",
+          baseURL: "ftp://api.example.com/v1",
+        })
+      ).toThrow(/Invalid AI_BASE_URL protocol/);
+    });
+
+    it("rejects plain HTTP endpoints in production", async () => {
+      const { validateAIProviderEndpoint } =
+        await import("@/modules/ai/provider-factory");
+      expect(() =>
+        validateAIProviderEndpoint({
+          provider: "custom",
+          model: "custom-model",
+          apiKey: "key",
+          baseURL: "http://remote-api.internal/v1",
+          nodeEnv: "production",
+        })
+      ).toThrow(/Production AI provider endpoints require HTTPS/);
+    });
+
+    it("rejects non-local plain HTTP endpoints even in development", async () => {
+      const { validateAIProviderEndpoint } =
+        await import("@/modules/ai/provider-factory");
+      expect(() =>
+        validateAIProviderEndpoint({
+          provider: "custom",
+          model: "custom-model",
+          apiKey: "key",
+          baseURL: "http://remote-server.com/v1",
+          nodeEnv: "development",
+        })
+      ).toThrow(/Non-local HTTP AI endpoint/);
+    });
+
+    it("allows local plain HTTP endpoints in development (e.g. localhost/127.0.0.1)", async () => {
+      const { validateAIProviderEndpoint } =
+        await import("@/modules/ai/provider-factory");
+      const res = validateAIProviderEndpoint({
+        provider: "ollama",
+        model: "llama3",
+        apiKey: "ollama-key",
+        baseURL: "http://localhost:11434/v1",
+        nodeEnv: "development",
+      });
+      expect(res.resolvedBaseURL).toBe("http://localhost:11434/v1");
+    });
+  });
+
+  describe("AI Provider Timeout & Token Bounds Contract", () => {
+    it("enforces AbortSignal timeout and maps to AI_TIMEOUT immediately without waiting", async () => {
+      const mock = new MockAIProvider();
+      const abortedController = new AbortController();
+      abortedController.abort();
+
+      const testSchema = z.object({ value: z.string() });
+
+      await expect(
+        mock.generateStructured({
+          schema: testSchema,
+          schemaName: "TestSchema",
+          systemPrompt: "Sys",
+          userPrompt: "User",
+          abortSignal: abortedController.signal,
+        })
+      ).rejects.toMatchObject({
+        code: "AI_TIMEOUT",
+        retryable: true,
+      });
+    });
+
+    it("records bounded maxTokens on candidate and verification requests", async () => {
+      const { STUDY_PACK_WORKER_LIMITS } =
+        await import("@/config/study-pack-limits");
+      expect(STUDY_PACK_WORKER_LIMITS.maxCandidateTokens).toBe(4096);
+      expect(STUDY_PACK_WORKER_LIMITS.maxVerifierTokens).toBe(2048);
+      expect(STUDY_PACK_WORKER_LIMITS.providerTimeoutSeconds).toBe(60);
+    });
   });
 });
 

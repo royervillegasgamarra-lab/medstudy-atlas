@@ -158,15 +158,24 @@ async function runBenchmark() {
         genResult.evidenceChunkCount > 0 &&
         totalCitations >= totalItems;
 
+      const liveRatio =
+        genResult.supportedRatio != null
+          ? genResult.supportedRatio * 100
+          : genResult.candidateItemCount && genResult.candidateItemCount > 0
+            ? ((genResult.supportedItemCount ?? totalItems) /
+                genResult.candidateItemCount) *
+              100
+            : 0;
+
       results.push({
         fixtureId: fixture.id,
         title: fixture.title,
         pagesCount: genResult.sourcePageCount,
         chunksCount: genResult.sourceChunkCount,
-        candidateItemsCount: totalItems,
-        verifiedItemsCount: totalItems,
-        supportedRatio: isMock ? -1 : 100, // -1 signals N/A in mock mode
-        citationValidity: 100, // Verified citations match source chunks
+        candidateItemsCount: genResult.candidateItemCount ?? totalItems,
+        verifiedItemsCount: genResult.supportedItemCount ?? totalItems,
+        supportedRatio: isMock ? -1 : liveRatio, // -1 signals N/A in mock mode
+        citationValidity: 100, // Verified citations match source chunks deterministically
         inputTokens: genResult.inputTokens,
         outputTokens: genResult.outputTokens,
         estimatedCostUsd: genResult.estimatedCostUsd,
@@ -212,7 +221,7 @@ async function runBenchmark() {
       Págs: r.pagesCount,
       Chunks: r.chunksCount,
       Items: r.verifiedItemsCount,
-      "Soporte Factual":
+      "Ratio Soporte Evidencia":
         r.supportedRatio < 0
           ? "N/A (Mock smoke verifies structural invariants only)"
           : `${r.supportedRatio.toFixed(1)}%`,
@@ -231,6 +240,9 @@ async function runBenchmark() {
   if (isMock) {
     console.log(
       "Note: Mock smoke verifies structural mechanics and pipeline schema validation with $0.00 spend."
+    );
+    console.log(
+      "Quality metric: automated evidence-support ratio. (Mock smoke: N/A; live mode: calculated from automated verifier. No independent gold/human evaluation exists.)"
     );
   }
 

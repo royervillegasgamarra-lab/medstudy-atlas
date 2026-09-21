@@ -18,26 +18,29 @@
 
 1. **Canonical Page-Bounded Chunking Engine (`src/modules/study-packs/chunking.ts`)**:
    - Chunks strictly respect physical PDF page boundaries (`page_start === page_end`). Chunks **never** span multiple pages in v1, eliminating cross-page provenance ambiguity.
-   - Text is partitioned into 400–800 token targets with 10–15% sliding overlap, respecting paragraph and sentence breaks.
+   - Text is partitioned into 1800 character targets (max 2800 characters) with 200 character sliding overlap, respecting paragraph and sentence breaks.
    - Deterministic indexing (`chunk_index` 0..N per document) and character/token estimation.
    - Database UUID refetching: `createOrGetDocumentChunks` persists chunks via `create_document_chunks_privileged` and immediately refetches their database primary keys (`id UUID`), ensuring downstream citation records have valid target UUID foreign keys.
    - Zero-vector architecture: chunking requires no embeddings and no `pgvector` dependencies in Phase 1E.
 
 2. **Database Schema, Composite Foreign Keys & RLS (`supabase/migrations/20260920200000_chunks_and_study_packs.sql`)**:
    - `public.document_chunks`: Stores page-bounded chunks with composite foreign key `(document_id, user_id) REFERENCES documents(id, user_id) ON DELETE CASCADE` and unique constraint `(document_id, chunk_index)`.
-   - `public.study_packs`: Tracks Study Pack lifecycle (`PENDING`, `RUNNING`, `READY`, `FAILED_RETRYABLE`, `FAILED_FINAL`), QA status (`PENDING`, `PASSED`, `FAILED`), lease fencing (`claim_token UUID`, `claimed_by TEXT`, `lease_expires_at TIMESTAMPTZ`), and composite ownership `(id, document_id, user_id)`.
+   - `public.study_packs`: Tracks Study Pack lifecycle (`PENDING`, `RUNNING`, `READY`, `FAILED_RETRYABLE`, `FAILED_FINAL`), QA status (`PENDING`, `PASSED`, `FAILED`), lease fencing (`claim_token UUID`, `claimed_by TEXT`, `lease_expires_at TIMESTAMPTZ`), authoritative page counts (`source_page_count`, `evidence_page_count`), and composite ownership `(id, document_id, user_id)`.
    - `public.study_pack_items`: Stores structured study content by section (`GENERAL_SUMMARY`, `LEARNING_OBJECTIVE`, `KEY_CONCEPT`, `HIGH_YIELD_POINT`, `KEY_TERM`) with evidence state (`SUPPORTED`, `PARTIALLY_SUPPORTED`, `UNSUPPORTED`) and composite foreign key `(study_pack_id, document_id, user_id) REFERENCES study_packs(id, document_id, user_id) ON DELETE CASCADE`.
    - `public.study_pack_item_citations`: Links study items to chunks with composite FKs `(study_pack_item_id) REFERENCES study_pack_items(id)` and `(chunk_id) REFERENCES document_chunks(id)`.
    - `public.ai_usages`: Logs fine-grained AI consumption telemetry (`input_tokens`, `output_tokens`, `cached_tokens`, `estimated_cost_usd` to 6 decimal places, `latency_ms`, `status`).
    - Strict Row Level Security: Direct mutations (`INSERT`, `UPDATE`, `DELETE`) on all 5 tables are REVOKED from `authenticated` and `anon`. Read access (`SELECT`) is strictly bounded by `auth.uid() = user_id`.
-   - Privileged RPCs (callable only by `service_role`): `create_document_chunks_privileged`, `enqueue_study_pack_privileged`, `claim_next_study_pack`, `persist_study_pack_results_privileged`, `fail_study_pack_privileged`, `record_ai_usage_privileged`. Updated `archive_document_privileged` to cascade clean study packs.
-   - 54 pgTAP tests authored in `supabase/tests/database/05_chunks_and_study_packs_rls.sql` (299 total passing DB tests).
+   - Privileged RPCs (callable only by `service_role`): `create_document_chunks_privileged`, `enqueue_study_pack_privileged` (with `pg_advisory_xact_lock` and `ON CONFLICT DO NOTHING` convergence), `claim_next_study_pack`, `persist_study_pack_results_privileged`, `fail_study_pack_privileged` (refunding attempts on operational failures `AI_DISABLED` and `AI_NOT_CONFIGURED`), `record_ai_usage_privileged`. Updated `archive_document_privileged` to cascade clean study packs.
+   - 64 pgTAP tests authored in `supabase/tests/database/05_chunks_and_study_packs_rls.sql` (309 total passing DB tests).
 
 3. **Thin `AIProvider` Abstraction & Cost Engine (`src/modules/ai/`)**:
    - Thin internal TypeScript abstraction (`AIProvider`) defining `generateStructured`, `generateStream`, and `generateEmbedding`.
    - `MockAIProvider` (`src/modules/ai/mock-provider.ts`): Deterministic test provider returning structured study pack objects grounded in document text with simulated token telemetry and $0.00 spend. Powers 100% of automated unit tests, integration tests, E2E tests, and benchmark runs.
    - `OpenAICompatibleProvider` (`src/modules/ai/openai-compatible-provider.ts`): Production-ready adapter supporting OpenAI and OpenAI-compatible gateways (LiteLLM, Ollama, vLLM) with JSON Schema structured outputs.
-   - Provider Factory (`src/modules/ai/provider-factory.ts`): First evaluates the `AI_GENERATION_ENABLED` kill switch (throws `AI_DISABLED` if false). `MockAIProvider` is restricted to test environments or explicit `allowMockInNonTest: true`, preventing accidental mock usage in production. Outside tests, empty provider throws `AI_NOT_CONFIGURED`.
+   - Provider Factory (`src/modules/ai/provider-factory.ts`):
+     - Unconditional production mock denial: `MockAIProvider` is strictly and unconditionally prohibited in production under any configuration or bypass flag (`NODE_ENV === "production"`).
+     - Fail-closed endpoint validation: requires non-empty model, non-empty API key, explicit `baseURL` for all non-OpenAI providers, and enforces HTTPS in production (permitting HTTP only for localhost in development).
+     - Preflight assertion `assertAIGenerationAvailable()`: zero-network check prevents queueing or row creation when AI is disabled.
    - Pricing Engine (`src/modules/ai/pricing.ts`): Models input, output, and cached token pricing snapshots. Accurately calculates cached token discounts: `uncachedInput = Math.max(0, inputTokens - cachedTokens)`. Pinned pricing for `gpt-4o`, `gpt-4o-mini`, and embedding models.
    - Telemetry Recorder (`src/modules/ai/telemetry.ts`): Safely records AI usage; automatically skips database writes when `context.feature === 'BENCHMARK'` or when `userId` is absent, preventing foreign key violations during synthetic benchmark runs.
 
@@ -68,10 +71,10 @@
    - Version contract verification: worker verifies job versions match `CHUNKING_VERSION`, `STUDY_PACK_GENERATION_VERSION`, and `STUDY_PACK_PROMPT_VERSION` or fails terminally with `STUDY_PACK_VERSION_UNSUPPORTED`.
 
 6. **Scientific Presentation UI Layer (`src/components/study-packs/study-pack-view.tsx`, `src/app/app/documents/[id]/study-pack/page.tsx`)**:
-   - Scientific presentation interface organizing content into 5 structured sections: Resumen General, Objetivos de Aprendizaje, Conceptos Clave, Puntos de Alto Rendimiento (High-Yield), and Glosario de Términos Clave.
+   - Scientific presentation interface organizing content into 5 structured sections: Resumen General, Objetivos de Aprendizaje, Conceptos Clave, Puntos de Alto Rendimiento (High-Yield), and Glosario de Términos Clave. Puntos clave are described as concepts highlighted in the material as key points for review.
    - Interactive citation badges (`Pág. X`): displays verified page numbers derived by server from canonical chunk relations with source backing disclosure.
    - Educational Clinical Disclaimer Banner: displays prominent advisory ("Material generado como asistencia de estudio. Siempre verifique con las fuentes primarias y criterios clínicos.").
-   - Coverage & Provenance Disclosure Panel: displays total verified items, supported claim percentage, verified page count, and token/cost summary.
+   - Coverage & Provenance Disclosure Panel: displays total verified items, supported claim percentage, and page coverage as "Páginas con evidencia textual: X de Y", where X is `evidencePageCount` and Y is authoritative `sourcePageCount`.
    - React plain-text escaping: all text content is rendered via native React string interpolation with zero `dangerouslySetInnerHTML`, ensuring untrusted medical text cannot execute XSS payloads.
    - Document Library Integration (`src/components/documents/document-library.tsx`): displays live Study Pack lifecycle status badges ("Sin Study Pack", "Generando Study Pack...", "Study Pack Listo", "Error Study Pack") and manual CTA navigation buttons.
    - HTML5 / React Hydration Fix: modified `src/components/ui/badge.tsx` to render `<span>` instead of `<div>`, eliminating React hydration mismatch errors when citation badges are nested inside `<p>` paragraphs.
@@ -84,12 +87,13 @@
      - `bench-path-04.json`: Obstructive vs. restrictive lung diseases.
      - `bench-biling-05.json`: Mixed Spanish-English clinical slide terminology.
    - Clear separation of (A) Mode A Mock Pipeline Smoke ($0.00 spend, structural mechanics check, zero external calls) vs. (B) Mode B Live Model Benchmark.
+   - Live benchmark calculates automated evidence-support ratio from verifier metrics; mock mode reports N/A (structural invariants only) to avoid misleading gold-standard claims.
    - Verifies structural pipeline mechanics across all 5 fixtures with 0 errors, 0 warnings, and $0.00 automated spend (`pnpm ai:benchmark:study-pack`).
 
 8. **Automated Test Suite (100% Pass)**:
-   - 239 Vitest tests passing across 18 test files (`pnpm test`).
+   - 254 Vitest tests passing across 18 test files (200 unit, 54 integration via `pnpm test`).
    - 309 pgTAP database tests passing across 5 test files (`pnpm db:test`).
-   - 1 Playwright E2E test passing (`tests/e2e/study-packs.spec.ts`) validating full upload -> document processing -> manual study pack trigger -> worker execution -> verified study pack UI render -> library badge verification, with screenshot captured at `docs/screenshots/phase-01e-study-pack-view.png`.
+   - 19 Playwright E2E tests passing across 7 suites (`pnpm test:e2e`), including `tests/e2e/study-packs.spec.ts` validating full upload -> document processing -> manual study pack trigger -> worker execution -> verified study pack UI render -> library badge verification, with screenshot captured at `docs/screenshots/phase-01e-study-pack-view.png`.
 
 ---
 
@@ -186,12 +190,15 @@
   - Server-Derived Provenance: AI model outputs only chunk IDs; server maps chunk IDs to database page numbers, preventing hallucinated page citations.
   - Educational Disclaimer: UI explicitly presents content for medical study preparation, not real-patient clinical decision-making.
   - PHI Audit: Zero patient data, credentials, or private keys committed.
+- **Cost Abuse Deployment Gate**:
+  - In Phase 1E (local development & testing), `AI_GENERATION_ENABLED=false` remains the fail-safe default, and mock provider usage is unconditionally prohibited in production environments.
+  - Per-user generation quotas, daily attempt limits, provider-level cost circuit breakers, and rate limiters are strictly documented and enforced as mandatory deployment prerequisites before connecting live paid external AI endpoints.
 - **Environment Variables**:
   - `AI_GENERATION_ENABLED` (default: `"false"`, strictly parsed boolean)
-  - `AI_PROVIDER` (default: `""`, mock gated strictly to test)
+  - `AI_PROVIDER` (default: `""`, mock gated strictly to non-production and test)
   - `AI_MODEL` (default: `""`)
-  - `AI_API_KEY` (optional, required only for OpenAI-compatible live provider)
-  - `AI_BASE_URL` (optional, default: OpenAI API URL)
+  - `AI_API_KEY` (optional, required only for live providers)
+  - `AI_BASE_URL` (optional, required for all non-OpenAI live providers)
   - No secret values committed.
 
 ---
@@ -199,16 +206,16 @@
 ## 5. Verification & Quality
 
 - **Tests / Checks Executed**:
-  - `pnpm format:check` -> PASS (All matched files use Prettier)
+  - `pnpm format:check` -> PASS (All matched files use Prettier code style)
   - `pnpm lint` -> PASS (0 warnings, 0 errors)
   - `pnpm typecheck` -> PASS (0 TypeScript errors)
-  - `pnpm test` -> PASS (239 tests passing across 18 test files)
-  - `pnpm db:reset` -> PASS (Migrations applied cleanly)
+  - `pnpm test` -> PASS (254 tests passing across 18 test files: 200 unit, 54 integration)
+  - `pnpm db:reset` -> PASS (5 migrations applied cleanly)
   - `pnpm db:types` -> PASS (Types generated into `src/types/database.ts`)
   - `pnpm db:test` -> PASS (309 pgTAP tests passing across 5 test files)
-  - `pnpm build` -> PASS (Production build successful)
-  - `pnpm ai:benchmark:study-pack` -> PASS (Mode A Mock Smoke: 5/5 synthetic fixtures passed, 0 errors, $0.00 cost)
-  - `pnpm test:e2e tests/e2e/study-packs.spec.ts` -> PASS (1 test passing)
+  - `pnpm build` -> PASS (Production build successful with Next.js Turbopack)
+  - `pnpm ai:benchmark:study-pack` -> PASS (Mode A Mock Smoke: 5/5 synthetic fixtures passed, 0 errors, automated evidence-support ratio reported as N/A, $0.00 cost)
+  - `pnpm test:e2e` -> PASS (19 Playwright tests passing across 7 suites)
 - **Browser Verification**:
   - Full E2E browser test executed via Playwright (`tests/e2e/study-packs.spec.ts`).
   - Document uploaded, processed, manual Study Pack triggered, worker executed, and verified Study Pack UI rendered cleanly.

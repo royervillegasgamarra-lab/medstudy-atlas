@@ -12,6 +12,8 @@ import { AIProviderError } from "./types";
 import { calculateEstimatedCostUsd } from "./pricing";
 import { recordAITelemetry } from "./telemetry";
 
+import { validateAIProviderEndpoint } from "./provider-factory";
+
 export interface OpenAICompatibleConfig {
   providerName?: string;
   model: string;
@@ -25,12 +27,20 @@ export class OpenAICompatibleProvider implements AIProvider {
   private readonly client: ReturnType<typeof createOpenAICompatible>;
 
   constructor(config: OpenAICompatibleConfig) {
+    const { resolvedBaseURL } = validateAIProviderEndpoint({
+      provider: config.providerName || "openai-compatible",
+      model: config.model,
+      apiKey: config.apiKey,
+      baseURL: config.baseURL,
+      nodeEnv: process.env.NODE_ENV,
+    });
+
     this.name = config.providerName || "openai-compatible";
     this.model = config.model;
     this.client = createOpenAICompatible({
       name: this.name,
       apiKey: config.apiKey,
-      baseURL: config.baseURL || "https://api.openai.com/v1",
+      baseURL: resolvedBaseURL,
     });
   }
 

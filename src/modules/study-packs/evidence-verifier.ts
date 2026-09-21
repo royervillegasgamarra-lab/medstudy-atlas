@@ -31,6 +31,10 @@ export interface EvidenceVerificationResult {
   error?: string;
   items: VerifiedStudyPackItem[];
   citations: VerifiedCitation[];
+  candidateItemCount: number;
+  supportedItemCount: number;
+  unsupportedItemCount: number;
+  supportedRatio: number;
   telemetryTokens: {
     input: number;
     output: number;
@@ -148,6 +152,10 @@ CRITICAL RULES:
       error: `Evidence QA gate failed: only ${supportedCandidateItems.length}/${items.length} items supported (summary: ${summaryCount}, obj: ${objectiveCount}, concept: ${conceptCount}).`,
       items: [],
       citations: [],
+      candidateItemCount: items.length,
+      supportedItemCount: supportedCandidateItems.length,
+      unsupportedItemCount: items.length - supportedCandidateItems.length,
+      supportedRatio,
       telemetryTokens: {
         input: verificationRes.telemetry.inputTokens,
         output: verificationRes.telemetry.outputTokens,
@@ -187,6 +195,10 @@ CRITICAL RULES:
     passed: true,
     items: finalItems,
     citations: finalCitations,
+    candidateItemCount: items.length,
+    supportedItemCount: supportedCandidateItems.length,
+    unsupportedItemCount: items.length - supportedCandidateItems.length,
+    supportedRatio,
     telemetryTokens: {
       input: verificationRes.telemetry.inputTokens,
       output: verificationRes.telemetry.outputTokens,

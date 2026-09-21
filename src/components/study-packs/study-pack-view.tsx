@@ -95,6 +95,7 @@ export function StudyPackViewComponent({
             generationVersion: "sp-gen-v1",
             promptVersion: "sp-prompt-v1",
             sourcePageCount: document.processing_run?.page_count || 0,
+            evidencePageCount: 0,
             sourceChunkCount: 0,
             evidenceChunkCount: 0,
             evidenceCharCount: 0,
@@ -306,7 +307,8 @@ export function StudyPackViewComponent({
                 </div>
                 <p className="text-xs text-muted-foreground">
                   Diferenciales clínicos, asociaciones clave y conceptos
-                  frecuentemente evaluados en exámenes médicos.
+                  destacados en el material como puntos clave para repasar este
+                  documento.
                 </p>
               </div>
             </div>
@@ -395,10 +397,9 @@ export function StudyPackViewComponent({
                 </p>
                 {studyPack.errorCode === "STUDY_PACK_EVIDENCE_QA_FAILED" && (
                   <p className="text-xs text-muted-foreground max-w-md mx-auto">
-                    El control de calidad determinista descartó el paquete
-                    porque la proporción de afirmaciones verificadas con
-                    respaldo en el texto fuente no alcanzó el umbral mínimo de
-                    seguridad.
+                    La verificación automatizada de evidencia descartó el
+                    paquete porque la proporción de afirmaciones respaldadas en
+                    el texto fuente no alcanzó el umbral mínimo de seguridad.
                   </p>
                 )}
               </div>
@@ -470,10 +471,10 @@ export function StudyPackViewComponent({
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
                 <div className="space-y-0.5">
                   <span className="text-muted-foreground">
-                    Páginas de origen
+                    Páginas con evidencia textual
                   </span>
                   <p className="font-semibold text-foreground">
-                    {studyPack.sourcePageCount}
+                    {studyPack.evidencePageCount} de {studyPack.sourcePageCount}
                   </p>
                 </div>
                 <div className="space-y-0.5">

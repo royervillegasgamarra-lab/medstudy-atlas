@@ -524,6 +524,7 @@ export type Database = {
           estimated_cost_usd: number | null;
           evidence_char_count: number | null;
           evidence_chunk_count: number | null;
+          evidence_page_count: number | null;
           finished_at: string | null;
           generation_version: string;
           id: string;
@@ -553,6 +554,7 @@ export type Database = {
           estimated_cost_usd?: number | null;
           evidence_char_count?: number | null;
           evidence_chunk_count?: number | null;
+          evidence_page_count?: number | null;
           finished_at?: string | null;
           generation_version?: string;
           id?: string;
@@ -582,6 +584,7 @@ export type Database = {
           estimated_cost_usd?: number | null;
           evidence_char_count?: number | null;
           evidence_chunk_count?: number | null;
+          evidence_page_count?: number | null;
           finished_at?: string | null;
           generation_version?: string;
           id?: string;
@@ -856,6 +859,7 @@ export type Database = {
           p_estimated_cost_usd: number;
           p_evidence_char_count: number;
           p_evidence_chunk_count: number;
+          p_evidence_page_count?: number;
           p_input_tokens: number;
           p_items: Json;
           p_model: string;

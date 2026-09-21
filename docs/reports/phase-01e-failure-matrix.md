@@ -3,7 +3,7 @@
 - **Phase**: Vertical Slice 1E — Deterministic Chunking, Evidence Layer & Study Pack Generation
 - **Mode**: LOCAL-FIRST
 - **Branch**: `phase/01e-study-packs`
-- **Scope**: Canonical page-bounded chunking engine, evidence layer, two-call LLM generation and verification pipeline, deterministic citation validator, strict QA quality gates, worker queue lease fencing, and error taxonomy.
+- **Scope**: Canonical page-bounded chunking engine, evidence layer, two-call LLM generation and verification pipeline, deterministic citation validator, strict QA quality gates, worker queue lease fencing, idempotency convergence, fail-closed provider gating, and error taxonomy.
 
 ---
 
@@ -23,8 +23,8 @@ The canonical source of truth for error codes is `STUDY_PACK_ERROR_CODES` in `sr
 ### AI Provider & Runtime Error Codes (6)
 | Error Code | Retryable? | Trigger / Description |
 | :--- | :--- | :--- |
-| `AI_DISABLED` | No | AI generation is disabled by the server kill switch (`AI_GENERATION_ENABLED=false`). |
-| `AI_NOT_CONFIGURED` | No | AI provider or API key is not configured in server environment, or Mock provider was invoked outside test environment without authorization. |
+| `AI_DISABLED` | **Yes (Operational / Recoverable)** | AI generation is disabled by the server kill switch (`AI_GENERATION_ENABLED=false`). In worker, transitions to `FAILED_RETRYABLE` without consuming attempt budget (refunded), enabling re-enqueue once re-enabled. |
+| `AI_NOT_CONFIGURED` | **Yes (Operational / Recoverable)** | AI provider or API key is not configured in server environment, or Mock provider was invoked outside test/dev environment without authorization. Transitions to `FAILED_RETRYABLE` without consuming attempt budget. |
 | `AI_RATE_LIMITED` | **Yes** | AI provider returned HTTP 429 (rate limited / quota exceeded). |
 | `AI_TIMEOUT` | **Yes** | AI provider request exceeded execution timeout (60s default via AbortSignal). |
 | `AI_PROVIDER_UNAVAILABLE` | **Yes** | Downstream provider 5xx server error, transient network disconnect, or malformed HTTP response. |
@@ -36,7 +36,7 @@ The canonical source of truth for error codes is `STUDY_PACK_ERROR_CODES` in `sr
 | `STUDY_PACK_INPUT_LIMIT` | No | Total evidence characters exceed budget limit (`maxEvidenceChars`: 100,000) or chunks exceed limit (`maxEvidenceChunks`: 80). |
 | `STUDY_PACK_SCHEMA_INVALID` | **Yes** | Structured JSON response failed Zod schema validation (e.g., candidate or verification payload bounds violated). |
 | `STUDY_PACK_CITATION_INVALID` | **Yes** | Citation validation failed (e.g., citation references an unknown chunk ID or cross-document chunk). |
-| `STUDY_PACK_EVIDENCE_QA_FAILED` | No | Candidate pack failed QA quality gate: less than 50% of claims verified as `SUPPORTED`, or missing mandatory sections. |
+| `STUDY_PACK_EVIDENCE_QA_FAILED` | No | Candidate pack failed automated evidence verification: less than 50% of claims verified as `SUPPORTED`, or missing mandatory sections. |
 | `STUDY_PACK_VERSION_UNSUPPORTED` | No | Job contract version mismatch: chunking, generation, or prompt version does not match active worker constants. |
 
 ### Worker Orchestration & Lease Error Codes (3)
@@ -77,14 +77,21 @@ The canonical source of truth for error codes is `STUDY_PACK_ERROR_CODES` in `sr
 | **PACK-23** | React XSS injection defense | Prompt injection strings and clinical text rendered via React plain-text escaping; zero `dangerouslySetInnerHTML` | E2E & Component | `src/components/study-packs/study-pack-view.tsx` & `tests/e2e/study-packs.spec.ts` | **PASS** |
 | **PACK-24** | HTML5 / React hydration valid markup | Shadcn `Badge` renders `<span>` instead of `<div>`, preventing DOM nesting violations inside `<p>` citation tags | Component & E2E | `src/components/ui/badge.tsx` & `tests/e2e/study-packs.spec.ts` | **PASS** |
 | **PACK-25** | E2E Study Pack generation lifecycle UI | Full flow: upload -> process document -> trigger study pack -> worker -> view rendered sections and citations | E2E (Playwright) | `tests/e2e/study-packs.spec.ts` (`Study Pack Generation & Evidence View: generates and displays verified study pack`) | **PASS** |
+| **PACK-26** | Concurrent generation enqueue convergence | Concurrent generation requests on the same document serialize via `pg_advisory_xact_lock` and converge on the same DB row via `ON CONFLICT DO NOTHING` | Integration (Vitest) | `tests/integration/study-packs-worker.test.ts` (`converges concurrent generation requests on the same document to the same study pack row`) | **PASS** |
+| **PACK-27** | Zero-row preflight rejection when AI disabled | `assertAIGenerationAvailable()` runs before enqueue; trips fast without writing database rows or consuming attempt budget; succeeds cleanly when re-enabled | Integration (Vitest) | `tests/integration/study-packs-worker.test.ts` (`rejects generation preflight when AI is disabled without creating database rows, then succeeds when re-enabled`) | **PASS** |
+| **PACK-28** | Operational failure safety (race condition) | If AI is disabled after enqueue, worker transitions job to `FAILED_RETRYABLE` and refunds the attempt (`attempt_count = 0`), remaining recoverable | Integration (Vitest) | `tests/integration/study-packs-worker.test.ts` (`transitions to FAILED_RETRYABLE without consuming attempt budget if AI is disabled after enqueue`) | **PASS** |
+| **PACK-29** | Authoritative Source vs Evidence Page Coverage | `source_page_count` is authoritatively derived from processing run; `evidence_page_count` reflects distinct chunk pages; correctly reflects documents with `NO_TEXT` pages | Integration & Database | `tests/integration/study-packs-worker.test.ts` (`correctly records source_page_count and evidence_page_count when some pages have no text`) | **PASS** |
+| **PACK-30** | Unconditional Mock Provider Denial in Production | In `NODE_ENV === "production"`, `MockAIProvider` is unconditionally rejected regardless of bypass flags or forced provider | Unit (Vitest) | `tests/unit/ai-provider.test.ts` (`production mock denial: unconditionally rejects MockAIProvider when NODE_ENV === 'production'`) | **PASS** |
+| **PACK-31** | Fail-Closed AI Endpoint Validation | Non-empty model, non-empty API key, explicit `baseURL` required for all non-OpenAI providers, HTTPS strictly enforced in production | Unit (Vitest) | `tests/unit/ai-provider.test.ts` (`AI Provider Endpoint Fail-Closed Validation`) | **PASS** |
+| **PACK-32** | Cost Abuse Deployment Gate | Quotas, per-user generation budgets, circuit breakers, and rate limiters documented as mandatory deployment prerequisites before public external AI enablement | Architecture / Policy | `docs/reports/phase-01e-study-packs.md` & `docs/security/threat-model.md` | **PASS** |
 
 ---
 
 ## 3. Verification Summary
 - **Database Test Suite (`supabase/tests/database/`)**: 309 pgTAP tests passing across 5 suites (64 in `05_chunks_and_study_packs_rls.sql`).
-- **Unit Test Suite (`tests/unit/`)**: 190 unit tests passing across 15 suites (including `chunking.test.ts`, `ai-provider.test.ts`, `evidence-verifier.test.ts`, `citation-validator.test.ts`, `config.test.ts`).
-- **Integration Test Suite (`tests/integration/`)**: 49 tests passing across 3 suites (7 in `study-packs-worker.test.ts`, 17 in `processing-worker.test.ts`, 27 in `storage-security.test.ts` - Note: test file totals sum to 51).
-- **Vitest Total (`pnpm test`)**: 239 tests passing across 18 test files.
-- **Benchmark Suite (`pnpm ai:benchmark:study-pack`)**: Mode A Mock Pipeline Smoke passed with 5/5 synthetic fixtures, structural mechanics verified, and $0.00 spend.
+- **Unit Test Suite (`tests/unit/`)**: 200 unit tests passing across 15 suites (including `chunking.test.ts`, `ai-provider.test.ts`, `evidence-verifier.test.ts`, `citation-validator.test.ts`, `config.test.ts`).
+- **Integration Test Suite (`tests/integration/`)**: 54 tests passing across 3 suites (10 in `study-packs-worker.test.ts`, 17 in `processing-worker.test.ts`, 27 in `storage-security.test.ts`).
+- **Vitest Total (`pnpm test`)**: 254 tests passing across 18 test files.
+- **Benchmark Suite (`pnpm ai:benchmark:study-pack`)**: Mode A Mock Pipeline Smoke passed with 5/5 synthetic fixtures, structural mechanics verified, automated evidence-support ratio reported as N/A in mock mode, and $0.00 spend.
 - **End-to-End Suite (`tests/e2e/`)**: 19 Playwright tests passing across 7 suites.
 - **Zero Secrets**: Automated audit confirms no secrets, tokens, or credentials committed.

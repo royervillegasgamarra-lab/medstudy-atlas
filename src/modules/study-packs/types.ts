@@ -30,6 +30,8 @@ export function isStudyPackErrorRetryable(code: StudyPackErrorCode): boolean {
     case "AI_RATE_LIMITED":
     case "AI_TIMEOUT":
     case "AI_PROVIDER_UNAVAILABLE":
+    case "AI_DISABLED":
+    case "AI_NOT_CONFIGURED":
     case "STUDY_PACK_SCHEMA_INVALID":
     case "STUDY_PACK_CITATION_INVALID":
     case "STUDY_PACK_LEASE_EXPIRED":
@@ -195,6 +197,7 @@ export interface StudyPackView {
   generationVersion: string;
   promptVersion: string;
   sourcePageCount: number;
+  evidencePageCount: number;
   sourceChunkCount: number;
   evidenceChunkCount: number;
   evidenceCharCount: number;

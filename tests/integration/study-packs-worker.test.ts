@@ -81,7 +81,14 @@ describe("Study Pack Worker & Evidence Layer Integration (Phase 1E)", () => {
 
   // Helper to create a complete document with a SUCCEEDED processing run and pages
   async function createSucceededDocumentWithPages(
-    pageTexts: string[] = [
+    pages: (
+      | string
+      | {
+          text: string;
+          classification?:
+            "TEXT_BASED" | "SCANNED" | "MIXED" | "IMAGE_ONLY" | "NO_TEXT";
+        }
+    )[] = [
       "Página 1: Los betalactámicos inhiben la síntesis de la pared celular bacteriana uniendo transpeptidasas PBPs.",
       "Página 2: La resistencia a meticilina en S. aureus está mediada por el gen mecA que codifica la PBP2a.",
     ]
@@ -113,31 +120,38 @@ describe("Study Pack Worker & Evidence Layer Integration (Phase 1E)", () => {
         user_id: testUserId,
         status: "SUCCEEDED",
         attempt_count: 1,
-        page_count: pageTexts.length,
+        page_count: pages.length,
       });
     expect(runErr).toBeNull();
 
     // 3. Insert document pages
-    const pageRows = pageTexts.map((text, idx) => ({
-      id: crypto.randomUUID(),
-      document_id: docId,
-      processing_run_id: runId,
-      user_id: testUserId,
-      page_number: idx + 1,
-      text_content: text,
-      char_count: text.length,
-      native_char_count: text.length,
-      ocr_char_count: 0,
-      classification: "TEXT_BASED",
-      extraction_method: "NATIVE",
-      width_points: 595,
-      height_points: 842,
-      rotation_degrees: 0,
-      text_sha256: crypto
-        .createHash("sha256")
-        .update(text, "utf8")
-        .digest("hex"),
-    }));
+    const pageRows = pages.map((pageItem, idx) => {
+      const text = typeof pageItem === "string" ? pageItem : pageItem.text;
+      const classification =
+        typeof pageItem === "string"
+          ? "TEXT_BASED"
+          : (pageItem.classification ?? "TEXT_BASED");
+      return {
+        id: crypto.randomUUID(),
+        document_id: docId,
+        processing_run_id: runId,
+        user_id: testUserId,
+        page_number: idx + 1,
+        text_content: text,
+        char_count: text.length,
+        native_char_count: classification === "NO_TEXT" ? 0 : text.length,
+        ocr_char_count: 0,
+        classification,
+        extraction_method: classification === "NO_TEXT" ? "NONE" : "NATIVE",
+        width_points: 595,
+        height_points: 842,
+        rotation_degrees: 0,
+        text_sha256: crypto
+          .createHash("sha256")
+          .update(text, "utf8")
+          .digest("hex"),
+      };
+    });
 
     const { error: pagesErr } = await adminClient
       .from("document_pages")
@@ -340,37 +354,140 @@ describe("Study Pack Worker & Evidence Layer Integration (Phase 1E)", () => {
     expect(pack?.attempt_count).toBe(1);
   });
 
-  it("fails immediately as FAILED_FINAL when AI generation is disabled (kill switch)", async () => {
+  it("rejects generation preflight when AI is disabled without creating database rows, then succeeds when re-enabled", async () => {
     const { docId } = await createSucceededDocumentWithPages();
-    const enqueueRes = await requestStudyPackGeneration(docId, testUserId);
 
     const { serverEnv } = await import("@/config/server-env");
     const originalEnabled = serverEnv.AI_GENERATION_ENABLED;
 
     try {
-      // Trip the kill switch
+      // 1. Trip kill switch before enqueue
       (serverEnv as Record<string, unknown>).AI_GENERATION_ENABLED = false;
 
-      // Process job without passing forced provider so it attempts getAIProvider()
+      // 2. Preflight assertion must fail fast and prevent row creation
+      await expect(
+        requestStudyPackGeneration(docId, testUserId)
+      ).rejects.toThrow(
+        "AI generation is currently disabled by server configuration."
+      );
+
+      // Verify zero study_packs rows exist in database
+      const { data: rows, error: countErr } = await adminClient
+        .from("study_packs")
+        .select("id")
+        .eq("document_id", docId);
+      expect(countErr).toBeNull();
+      expect(rows?.length).toBe(0);
+
+      // 3. Re-enable AI generation
+      (serverEnv as Record<string, unknown>).AI_GENERATION_ENABLED = true;
+
+      // 4. Enqueueing succeeds cleanly
+      const enqueueRes = await requestStudyPackGeneration(docId, testUserId);
+      expect(enqueueRes.studyPackId).toBeDefined();
+      expect(enqueueRes.status).toBe("PENDING");
+
+      const { data: createdRows } = await adminClient
+        .from("study_packs")
+        .select("id")
+        .eq("document_id", docId);
+      expect(createdRows?.length).toBe(1);
+
+      // Clean up enqueued study pack to keep FIFO queue clean for subsequent tests
+      await adminClient
+        .from("study_packs")
+        .delete()
+        .eq("id", enqueueRes.studyPackId);
+    } finally {
+      (serverEnv as Record<string, unknown>).AI_GENERATION_ENABLED =
+        originalEnabled;
+    }
+  });
+
+  it("transitions to FAILED_RETRYABLE without consuming attempt budget if AI is disabled after enqueue", async () => {
+    const { docId } = await createSucceededDocumentWithPages();
+    const enqueueRes = await requestStudyPackGeneration(docId, testUserId);
+    expect(enqueueRes.status).toBe("PENDING");
+
+    const { serverEnv } = await import("@/config/server-env");
+    const originalEnabled = serverEnv.AI_GENERATION_ENABLED;
+
+    try {
+      // Trip the kill switch after enqueue
+      (serverEnv as Record<string, unknown>).AI_GENERATION_ENABLED = false;
+
+      // Process job without passing forced provider so it calls getAIProvider()
       const workerRes = await processNextStudyPackJob();
 
       expect(workerRes.claimed).toBe(true);
       expect(workerRes.status).toBe("FAILED");
       expect(workerRes.errorCode).toBe("AI_DISABLED");
 
-      // Verify the study pack transitioned immediately to FAILED_FINAL
+      // Verify study pack transitioned to FAILED_RETRYABLE and attempt_count was refunded (0)
       const { data: pack } = await adminClient
         .from("study_packs")
-        .select("status, error_code")
+        .select("status, error_code, attempt_count")
         .eq("id", enqueueRes.studyPackId)
         .single();
 
-      expect(pack?.status).toBe("FAILED_FINAL");
+      expect(pack?.status).toBe("FAILED_RETRYABLE");
       expect(pack?.error_code).toBe("AI_DISABLED");
+      expect(pack?.attempt_count).toBe(0);
     } finally {
       (serverEnv as Record<string, unknown>).AI_GENERATION_ENABLED =
         originalEnabled;
     }
+  });
+
+  it("converges concurrent generation requests on the same document to the same study pack row", async () => {
+    const { docId } = await createSucceededDocumentWithPages();
+
+    // Fire 2 concurrent enqueue requests
+    const [res1, res2] = await Promise.all([
+      requestStudyPackGeneration(docId, testUserId),
+      requestStudyPackGeneration(docId, testUserId),
+    ]);
+
+    expect(res1.studyPackId).toBe(res2.studyPackId);
+    expect(res1.status).toBe("PENDING");
+    expect(res2.status).toBe("PENDING");
+
+    // Verify exactly one study pack row exists in the database
+    const { data: packs, error } = await adminClient
+      .from("study_packs")
+      .select("id")
+      .eq("document_id", docId);
+
+    expect(error).toBeNull();
+    expect(packs?.length).toBe(1);
+    expect(packs?.[0].id).toBe(res1.studyPackId);
+
+    // Clean up enqueued row
+    await adminClient.from("study_packs").delete().eq("id", res1.studyPackId);
+  });
+
+  it("correctly records source_page_count and evidence_page_count when some pages have no text", async () => {
+    // Document with 3 pages: page 1 (text), page 2 (no text), page 3 (text)
+    const { docId } = await createSucceededDocumentWithPages([
+      "Página 1: Los antimicrobianos betalactámicos actúan inhibiendo la síntesis de la pared celular bacteriana.",
+      { text: "   ", classification: "NO_TEXT" },
+      "Página 3: Las cefalosporinas de tercera generación presentan cobertura extendida frente a bacilos gramnegativos.",
+    ]);
+
+    const enqueueRes = await requestStudyPackGeneration(docId, testUserId);
+    const workerRes = await processNextStudyPackJob({
+      aiProvider: mockAiProvider,
+    });
+
+    expect(workerRes.claimed).toBe(true);
+    expect(workerRes.studyPackId).toBe(enqueueRes.studyPackId);
+    expect(workerRes.status).toBe("READY");
+
+    const studyPackView = await getStudyPack(docId, testUserId);
+    expect(studyPackView).not.toBeNull();
+    expect(studyPackView?.sourcePageCount).toBe(3);
+    expect(studyPackView?.evidencePageCount).toBe(2);
+    expect(studyPackView?.sourceChunkCount).toBeGreaterThanOrEqual(2);
   });
 
   it("rejects version mismatch immediately with STUDY_PACK_VERSION_UNSUPPORTED", async () => {

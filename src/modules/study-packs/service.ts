@@ -29,6 +29,7 @@ import {
 } from "./evidence-verifier";
 import type { AIProvider, AIRequestContext } from "../ai/types";
 import { AIProviderError } from "../ai/types";
+import { assertAIGenerationAvailable } from "../ai";
 
 export interface GenerationServiceResult {
   items: VerifiedStudyPackItem[];
@@ -38,9 +39,14 @@ export interface GenerationServiceResult {
   cachedTokens: number;
   estimatedCostUsd: number;
   sourcePageCount: number;
+  evidencePageCount: number;
   sourceChunkCount: number;
   evidenceChunkCount: number;
   evidenceCharCount: number;
+  candidateItemCount: number;
+  supportedItemCount: number;
+  unsupportedItemCount: number;
+  supportedRatio: number;
 }
 
 export class StudyPackServiceError extends Error {
@@ -213,8 +219,15 @@ export async function generateStudyPackContent(params: {
   aiProvider: AIProvider;
   feature?: "STUDY_PACK_GEN" | "BENCHMARK";
 }): Promise<GenerationServiceResult> {
-  const { documentId, userId, studyPackId, chunks, aiProvider, feature } =
-    params;
+  const {
+    documentId,
+    userId,
+    processingRunId,
+    studyPackId,
+    chunks,
+    aiProvider,
+    feature,
+  } = params;
 
   // 1. Evidence Budget Checks
   const totalEvidenceChars = chunks.reduce((sum, c) => sum + c.char_count, 0);
@@ -362,8 +375,15 @@ CRITICAL INVARIANTS:
     candidateRes.telemetry.estimatedCostUsd +
     verificationRes.telemetryTokens.cost;
 
-  // Source page count
-  const uniquePages = new Set(chunks.map((c) => c.page_number));
+  // Evidence and source page count
+  const uniqueEvidencePages = new Set(chunks.map((c) => c.page_number));
+  const { data: runData } = await supabaseAdmin
+    .from("document_processing_runs")
+    .select("page_count")
+    .eq("id", processingRunId)
+    .maybeSingle();
+  const authoritativeSourcePageCount =
+    runData?.page_count ?? uniqueEvidencePages.size;
 
   return {
     items: verificationRes.items,
@@ -372,10 +392,15 @@ CRITICAL INVARIANTS:
     outputTokens: totalOutputTokens,
     cachedTokens: totalCachedTokens,
     estimatedCostUsd: totalCost,
-    sourcePageCount: uniquePages.size,
+    sourcePageCount: authoritativeSourcePageCount,
+    evidencePageCount: uniqueEvidencePages.size,
     sourceChunkCount: chunks.length,
     evidenceChunkCount: chunks.length,
     evidenceCharCount: totalEvidenceChars,
+    candidateItemCount: verificationRes.candidateItemCount,
+    supportedItemCount: verificationRes.supportedItemCount,
+    unsupportedItemCount: verificationRes.unsupportedItemCount,
+    supportedRatio: verificationRes.supportedRatio,
   };
 }
 
@@ -409,6 +434,8 @@ export async function getStudyPack(
       generationVersion: pack.generation_version,
       promptVersion: pack.prompt_version,
       sourcePageCount: pack.source_page_count || 0,
+      evidencePageCount:
+        pack.evidence_page_count ?? pack.source_page_count ?? 0,
       sourceChunkCount: pack.source_chunk_count || 0,
       evidenceChunkCount: pack.evidence_chunk_count || 0,
       evidenceCharCount: pack.evidence_char_count || 0,
@@ -471,6 +498,7 @@ export async function getStudyPack(
     generationVersion: pack.generation_version,
     promptVersion: pack.prompt_version,
     sourcePageCount: pack.source_page_count || 0,
+    evidencePageCount: pack.evidence_page_count ?? pack.source_page_count ?? 0,
     sourceChunkCount: pack.source_chunk_count || 0,
     evidenceChunkCount: pack.evidence_chunk_count || 0,
     evidenceCharCount: pack.evidence_char_count || 0,
@@ -481,11 +509,22 @@ export async function getStudyPack(
 
 /**
  * Enqueues a Study Pack generation request idempotently.
+ * Preflight performs a zero-network check of AI configuration; fails fast before any row is created.
  */
 export async function requestStudyPackGeneration(
   documentId: string,
   userId: string
 ): Promise<{ studyPackId: string; status: string }> {
+  // Preflight check: zero-network verification of AI configuration availability
+  try {
+    assertAIGenerationAvailable();
+  } catch (err) {
+    throw mapAIProviderErrorToStudyPackError(
+      err,
+      "Cannot request Study Pack generation"
+    );
+  }
+
   const { data, error } = await supabaseAdmin.rpc(
     "enqueue_study_pack_privileged",
     {
