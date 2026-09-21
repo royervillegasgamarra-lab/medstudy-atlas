@@ -1,0 +1,19 @@
+{
+  "id": "bench-pharm-03",
+  "title": "Farmacología de Antimicrobianos: Betalactámicos y Resistencia",
+  "subject": "Farmacología",
+  "pages": [
+    {
+      "pageNumber": 1,
+      "textContent": "MECANISMO DE ACCIÓN DE LOS ANTIBIÓTICOS BETALACTÁMICOS\n\nLos antibióticos betalactámicos, que engloban penicilinas, cefalosporinas, monobactámicos y carbapenémicos, actúan como análogos estructurales del dipéptido D-alanil-D-alanina. Su efecto bactericida se produce mediante la inhibición covalente e irreversible de las enzimas transpeptidasas (proteínas fijadoras de penicilina o PBP), impidiendo el entrecruzamiento de las cadenas de peptidoglicano en la pared celular bacteriana.\n\nLa pérdida de integridad en la envoltura celular y la activación desregulada de autolisinas bacterianas endógenas desencadenan la lisis osmótica del microorganismo en fase de crecimiento activo."
+    },
+    {
+      "pageNumber": 2,
+      "textContent": "MECANISMOS PRINCIPALES DE RESISTENCIA BACTERIANA\n\nLas bacterias patógenas exhiben cuatro mecanismos cardinales de resistencia frente a los betalactámicos:\n1. Producción de betalactamasas enzimáticas que hidrolizan el anillo betalactámico central (ejemplo: penicilinasas estafilocócicas, betalactamasas de espectro extendido o BLEE y carbapenemasas KPC o NDM).\n2. Modificación del sitio diana por alteración en la afinidad de las PBPs, como ocurre en Staphylococcus aureus resistente a meticilina (SARM) mediante la adquisición del gen mecA que codifica la PBP2a de baja afinidad.\n3. Disminución de la permeabilidad de membrana externa por cierre o mutación de porinas (como OprD en Pseudomonas aeruginosa).\n4. Sobreexpresión de bombas de eflujo activo multidroga."
+    },
+    {
+      "pageNumber": 3,
+      "textContent": "COMBINACIONES CON INHIBIDORES DE BETALACTAMASAS Y FARMACOCINÉTICA\n\nPara contrarrestar la hidrólisis enzimática mediada por betalactamasas comunes, se asocian inhibidores suicidas que carecen de actividad antibacteriana intrínseca pero poseen alta afinidad por el sitio activo de la enzima bacteriana, tales como el ácido clavulánico, tazobactam, sulbactam y avibactam.\n\nDesde el punto de vista farmacocinético/farmacodinámico (PK/PD), los betalactámicos son antimicrobianos tiempo-dependientes (T > CIM). Su eficacia microbiológica y clínica se maximiza manteniendo las concentraciones séricas libres del fármaco por encima de la concentración inhibitoria mínima durante al menos el 40-70% del intervalo posológico."
+    }
+  ]
+}

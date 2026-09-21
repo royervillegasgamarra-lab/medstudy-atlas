@@ -190,31 +190,25 @@ CREATE TABLE document_pages (
 
 CREATE TABLE document_chunks (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    document_id UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE, -- Tenant isolation via documents.user_id join
+    document_id UUID NOT NULL,
+    user_id UUID NOT NULL,
     page_number INT NOT NULL,
     chunk_index INT NOT NULL,
     content TEXT NOT NULL,
-    token_count INT NOT NULL,
-    tsv_content TSVECTOR GENERATED ALWAYS AS (to_tsvector('spanish', content)) STORED,
-    embedding VECTOR(1536), -- INITIAL SCHEMA PLACEHOLDER: specific dimension, provider, and model selected in Slice 1D
-    embedding_provider TEXT, -- e.g. 'openai', 'gemini' (selected in Slice 1D)
-    embedding_model TEXT, -- e.g. 'text-embedding-3-small', 'text-embedding-004'
-    embedding_dimension INT DEFAULT 1536,
-    embedding_version INT NOT NULL DEFAULT 1,
-    metadata JSONB NOT NULL DEFAULT '{}',
+    char_count INT NOT NULL,
+    token_estimate INT NOT NULL,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE(document_id, chunk_index)
+    CONSTRAINT fk_document_chunks_document FOREIGN KEY (document_id, user_id)
+        REFERENCES documents(id, user_id) ON DELETE CASCADE,
+    CONSTRAINT uq_document_chunks_index UNIQUE (document_id, chunk_index),
+    CONSTRAINT chk_document_chunks_char_count CHECK (char_count > 0 AND char_count <= 25000),
+    CONSTRAINT chk_document_chunks_token_estimate CHECK (token_estimate > 0 AND token_estimate <= 10000),
+    CONSTRAINT chk_document_chunks_page_number CHECK (page_number >= 1)
 );
 
--- Re-Embedding Migration Strategy:
--- 1. `embedding_version` tracks model generation (v1=initial, v2=updated).
--- 2. If model/dimension changes, a new column `embedding_v2 VECTOR(N)` is added and populated asynchronously by the worker.
--- 3. Search queries match the active `embedding_version` until all active documents are migrated.
--- 4. `VECTOR(1536)` is an initial schema placeholder. Exact dimension is pinned when AI provider is finalized in Slice 1D.
-
-CREATE INDEX idx_chunks_tsv ON document_chunks USING GIN(tsv_content);
-CREATE INDEX idx_chunks_embedding ON document_chunks USING hnsw (embedding vector_cosine_ops);
-CREATE INDEX idx_chunks_doc_page ON document_chunks(document_id, page_number);
+CREATE INDEX idx_document_chunks_doc_user ON document_chunks(document_id, user_id);
+CREATE INDEX idx_document_chunks_page ON document_chunks(document_id, page_number);
 ```
 
 ### Knowledge Graph (PostgreSQL-Native)
@@ -249,15 +243,74 @@ CREATE INDEX idx_concept_rel_target ON concept_relations(target_concept_id);
 ```sql
 CREATE TABLE study_packs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    document_id UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-    user_id UUID NOT NULL REFERENCES user_profiles(id) ON DELETE CASCADE,
-    summary TEXT NOT NULL,
-    learning_objectives JSONB NOT NULL DEFAULT '[]',
-    key_terms JSONB NOT NULL DEFAULT '[]',
-    status TEXT NOT NULL CHECK (status IN ('GENERATING', 'READY', 'FAILED')),
+    document_id UUID NOT NULL,
+    user_id UUID NOT NULL,
+    status TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'RUNNING', 'READY', 'FAILED_RETRYABLE', 'FAILED_FINAL')),
     qa_status TEXT NOT NULL DEFAULT 'PENDING' CHECK (qa_status IN ('PENDING', 'PASSED', 'FAILED')),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    claim_token UUID,
+    claimed_by TEXT,
+    lease_expires_at TIMESTAMPTZ,
+    attempt_count INT NOT NULL DEFAULT 0,
+    max_attempts INT NOT NULL DEFAULT 3,
+    error_code TEXT,
+    error_message TEXT,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT fk_study_packs_document FOREIGN KEY (document_id, user_id)
+        REFERENCES documents(id, user_id) ON DELETE CASCADE,
+    CONSTRAINT uq_study_packs_document UNIQUE (document_id),
+    CONSTRAINT uq_study_packs_ownership UNIQUE (id, document_id, user_id),
+    CONSTRAINT chk_study_packs_attempts CHECK (attempt_count >= 0 AND attempt_count <= max_attempts)
 );
+
+CREATE INDEX idx_study_packs_user_doc ON study_packs(user_id, document_id);
+CREATE INDEX idx_study_packs_queue ON study_packs(status, created_at) WHERE status IN ('PENDING', 'RUNNING');
+
+CREATE TABLE study_pack_items (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    study_pack_id UUID NOT NULL,
+    document_id UUID NOT NULL,
+    user_id UUID NOT NULL,
+    section_type TEXT NOT NULL CHECK (section_type IN (
+        'GENERAL_SUMMARY',
+        'LEARNING_OBJECTIVE',
+        'KEY_CONCEPT',
+        'HIGH_YIELD_POINT',
+        'KEY_TERM'
+    )),
+    item_order INT NOT NULL,
+    title TEXT,
+    content TEXT NOT NULL,
+    evidence_state TEXT NOT NULL DEFAULT 'SUPPORTED' CHECK (evidence_state IN ('SUPPORTED', 'PARTIALLY_SUPPORTED', 'UNSUPPORTED')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT fk_study_pack_items_pack FOREIGN KEY (study_pack_id, document_id, user_id)
+        REFERENCES study_packs(id, document_id, user_id) ON DELETE CASCADE,
+    CONSTRAINT uq_study_pack_items_order UNIQUE (study_pack_id, section_type, item_order)
+);
+
+CREATE INDEX idx_study_pack_items_pack ON study_pack_items(study_pack_id, item_order);
+
+CREATE TABLE study_pack_item_citations (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    study_pack_item_id UUID NOT NULL,
+    document_id UUID NOT NULL,
+    user_id UUID NOT NULL,
+    chunk_id UUID NOT NULL,
+    page_number INT NOT NULL,
+    quote_snippet TEXT,
+    relevance_score NUMERIC(4, 3) DEFAULT 1.000,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT fk_study_pack_item_citations_item FOREIGN KEY (study_pack_item_id)
+        REFERENCES study_pack_items(id) ON DELETE CASCADE,
+    CONSTRAINT fk_study_pack_item_citations_chunk FOREIGN KEY (chunk_id)
+        REFERENCES document_chunks(id) ON DELETE CASCADE,
+    CONSTRAINT chk_citations_page_positive CHECK (page_number >= 1)
+);
+
+CREATE INDEX idx_study_pack_item_citations_item ON study_pack_item_citations(study_pack_item_id);
+CREATE INDEX idx_study_pack_item_citations_chunk ON study_pack_item_citations(chunk_id);
+
 
 CREATE TABLE flashcards (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -427,20 +480,34 @@ CREATE TABLE citations (
 ```sql
 CREATE TABLE ai_usages (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL REFERENCES user_profiles(id) ON DELETE CASCADE,
-    feature TEXT NOT NULL CHECK (feature IN ('DOCUMENT_PARSING', 'STUDY_PACK_GEN', 'TUTOR_CHAT', 'QUESTION_GEN', 'EMBEDDING')),
+    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    document_id UUID,
+    feature TEXT NOT NULL CHECK (feature IN (
+        'STUDY_PACK_GEN',
+        'STUDY_PACK_VERIFY',
+        'TUTOR_CHAT',
+        'QUESTION_GEN',
+        'SUMMARY',
+        'EMBEDDING',
+        'BENCHMARK'
+    )),
     provider TEXT NOT NULL,
     model TEXT NOT NULL,
-    input_tokens INT NOT NULL,
-    output_tokens INT NOT NULL,
+    input_tokens INT NOT NULL DEFAULT 0,
+    output_tokens INT NOT NULL DEFAULT 0,
     cached_tokens INT NOT NULL DEFAULT 0,
-    estimated_cost_usd NUMERIC(8, 6) NOT NULL,
-    latency_ms INT,
+    estimated_cost_usd NUMERIC(10, 6) NOT NULL DEFAULT 0.000000,
+    latency_ms INT NOT NULL DEFAULT 0,
     status TEXT NOT NULL CHECK (status IN ('SUCCESS', 'FAILED', 'RATE_LIMITED')),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT chk_ai_usages_tokens_non_negative CHECK (input_tokens >= 0 AND output_tokens >= 0 AND cached_tokens >= 0),
+    CONSTRAINT chk_ai_usages_cost_non_negative CHECK (estimated_cost_usd >= 0)
 );
 
 CREATE INDEX idx_ai_usage_user_month ON ai_usages(user_id, created_at);
+CREATE INDEX idx_ai_usage_feature ON ai_usages(user_id, feature, created_at);
+
 
 CREATE TABLE subscriptions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

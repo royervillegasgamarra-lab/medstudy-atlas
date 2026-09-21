@@ -15,6 +15,11 @@ const serverEnvSchema = z.object({
     .string()
     .trim()
     .url("NEXT_PUBLIC_SUPABASE_URL must be a valid URL."),
+  AI_GENERATION_ENABLED: z.coerce.boolean().default(false),
+  AI_PROVIDER: z.string().trim().default("mock"),
+  AI_MODEL: z.string().trim().default("mock-model"),
+  AI_BASE_URL: z.string().trim().optional(),
+  AI_API_KEY: z.string().trim().optional(),
 });
 
 export type ServerEnv = z.infer<typeof serverEnvSchema>;
@@ -30,6 +35,11 @@ function parseServerEnv(): ServerEnv {
   const result = serverEnvSchema.safeParse({
     SUPABASE_SECRET_KEY: secretKey,
     NEXT_PUBLIC_SUPABASE_URL: supabaseUrl,
+    AI_GENERATION_ENABLED: process.env.AI_GENERATION_ENABLED,
+    AI_PROVIDER: process.env.AI_PROVIDER || "mock",
+    AI_MODEL: process.env.AI_MODEL || "mock-model",
+    AI_BASE_URL: process.env.AI_BASE_URL,
+    AI_API_KEY: process.env.AI_API_KEY,
   });
 
   if (!result.success) {

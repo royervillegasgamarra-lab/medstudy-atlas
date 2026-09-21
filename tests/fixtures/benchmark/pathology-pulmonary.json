@@ -1,0 +1,19 @@
+{
+  "id": "bench-path-04",
+  "title": "Patología Respiratoria: Enfermedad Pulmonar Obstructiva Crónica",
+  "subject": "Patología",
+  "pages": [
+    {
+      "pageNumber": 1,
+      "textContent": "DEFINICIÓN Y FISIOPATOLOGÍA DE LA EPOC\n\nLa enfermedad pulmonar obstructiva crónica (EPOC) es un trastorno inflamatorio crónico caracterizado por limitación persistente y progresiva al flujo aéreo, no completamente reversible tras la administración de broncodilatador. Espirométricamente se define por un cociente VEF1/CVF post-broncodilatador menor de 0.70.\n\nEl principal factor de riesgo etiológico a nivel mundial es la exposición al humo del tabaco, seguido por la combustión de biomasa en espacios cerrados. La inhalación crónica de partículas tóxicas induce el reclutamiento de macrófagos alveolares y neutrófilos, los cuales liberan proteasas (como la elastasa neutrofílica y metaloproteinasa MMP-9 y MMP-12) superando la capacidad inhibitoria de la alfa-1 antitripsina endógena."
+    },
+    {
+      "pageNumber": 2,
+      "textContent": "PATOLOGÍA DEL ENFISEMA Y BRONQUITIS CRÓNICA\n\nEl enfisema pulmonar se define anatomopatológicamente como la destrucción permanente de las paredes alveolares distales al bronquiolo terminal sin fibrosis evidente.\n\nEn pacientes fumadores, el patrón lesional característico es el enfisema centroacinar (o centrolobulillar), que afecta predominantemente los segmentos superiores y apicales del pulmón. Por el contrario, el enfisema panacinar afecta la totalidad del acino pulmonar, predomina en las bases pulmonares y es característico del déficit congénito de alfa-1 antitripsina (alelo PiZZ).\n\nLa bronquitis crónica se define clínicamente por la presencia de tos y expectoración durante al menos tres meses al año por dos años consecutivos, caracterizada histológicamente por hipertrofia de las glándulas submucosas bronquiales con índice de Reid superior a 0.50."
+    },
+    {
+      "pageNumber": 3,
+      "textContent": "ALTERACIONES DEL INTERCAMBIO GASEOSO E HIPERTENSIÓN PULMONAR\n\nLa pérdida de retracción elástica pulmonar y el atrapamiento aéreo espiratorio generan hiperinsuflación dinámica y alteración grave de la relación ventilación/perfusión (V/Q).\n\nLa hipoxemia alveolar crónica desencadena vasoconstricción pulmonar hipóxica refleja persistente. Con el tiempo, esto induce remodelado vascular con hipertrofia de la capa media y proliferación intimal de las arteriolas pulmonares, culminando en hipertensión arterial pulmonar secundaria y cor pulmonale crónico (insuficiencia ventricular derecha consecutiva a patología respiratoria primaria)."
+    }
+  ]
+}

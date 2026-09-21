@@ -86,6 +86,8 @@ if (-not $PhaseSlug -or $PhaseSlug -eq "phase-00a") {
         $PhaseSlug = "phase-01c"
     } elseif ($detectedBranch -match "phase/01d") {
         $PhaseSlug = "phase-01d"
+    } elseif ($detectedBranch -match "phase/01e") {
+        $PhaseSlug = "phase-01e"
     }
 }
 
@@ -99,6 +101,7 @@ $branchMatches = switch -Regex ($PhaseSlug) {
     "01?b" { $currentBranch -match "phase/01b" }
     "01?c" { $currentBranch -match "phase/01c" }
     "01?d" { $currentBranch -match "phase/01d" }
+    "01?e" { $currentBranch -match "phase/01e" }
     default { $true }
 }
 if (-not $branchMatches) {
@@ -119,6 +122,7 @@ $phaseIdentifier = switch -Regex ($PhaseSlug) {
     "01?b" { "1B" }
     "01?c" { "1C" }
     "01?d" { "1D" }
+    "01?e" { "1E" }
     default { $PhaseSlug }
 }
 if ($statusContent -notmatch $phaseIdentifier) {
@@ -142,6 +146,7 @@ $phaseTitle = switch -Regex ($PhaseSlug) {
     "01?b" { "Vertical Slice 1B -- Onboarding, Curriculum & Exam Targets" }
     "01?c" { "Vertical Slice 1C -- Document Library & Secure Upload" }
     "01?d" { "Phase 1D $([char]0x2014) Document Processing / Ingestion" }
+    "01?e" { "Phase 1E $([char]0x2014) Deterministic Chunking, Evidence Layer & Study Pack Generation" }
     default { "$PhaseSlug -- Local Review Package" }
 }
 
@@ -244,6 +249,22 @@ $reviewCriteria = switch -Regex ($PhaseSlug) {
             '12. [ ] **Zero Cloud Resources & Paid Services**: Local-First execution; $0.00 cost.'
         )
     }
+    "01?e" {
+        @(
+            '1. [ ] **Page-Bounded Deterministic Chunking**: `document_chunks` partitions physical pages without crossing page boundaries (`page_start === page_end`). Target 400-800 tokens, 10-15% overlap. Primary keys refetched to guarantee valid database UUID provenance for citations.',
+            '2. [ ] **Two-Call LLM Generation & Evidence Verification Pipeline**: Call 1 produces candidate sections (Summary, Objectives, Concepts, High-Yield Points, Key Terms Glossary) with candidate chunk IDs. Call 2 independently verifies factual textual support against cited chunks (`evidence-verifier.ts`).',
+            '3. [ ] **Deterministic Citation Validation (`citation-validator.ts`)**: Model is NEVER trusted to output page numbers. Server validates chunk IDs and derives authoritative page numbers from database chunks. Strips hallucinated chunk IDs. Validates quote snippets with substring and fuzzy matching.',
+            '4. [ ] **Strict QA Quality Gate**: Rejects candidate packs unless satisfying >= 1 Summary, >= 1 Objective, >= 1 Concept, and >= 50% supported claims (`INSUFFICIENT_EVIDENCE` / `FAILED_FINAL`).',
+            '5. [ ] **Cached Study Pack Read Guarantee**: Generated Study Packs are cached in PostgreSQL (`study_packs`, `study_pack_items`, `study_pack_item_citations`). Reloads and views make zero AI calls ($0.00 spend).',
+            '6. [ ] **Thin `AIProvider` Abstraction & Mock Provider**: Application decoupled from heavy agentic frameworks. `MockAIProvider` enables deterministic local verification at $0.00 cost; `OpenAICompatibleProvider` enables production deployment.',
+            '7. [ ] **Cost Engine & Telemetry Tracking**: `pricing.ts` accurately computes token costs with cached token discounting (`uncachedInput = Math.max(0, inputTokens - cachedTokens)`). Telemetry logged to `public.ai_usages` with costs tracked to 6 decimal places.',
+            '8. [ ] **Database Schema, Composite Foreign Keys & RLS**: 5 tables (`document_chunks`, `study_packs`, `study_pack_items`, `study_pack_item_citations`, `ai_usages`) with composite FKs. Direct mutations revoked; privileged RPCs control queue and writes. 54 pgTAP tests passing in `05_chunks_and_study_packs_rls.sql`.',
+            '9. [ ] **Worker Lease Fencing & Concurrency Control**: `study-packs-worker.ts` claims jobs via `claim_next_study_pack` (`FOR UPDATE SKIP LOCKED`) with fencing token `claim_token UUID` and lease expiration. Expired or missing leases immediately revoke write authority with SQLSTATE 55000.',
+            '10. [ ] **Scientific Presentation UI**: Responsive study pack view with interactive citation badges (`Pág. X`), coverage & provenance disclosure panel, library status badges, and React plain-text escaping (zero `dangerouslySetInnerHTML`).',
+            '11. [ ] **Synthetic Medical Lecture Benchmark Harness**: Opt-in developer CLI (`pnpm ai:benchmark:study-pack`) evaluates 5 realistic medical fixtures with 100% QA pass rate and $0.00 cost.',
+            '12. [ ] **Automated Test Suite**: 231 Vitest tests, 299 pgTAP database tests, and Playwright E2E test pass cleanly with zero secrets committed.'
+        )
+    }
     default {
         @(
             '1. [ ] **Local-First Compliance**: Work matches phase objectives without remote dependencies.',
@@ -336,6 +357,18 @@ $nextStep = switch -Regex ($PhaseSlug) {
             'git commit -m "feat(phase-01d): implement secure document processing and page provenance"',
             '```',
             'Then proceed to **Vertical Slice 1E -- Deterministic Chunking & Study Pack Generation** (`phase/01e-study-packs`).'
+        )
+    }
+    "01?e" {
+        @(
+            '## 4. Next Step Upon Approval',
+            "Upon approval of this review package, merge $currentBranch into $BaseBranch locally via squash merge:",
+            '```powershell',
+            "git checkout $BaseBranch",
+            "git merge --squash $currentBranch",
+            'git commit -m "feat(phase-01e): implement deterministic chunking, evidence layer and study pack generation"',
+            '```',
+            'Then proceed to **Vertical Slice 1F -- Context-Grounded AI Tutor & Hybrid Vector Retrieval** (`phase/01f-tutor-rag`).'
         )
     }
     default {
@@ -472,6 +505,12 @@ if (Test-Path (Join-Path $repoRoot "package.json")) {
             )
         }
 
+        if ($PhaseSlug -match "01?e") {
+            $checksToRun += @(
+                @{ Name = "benchmark"; Cmd = "pnpm ai:benchmark:study-pack" }
+            )
+        }
+
         $repoTestResultsDir = Join-Path $repoRoot "test-results"
         if (-not (Test-Path $repoTestResultsDir)) {
             New-Item -ItemType Directory -Path $repoTestResultsDir -Force | Out-Null
@@ -525,6 +564,12 @@ if (Test-Path (Join-Path $repoRoot "package.json")) {
             @{ Label = 'QPDF Version (`qpdf --version`)'; Key = "qpdf-version"; Mandatory = $true },
             @{ Label = 'Tesseract Version (`tesseract --version`)'; Key = "tesseract-version"; Mandatory = $true },
             @{ Label = 'Tesseract Languages (`tesseract --list-langs`)'; Key = "tesseract-langs"; Mandatory = $true }
+        )
+    }
+
+    if ($PhaseSlug -match "01?e") {
+        $checkDefinitions += @(
+            @{ Label = 'AI Benchmark Suite (`pnpm ai:benchmark:study-pack`)'; Key = "benchmark"; Mandatory = $true }
         )
     }
 

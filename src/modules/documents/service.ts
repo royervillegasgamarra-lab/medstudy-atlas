@@ -41,7 +41,7 @@ export async function getUserDocuments(): Promise<
     const { data, error } = await supabase
       .from("documents")
       .select(
-        "*, subject:subjects(id, name), processing_runs:document_processing_runs(id, status, error_code, attempt_count, page_count)"
+        "*, subject:subjects(id, name), processing_runs:document_processing_runs(id, status, error_code, attempt_count, page_count), study_packs:study_packs(id, status, error_code, attempt_count)"
       )
       .is("archived_at", null)
       .order("created_at", { ascending: false });
@@ -53,18 +53,74 @@ export async function getUserDocuments(): Promise<
     const docsWithRun = (data || []).map((d) => {
       const docItem = d as unknown as DocumentWithSubject & {
         processing_runs?: NonNullable<DocumentWithSubject["processing_run"]>[];
+        study_packs?: NonNullable<DocumentWithSubject["study_pack"]>[];
       };
       const runs = docItem.processing_runs || [];
       const latestRun = Array.isArray(runs) && runs.length > 0 ? runs[0] : null;
+      const packs = docItem.study_packs || [];
+      const latestPack =
+        Array.isArray(packs) && packs.length > 0 ? packs[0] : null;
       return {
         ...docItem,
         processing_run: latestRun,
+        study_pack: latestPack,
       };
     });
 
     return { data: docsWithRun as DocumentWithSubject[] };
   } catch {
     return { error: "Error inesperado al cargar documentos." };
+  }
+}
+
+/**
+ * Retrieves a single active document by ID for the authenticated user.
+ */
+export async function getDocumentById(
+  documentId: string
+): Promise<DocumentsResult<DocumentWithSubject>> {
+  try {
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      return { error: "No autenticado." };
+    }
+
+    const { data, error } = await supabase
+      .from("documents")
+      .select(
+        "*, subject:subjects(id, name), processing_runs:document_processing_runs(id, status, error_code, attempt_count, page_count), study_packs:study_packs(id, status, error_code, attempt_count)"
+      )
+      .eq("id", documentId)
+      .is("archived_at", null)
+      .maybeSingle();
+
+    if (error || !data) {
+      return { error: "Documento no encontrado o archivado." };
+    }
+
+    const docItem = data as unknown as DocumentWithSubject & {
+      processing_runs?: NonNullable<DocumentWithSubject["processing_run"]>[];
+      study_packs?: NonNullable<DocumentWithSubject["study_pack"]>[];
+    };
+    const runs = docItem.processing_runs || [];
+    const latestRun = Array.isArray(runs) && runs.length > 0 ? runs[0] : null;
+    const packs = docItem.study_packs || [];
+    const latestPack =
+      Array.isArray(packs) && packs.length > 0 ? packs[0] : null;
+
+    return {
+      data: {
+        ...docItem,
+        processing_run: latestRun,
+        study_pack: latestPack,
+      } as DocumentWithSubject,
+    };
+  } catch {
+    return { error: "Error inesperado al cargar el documento." };
   }
 }
 

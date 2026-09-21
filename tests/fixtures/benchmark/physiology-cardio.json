@@ -1,0 +1,19 @@
+{
+  "id": "bench-phys-02",
+  "title": "Fisiología Cardiovascular: Mecánica Cardíaca y Perfusión",
+  "subject": "Fisiología",
+  "pages": [
+    {
+      "pageNumber": 1,
+      "textContent": "CICLO CARDÍACO Y ACOPLAMIENTO EXCITACIÓN-CONTRACCIÓN\n\nEl ciclo cardíaco comprende una secuencia coordinada de fenómenos eléctricos y mecánicos divididos en sístole y diástole ventriculares. La sístole ventricular inicia con la contracción isovolumétrica inmediatamente posterior al cierre de las válvulas auriculoventriculares (primer ruido cardíaco, R1). Durante esta fase, la presión intraventricular se eleva bruscamente sin variación del volumen ventricular debido a que todas las válvulas permanecen cerradas.\n\nCuando la presión intraventricular supera la presión diastólica de la arteria aorta (aproximadamente 80 mmHg) y de la arteria pulmonar (aproximadamente 10 mmHg), sobreviene la apertura de las válvulas semilunares, dando inicio a la fase de eyección rápida seguida de eyección reducida."
+    },
+    {
+      "pageNumber": 2,
+      "textContent": "MECANISMO DE FRANK-STARLING Y PRECARGA\n\nEl principio de Frank-Starling establece que la fuerza intrínseca de contracción ventricular es directamente proporcional a la longitud inicial de las fibras miocárdicas al final de la diástole (volumen telediastólico ventricular o precarga). A mayor llenado diastólico dentro del límite fisiológico, se produce una mayor sobreposición óptima entre los miofilamentos de actina y miosina, aumentando la afinidad de la troponina C por los iones de calcio.\n\nLa postcarga corresponde a la tensión o resistencia parietal contra la cual el ventrículo izquierdo debe eyectar sangre. De acuerdo a la Ley de Laplace (Tensión = Presión x Radio / 2 x Grosor), la hipertrofia concéntrica adaptativa incrementa el grosor parietal para normalizar el estrés miocárdico en estados de sobrecarga de presión como la estenosis aórtica."
+    },
+    {
+      "pageNumber": 3,
+      "textContent": "PERFUSIÓN CORONARIA Y REGULACIÓN DEL FLUJO SANGUÍNEO\n\nA diferencia del resto de los lechos vasculares sistémicos, el flujo sanguíneo coronario al ventrículo izquierdo ocurre predominantemente durante la diástole (aproximadamente el 75-80% del flujo total). Durante la sístole, la elevada tensión intramiocárdica y la compresión extravascular de las arterias subendocárdicas colapsan los capilares miocárdicos.\n\nLa presión de perfusión coronaria efectiva equivale a la diferencia matemática entre la presión arterial diastólica aórtica y la presión telediastólica del ventrículo izquierdo (PAD aórtica - PTDVI). El principal determinante metabólico de la vasodilatación coronaria en reposo y ejercicio es la adenosina generada por degradación de ATP, acompañada del óxido nítrico derivado del endotelio vascular."
+    }
+  ]
+}

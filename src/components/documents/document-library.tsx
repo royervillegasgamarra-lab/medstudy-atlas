@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import Link from "next/link";
 import {
   FileText,
   Upload,
@@ -33,6 +34,8 @@ import {
   HardDrive,
   Files,
   ExternalLink,
+  BookOpen,
+  Sparkles,
 } from "lucide-react";
 
 interface DocumentLibraryProps {
@@ -294,6 +297,67 @@ export function DocumentLibrary({
     );
   };
 
+  const getStudyPackBadge = (doc: DocumentWithSubject) => {
+    if (doc.status !== "READY" || doc.processing_run?.status !== "SUCCEEDED") {
+      return null;
+    }
+
+    const pack = doc.study_pack;
+    if (!pack) {
+      return (
+        <Badge
+          variant="outline"
+          className="text-xs text-muted-foreground border-border/60"
+        >
+          Sin Study Pack
+        </Badge>
+      );
+    }
+
+    if (pack.status === "READY") {
+      return (
+        <Badge variant="success" className="text-xs gap-1">
+          <BookOpen className="w-3 h-3" />
+          Study Pack Listo
+        </Badge>
+      );
+    }
+    if (pack.status === "PENDING" || pack.status === "GENERATING") {
+      return (
+        <Badge
+          variant="secondary"
+          className="bg-primary/10 text-primary border-primary/20 text-xs flex items-center gap-1"
+        >
+          <Loader2 className="w-3 h-3 animate-spin" />
+          Generando Study Pack
+        </Badge>
+      );
+    }
+    if (pack.status === "FAILED_RETRYABLE") {
+      return (
+        <Badge
+          variant="destructive"
+          className="text-xs"
+          title={pack.error_code || "Error en Study Pack"}
+        >
+          Error Study Pack
+        </Badge>
+      );
+    }
+    if (pack.status === "FAILED_FINAL") {
+      return (
+        <Badge
+          variant="destructive"
+          className="text-xs opacity-80"
+          title={pack.error_code || "Study Pack no disponible"}
+        >
+          Study Pack fallido
+        </Badge>
+      );
+    }
+    return null;
+  };
+
   const storagePercentage = Math.min(
     100,
     Math.round((quotas.totalSizeBytes / quotas.maxTotalBytes) * 100)
@@ -507,6 +571,7 @@ export function DocumentLibrary({
                           {doc.original_filename}
                         </p>
                         {getStatusBadge(doc)}
+                        {getStudyPackBadge(doc)}
                       </div>
 
                       <div className="flex items-center gap-3 text-xs text-muted-foreground flex-wrap">
@@ -564,6 +629,39 @@ export function DocumentLibrary({
                         )}
                         Reintentar
                       </Button>
+                    )}
+
+                    {/* Study Pack Action: available once document processing succeeded */}
+                    {isReady && doc.processing_run?.status === "SUCCEEDED" && (
+                      <Link href={`/app/documents/${doc.id}/study-pack`}>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className={`gap-1.5 text-xs h-8 ${
+                            doc.study_pack?.status === "READY"
+                              ? "text-emerald-600 dark:text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/10"
+                              : "text-primary border-primary/30 hover:bg-primary/10"
+                          }`}
+                        >
+                          {doc.study_pack?.status === "READY" ? (
+                            <>
+                              <BookOpen className="w-3.5 h-3.5" />
+                              Study Pack
+                            </>
+                          ) : doc.study_pack?.status === "GENERATING" ||
+                            doc.study_pack?.status === "PENDING" ? (
+                            <>
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              Study Pack...
+                            </>
+                          ) : (
+                            <>
+                              <Sparkles className="w-3.5 h-3.5" />
+                              Study Pack
+                            </>
+                          )}
+                        </Button>
+                      </Link>
                     )}
 
                     {isReady && (

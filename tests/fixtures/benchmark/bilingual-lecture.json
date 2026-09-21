@@ -1,0 +1,15 @@
+{
+  "id": "bench-biling-05",
+  "title": "Semiología Médica: Insuficiencia Cardíaca / Heart Failure",
+  "subject": "Medicina Interna",
+  "pages": [
+    {
+      "pageNumber": 1,
+      "textContent": "DIAGNÓSTICO CLÍNICO Y CRITERIOS DE FRAMINGHAM (HEART FAILURE CRITERIA)\n\nLa insuficiencia cardíaca (IC) es un síndrome clínico complejo originado por cualquier anomalía estructural o funcional que menoscabe el llenado o la expulsión ventricular de sangre. El diagnóstico clínico se sustenta clásicamente en los Criterios de Framingham, requiriendo la concurrencia simultánea de al menos dos criterios mayores, o bien un criterio mayor y dos criterios menores.\n\nCriterios Mayores (Major Criteria):\n- Disnea paroxística nocturna (Paroxysmal nocturnal dyspnea) u ortopnea.\n- Ingurgitación yugular patológica a 45 grados (Jugular venous distension).\n- Estertores crepitantes pulmonares bibasales (Pulmonary rales).\n- Cardiomegalia radiológica comprobada en telerradiografía de tórax.\n- Edema pulmonar agudo (Acute pulmonary edema).\n- Tercer ruido cardíaco o ritmo de galope protodiastólico (S3 gallop).\n- Reflujo hepatoyugular positivo (Hepatojugular reflux).\n- Pérdida de peso mayor a 4.5 kg en 5 días en respuesta a diuréticos de asa."
+    },
+    {
+      "pageNumber": 2,
+      "textContent": "BIOMARCADORES Y EVALUACIÓN HEMODINÁMICA (BIOMARKERS & HF CLASSIFICATION)\n\nLos péptidos natriuréticos son los biomarcadores cardinales para el despistaje y estratificación pronóstica en disnea aguda:\n- BNP (B-type Natriuretic Peptide): péptido biológicamente activo con vida media de 20 minutos. Un valor menor de 100 pg/mL posee un elevado valor predictivo negativo para descartar insuficiencia cardíaca descompensada.\n- NT-proBNP (N-terminal pro-B-type Natriuretic Peptide): fragmento inactivo con eliminación predominantemente renal y vida media de 60-90 minutos. Sus puntos de corte diagnósticos en urgencias se ajustan según la edad del paciente (450 pg/mL en menores de 50 años, 900 pg/mL entre 50 y 75 años, y 1800 pg/mL en mayores de 75 años).\n\nSegún la fracción de eyección del ventrículo izquierdo (FEVI), las guías internacionales clasifican la entidad en: IC con fracción reducida (HFrEF, FEVI ≤ 40%), IC con fracción levemente reducida (HFmrEF, FEVI 41-49%) y IC con fracción preservada (HFpEF, FEVI ≥ 50%)."
+    }
+  ]
+}

@@ -66,8 +66,8 @@ flowchart TD
 | **Bounded Retry & Terminal Semantics** | `IMPLEMENTED` | Max 3 attempts. `FAILED_RETRYABLE` may be manually re-enqueued; `FAILED_FINAL` cannot be re-enqueued or claimed. UI offers no retry for terminal failures. Hard parser timeouts (`-1`) classified as `PARSER_TIMEOUT` with `p_retryable: true` before manifest check. |
 | **Trusted Provenance Verification** | `IMPLEMENTED` | Trusted Node orchestrator verifies source SHA-256, per-page text SHA-256, Unicode code points, aggregate counters, and pipeline version before persistence. |
 | **Archive Race Closure** | `IMPLEMENTED` | `archive_document_privileged` marks active runs `FAILED_FINAL` (`DOCUMENT_ARCHIVED`) and deletes `document_pages`. Stale worker persist is denied on archived documents. |
-| **Deterministic Chunking** | `DEFERRED` | Formal chunking (400–800 tokens, 10–15% overlap) and concept linking scheduled for **Vertical Slice 1E (Study Pack Generation)**. |
-| **AI Embeddings & Vector Search** | `DEFERRED` | `pgvector` hybrid search and embeddings generation scheduled for **Vertical Slice 1E & 1F**. Zero AI spend in Phase 1D ($0.00). |
+| **Deterministic Chunking** | `IMPLEMENTED` | Canonical page-bounded chunking engine (`src/modules/study-packs/chunking.ts`). Strictly page-bounded (chunks never cross page boundaries in v1). Target 400–800 tokens, 10–15% overlap. In-memory deduplication and deterministic chunk indexes. Zero vector requirement in 1E. |
+| **AI Embeddings & Vector Search** | `DEFERRED` | `pgvector` hybrid search and embeddings generation scheduled for **Vertical Slice 1F (Tutor RAG)**. Zero AI spend in Phase 1E ($0.00). |
 | **Docling Structural Parser** | `DEFERRED` | Heavyweight PyTorch/layout parsing deferred post-MVP. |
 | **Cloud API OCR Fallback** | `DEFERRED` | Zero external cloud OCR APIs enabled. Local Tesseract `spa+eng` is the sole OCR engine. |
 | **Hard Memory Cap & OS Sandbox** | `DEPLOYMENT GATE` | Operating-system-level hard RSS/memory container cap and true OS sandboxing (gVisor / Firecracker / seccomp) constitute an explicit **Deployment Gate** required before public untrusted uploads in production. Currently enforced guards: qpdf preflight (64 KB per stdout/stderr diagnostic stream output cap), 300-page limit, 5000 pt dimension limit, 12M pixel render limit, 100K char/page limit, 600s parser process timeout. |
@@ -125,3 +125,43 @@ pnpm worker:documents --once
 # Run worker as continuous polling daemon with adaptive backoff
 pnpm worker:documents
 ```
+
+---
+
+## 7. Phase 1E: Canonical Page-Bounded Chunking & Study Pack Generation Pipeline
+
+Building on the verified page provenance layer established in Phase 1D, Phase 1E introduces deterministic chunking and evidence-grounded Study Pack generation.
+
+### 7.1 Page-Bounded Canonical Chunking Invariants
+1. **Strict Page Boundaries**: In v1, chunks **never** span multiple pages (`page_start === page_end`). This guarantees unambiguous provenance: every chunk belongs to exactly one physical PDF page.
+2. **Deterministic Token Estimation**: Text is tokenized using character-to-token heuristic estimation (target 400–800 tokens, 10–15% overlap) preserving paragraph and sentence boundaries.
+3. **Chunk Primary Keys & Composite Integrity**: Chunks are stored in `public.document_chunks` with `(document_id, chunk_index)` uniqueness. Inserted chunks receive database-generated UUIDs that serve as target foreign keys for citations.
+4. **Zero-Vector Design in 1E**: The chunking engine requires zero embeddings and zero `pgvector` dependencies in Phase 1E. Embeddings and vector indices are strictly deferred to Phase 1F (Tutor RAG).
+
+### 7.2 Two-Call Generation & Evidence Verification Pipeline
+Study Pack creation uses a bounded two-call model to prevent hallucinations and ungrounded clinical claims:
+1. **CALL 1: Candidate Generation**:
+   - The LLM receives untrusted document chunks serialized as structured JSON data blocks.
+   - It outputs candidate study pack sections: General Summary, Learning Objectives, Key Concepts, High-Yield Points, and Key Terms Glossary.
+   - For every claim, the model attaches candidate chunk IDs.
+2. **CALL 2: Evidence-Support Verification**:
+   - An independent verification prompt inspects candidate items alongside the cited source text chunks.
+   - Each item is classified: `SUPPORTED`, `CONTRADICTED`, or `UNSUPPORTED`.
+   - Items lacking direct textual grounding are stripped from the pack.
+3. **Deterministic Citation Validation**:
+   - The model is **never** trusted to provide page numbers. The server maps validated `chunk_id` values to their authoritative database `page_number` in `document_chunks`.
+4. **Strict QA Status Gate**:
+   - A Study Pack is rejected (`FAILED_FINAL`, `INSUFFICIENT_EVIDENCE`) unless it satisfies:
+     - $\ge 1$ General Summary paragraph
+     - $\ge 1$ Learning Objective
+     - $\ge 1$ Key Concept
+     - $\ge 50\%$ of candidate items verified as `SUPPORTED`.
+5. **Worker Execution Commands**:
+   ```bash
+   # Execute a single Study Pack generation job from the queue and exit
+   pnpm worker:study-packs --once
+
+   # Run Study Pack worker as continuous polling daemon
+   pnpm worker:study-packs
+   ```
+

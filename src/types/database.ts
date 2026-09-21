@@ -34,6 +34,148 @@ export type Database = {
   };
   public: {
     Tables: {
+      ai_usages: {
+        Row: {
+          cached_tokens: number;
+          created_at: string;
+          document_id: string | null;
+          estimated_cost_usd: number;
+          feature: string;
+          id: string;
+          input_tokens: number;
+          latency_ms: number | null;
+          model: string;
+          output_tokens: number;
+          provider: string;
+          status: string;
+          study_pack_id: string | null;
+          user_id: string;
+        };
+        Insert: {
+          cached_tokens?: number;
+          created_at?: string;
+          document_id?: string | null;
+          estimated_cost_usd?: number;
+          feature: string;
+          id?: string;
+          input_tokens?: number;
+          latency_ms?: number | null;
+          model: string;
+          output_tokens?: number;
+          provider: string;
+          status: string;
+          study_pack_id?: string | null;
+          user_id: string;
+        };
+        Update: {
+          cached_tokens?: number;
+          created_at?: string;
+          document_id?: string | null;
+          estimated_cost_usd?: number;
+          feature?: string;
+          id?: string;
+          input_tokens?: number;
+          latency_ms?: number | null;
+          model?: string;
+          output_tokens?: number;
+          provider?: string;
+          status?: string;
+          study_pack_id?: string | null;
+          user_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "ai_usages_document_id_fkey";
+            columns: ["document_id"];
+            isOneToOne: false;
+            referencedRelation: "documents";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "ai_usages_study_pack_id_fkey";
+            columns: ["study_pack_id"];
+            isOneToOne: false;
+            referencedRelation: "study_packs";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      document_chunks: {
+        Row: {
+          char_count: number;
+          chunk_index: number;
+          chunking_version: string;
+          content: string;
+          content_sha256: string;
+          created_at: string;
+          document_id: string;
+          document_page_id: string;
+          end_char: number;
+          id: string;
+          page_number: number;
+          processing_run_id: string;
+          start_char: number;
+          tsv_content: unknown;
+          user_id: string;
+        };
+        Insert: {
+          char_count: number;
+          chunk_index: number;
+          chunking_version?: string;
+          content: string;
+          content_sha256: string;
+          created_at?: string;
+          document_id: string;
+          document_page_id: string;
+          end_char: number;
+          id?: string;
+          page_number: number;
+          processing_run_id: string;
+          start_char: number;
+          tsv_content?: unknown;
+          user_id: string;
+        };
+        Update: {
+          char_count?: number;
+          chunk_index?: number;
+          chunking_version?: string;
+          content?: string;
+          content_sha256?: string;
+          created_at?: string;
+          document_id?: string;
+          document_page_id?: string;
+          end_char?: number;
+          id?: string;
+          page_number?: number;
+          processing_run_id?: string;
+          start_char?: number;
+          tsv_content?: unknown;
+          user_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "fk_document_chunks_doc_owner";
+            columns: ["document_id", "user_id"];
+            isOneToOne: false;
+            referencedRelation: "documents";
+            referencedColumns: ["id", "user_id"];
+          },
+          {
+            foreignKeyName: "fk_document_chunks_page_owner";
+            columns: ["document_page_id", "document_id", "user_id"];
+            isOneToOne: false;
+            referencedRelation: "document_pages";
+            referencedColumns: ["id", "document_id", "user_id"];
+          },
+          {
+            foreignKeyName: "fk_document_chunks_run_owner";
+            columns: ["processing_run_id", "document_id", "user_id"];
+            isOneToOne: false;
+            referencedRelation: "document_processing_runs";
+            referencedColumns: ["id", "document_id", "user_id"];
+          },
+        ];
+      };
       document_pages: {
         Row: {
           char_count: number;
@@ -286,6 +428,194 @@ export type Database = {
           },
         ];
       };
+      study_pack_item_citations: {
+        Row: {
+          created_at: string;
+          document_chunk_id: string;
+          id: string;
+          ordinal: number;
+          study_pack_id: string;
+          study_pack_item_id: string;
+          user_id: string;
+        };
+        Insert: {
+          created_at?: string;
+          document_chunk_id: string;
+          id?: string;
+          ordinal?: number;
+          study_pack_id: string;
+          study_pack_item_id: string;
+          user_id: string;
+        };
+        Update: {
+          created_at?: string;
+          document_chunk_id?: string;
+          id?: string;
+          ordinal?: number;
+          study_pack_id?: string;
+          study_pack_item_id?: string;
+          user_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "fk_study_pack_item_citations_chunk";
+            columns: ["document_chunk_id", "user_id"];
+            isOneToOne: false;
+            referencedRelation: "document_chunks";
+            referencedColumns: ["id", "user_id"];
+          },
+          {
+            foreignKeyName: "fk_study_pack_item_citations_item";
+            columns: ["study_pack_item_id", "study_pack_id", "user_id"];
+            isOneToOne: false;
+            referencedRelation: "study_pack_items";
+            referencedColumns: ["id", "study_pack_id", "user_id"];
+          },
+        ];
+      };
+      study_pack_items: {
+        Row: {
+          created_at: string;
+          id: string;
+          item_type: string;
+          ordinal: number;
+          payload: Json;
+          study_pack_id: string;
+          user_id: string;
+        };
+        Insert: {
+          created_at?: string;
+          id?: string;
+          item_type: string;
+          ordinal: number;
+          payload: Json;
+          study_pack_id: string;
+          user_id: string;
+        };
+        Update: {
+          created_at?: string;
+          id?: string;
+          item_type?: string;
+          ordinal?: number;
+          payload?: Json;
+          study_pack_id?: string;
+          user_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "fk_study_pack_items_pack_owner";
+            columns: ["study_pack_id", "user_id"];
+            isOneToOne: false;
+            referencedRelation: "study_packs";
+            referencedColumns: ["id", "user_id"];
+          },
+        ];
+      };
+      study_packs: {
+        Row: {
+          attempt_count: number;
+          cached_tokens: number;
+          chunking_version: string;
+          claim_token: string | null;
+          claimed_by: string | null;
+          created_at: string;
+          document_id: string;
+          error_code: string | null;
+          estimated_cost_usd: number | null;
+          evidence_char_count: number | null;
+          evidence_chunk_count: number | null;
+          finished_at: string | null;
+          generation_version: string;
+          id: string;
+          input_tokens: number;
+          lease_expires_at: string | null;
+          model: string | null;
+          output_tokens: number;
+          processing_run_id: string;
+          prompt_version: string;
+          provider: string | null;
+          source_chunk_count: number | null;
+          source_page_count: number | null;
+          started_at: string | null;
+          status: string;
+          updated_at: string;
+          user_id: string;
+        };
+        Insert: {
+          attempt_count?: number;
+          cached_tokens?: number;
+          chunking_version?: string;
+          claim_token?: string | null;
+          claimed_by?: string | null;
+          created_at?: string;
+          document_id: string;
+          error_code?: string | null;
+          estimated_cost_usd?: number | null;
+          evidence_char_count?: number | null;
+          evidence_chunk_count?: number | null;
+          finished_at?: string | null;
+          generation_version?: string;
+          id?: string;
+          input_tokens?: number;
+          lease_expires_at?: string | null;
+          model?: string | null;
+          output_tokens?: number;
+          processing_run_id: string;
+          prompt_version?: string;
+          provider?: string | null;
+          source_chunk_count?: number | null;
+          source_page_count?: number | null;
+          started_at?: string | null;
+          status?: string;
+          updated_at?: string;
+          user_id: string;
+        };
+        Update: {
+          attempt_count?: number;
+          cached_tokens?: number;
+          chunking_version?: string;
+          claim_token?: string | null;
+          claimed_by?: string | null;
+          created_at?: string;
+          document_id?: string;
+          error_code?: string | null;
+          estimated_cost_usd?: number | null;
+          evidence_char_count?: number | null;
+          evidence_chunk_count?: number | null;
+          finished_at?: string | null;
+          generation_version?: string;
+          id?: string;
+          input_tokens?: number;
+          lease_expires_at?: string | null;
+          model?: string | null;
+          output_tokens?: number;
+          processing_run_id?: string;
+          prompt_version?: string;
+          provider?: string | null;
+          source_chunk_count?: number | null;
+          source_page_count?: number | null;
+          started_at?: string | null;
+          status?: string;
+          updated_at?: string;
+          user_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "fk_study_packs_doc_owner";
+            columns: ["document_id", "user_id"];
+            isOneToOne: false;
+            referencedRelation: "documents";
+            referencedColumns: ["id", "user_id"];
+          },
+          {
+            foreignKeyName: "fk_study_packs_run_owner";
+            columns: ["processing_run_id", "document_id", "user_id"];
+            isOneToOne: false;
+            referencedRelation: "document_processing_runs";
+            referencedColumns: ["id", "document_id", "user_id"];
+          },
+        ];
+      };
       subjects: {
         Row: {
           archived_at: string | null;
@@ -370,6 +700,21 @@ export type Database = {
           user_id: string;
         }[];
       };
+      claim_next_study_pack: {
+        Args: { p_lease_seconds?: number; p_worker_id: string };
+        Returns: {
+          attempt_count: number;
+          chunking_version: string;
+          claim_token: string;
+          document_id: string;
+          generation_version: string;
+          original_filename: string;
+          processing_run_id: string;
+          prompt_version: string;
+          study_pack_id: string;
+          user_id: string;
+        }[];
+      };
       complete_document_cleanup_privileged: {
         Args: {
           p_document_id: string;
@@ -402,6 +747,14 @@ export type Database = {
         };
       };
       complete_onboarding: { Args: never; Returns: string };
+      create_document_chunks_privileged: {
+        Args: {
+          p_chunking_version: string;
+          p_chunks: Json;
+          p_processing_run_id: string;
+        };
+        Returns: number;
+      };
       enqueue_document_processing_privileged: {
         Args: {
           p_document_id: string;
@@ -417,12 +770,37 @@ export type Database = {
           user_id: string;
         }[];
       };
+      enqueue_study_pack_privileged: {
+        Args: {
+          p_document_id: string;
+          p_generation_version?: string;
+          p_user_id: string;
+        };
+        Returns: {
+          attempt_count: number;
+          document_id: string;
+          generation_version: string;
+          processing_run_id: string;
+          status: string;
+          study_pack_id: string;
+          user_id: string;
+        }[];
+      };
       fail_processing_run_privileged: {
         Args: {
           p_claim_token: string;
           p_error_code: string;
           p_retryable?: boolean;
           p_run_id: string;
+        };
+        Returns: boolean;
+      };
+      fail_study_pack_privileged: {
+        Args: {
+          p_claim_token: string;
+          p_error_code: string;
+          p_retryable: boolean;
+          p_study_pack_id: string;
         };
         Returns: boolean;
       };
@@ -465,6 +843,42 @@ export type Database = {
           p_run_id: string;
         };
         Returns: boolean;
+      };
+      persist_study_pack_results_privileged: {
+        Args: {
+          p_cached_tokens: number;
+          p_citations: Json;
+          p_claim_token: string;
+          p_estimated_cost_usd: number;
+          p_evidence_char_count: number;
+          p_evidence_chunk_count: number;
+          p_input_tokens: number;
+          p_items: Json;
+          p_model: string;
+          p_output_tokens: number;
+          p_provider: string;
+          p_source_chunk_count: number;
+          p_source_page_count: number;
+          p_study_pack_id: string;
+        };
+        Returns: boolean;
+      };
+      record_ai_usage_privileged: {
+        Args: {
+          p_cached_tokens: number;
+          p_document_id: string;
+          p_estimated_cost_usd: number;
+          p_feature: string;
+          p_input_tokens: number;
+          p_latency_ms: number;
+          p_model: string;
+          p_output_tokens: number;
+          p_provider: string;
+          p_status: string;
+          p_study_pack_id: string;
+          p_user_id: string;
+        };
+        Returns: string;
       };
       request_document_upload: {
         Args: {

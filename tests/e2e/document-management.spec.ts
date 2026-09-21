@@ -123,7 +123,7 @@ test.describe("Phase 1C: Document Library & Secure Upload Boundary", () => {
       page.getByText(/Listo|Pendiente de procesar|Procesado/)
     ).toBeVisible();
     await expect(
-      page.locator("div").filter({ hasText: /^Farmacología$/ })
+      page.locator("span, div").filter({ hasText: /^Farmacología$/ })
     ).toBeVisible();
 
     // 6. User-Content XSS Defense Regression Test

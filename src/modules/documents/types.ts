@@ -38,6 +38,13 @@ export interface DocumentWithSubject extends DocumentRecord {
     attempt_count: number;
     page_count: number | null;
   } | null;
+  study_pack?: {
+    id: string;
+    status:
+      "PENDING" | "GENERATING" | "READY" | "FAILED_RETRYABLE" | "FAILED_FINAL";
+    error_code: string | null;
+    attempt_count: number;
+  } | null;
 }
 
 export interface RequestUploadInput {

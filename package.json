@@ -7,6 +7,8 @@
     "build": "next build",
     "start": "next start",
     "worker:documents": "tsx --conditions=react-server --env-file=.env.local src/workers/documents-worker.ts",
+    "worker:study-packs": "tsx --conditions=react-server --env-file=.env.local src/workers/study-packs-worker.ts",
+    "ai:benchmark:study-pack": "tsx --conditions=react-server --env-file=.env.local src/benchmarks/study-pack-benchmark.ts",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "format": "prettier --write .",
@@ -24,9 +26,11 @@
     "verify": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm db:test && pnpm build"
   },
   "dependencies": {
+    "@ai-sdk/openai-compatible": "^3.0.53",
     "@base-ui/react": "1.8.0",
     "@supabase/ssr": "0.12.7",
     "@supabase/supabase-js": "2.116.0",
+    "ai": "^7.0.107",
     "class-variance-authority": "0.7.1",
     "cn": "0.3.0",
     "lucide-react": "1.47.0",

@@ -94,17 +94,17 @@ flowchart LR
 - **AI Impact**: None ($0).
 - **Definition of Done**: 25MB PDF (`INITIAL CONFIGURABLE ASSUMPTION`) uploads successfully to private bucket; signed URL allows secure viewing via `pdf.js`.
 
-#### Slice 1D: Document Ingestion, Classification & Chunking
-- **User Value**: Uploaded document is automatically parsed, pages classified, and chunks indexed.
-- **Data Changes**: `document_pages`, `document_chunks` (with FTS `tsvector` and `pgvector` embedding).
-- **AI Impact**: Embedding generation via `AIProvider` (variable token cost; provider pricing verified before purchase). Note: AI conversational tutor and generation features remain in Slices 1E/1F.
-- **Definition of Done**: `pdf-inspector` classifies pages; text extracted; chunks stored with embeddings and FTS tokens.
+#### Slice 1D: Document Ingestion, Extraction & Page Provenance (COMPLETE)
+- **User Value**: Uploaded document is automatically preflighted, parsed, native text extracted (or selective OCR applied), and verified page provenance records created.
+- **Data Changes**: `document_processing_runs`, `document_pages`.
+- **AI Impact**: Zero AI spend ($0.00). Embeddings deferred to Phase 1F.
+- **Definition of Done**: Structural preflight (`qpdf`), native extraction (`pypdfium2`), selective OCR (`tesseract`), bounded orchestrator verification, and composite FKs persisted with 100% test pass.
 
-#### Slice 1E: Study Pack Generation & Caching
-- **User Value**: Student opens document and immediately views a structured summary, key concepts, and objectives.
-- **Data Changes**: `study_packs` table.
-- **AI Impact**: LLM structured completion (variable token cost; cached once in DB; provider pricing verified before purchase).
-- **Definition of Done**: Study Pack generated once, cached in DB; reloads do not trigger AI calls.
+#### Slice 1E: Deterministic Chunking, Evidence Layer & Study Pack Generation (COMPLETE)
+- **User Value**: Student triggers bounded Study Pack generation from their document library and navigates structured summaries, objectives, key concepts, high-yield clinical points, and key terms with interactive page-level citations (`Pág. X`) and coverage disclosures.
+- **Data Changes**: `document_chunks`, `study_packs`, `study_pack_items`, `study_pack_item_citations`, `ai_usages`.
+- **AI Impact**: Thin `AIProvider` abstraction (`MockAIProvider` with $0.00 spend; OpenAI-compatible provider). Two-call LLM pipeline (candidate generation + evidence verification). Cached Study Pack with zero AI calls on reload.
+- **Definition of Done**: Page-bounded canonical chunking; two-call verification pipeline; deterministic citation validator enforcing server-derived page numbers; QA gate requiring $\ge 1$ summary, $\ge 1$ objective, $\ge 1$ concept, and $\ge 50\%$ supported claims; library status badges; synthetic medical lecture benchmark suite (5/5 pass, 0 errors, $0.00 spend).
 
 #### Slice 1F: Context-Grounded AI Tutor
 - **User Value**: Student asks questions and receives answers citing exact slide pages with interactive links.

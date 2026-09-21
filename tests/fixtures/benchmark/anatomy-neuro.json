@@ -1,0 +1,19 @@
+{
+  "id": "bench-anat-01",
+  "title": "Neuroanatomía Quirúrgica: Vascularización del Encéfalo",
+  "subject": "Anatomía",
+  "pages": [
+    {
+      "pageNumber": 1,
+      "textContent": "VASCULARIZACIÓN DEL ENCÉFALO Y POLÍGONO DE WILLIS\n\nEl encéfalo recibe irrigación arterial a través de dos sistemas principales: el sistema carotídeo interno anterior y el sistema vértebro-basilar posterior. Ambos sistemas confluyen en la base del cráneo formando una anastomosis heptagonal denominada Círculo Arterial de Willis.\n\nLa arteria carótida interna penetra a la cavidad craneal a través del conducto carotídeo, atraviesa el seno cavernoso formando el sifón carotídeo, y emite sus ramas terminales principales: la arteria cerebral anterior (ACA) y la arteria cerebral media (ACM). La arteria cerebral media irriga la mayor parte de la superficie lateral de los hemisferios cerebrales, incluyendo el córtex motor y sensitivo correspondiente al miembro superior y la cara (homúnculo de Penfield), así como las áreas del lenguaje de Broca y Wernicke en el hemisferio dominante."
+    },
+    {
+      "pageNumber": 2,
+      "textContent": "ARTERIA CEREBRAL ANTERIOR Y COMUNICANTE ANTERIOR\n\nLa arteria cerebral anterior (ACA) discurre medialmente sobre el nervio óptico y penetra en la fisura interhemisférica longitudinal. Irriga la cara medial de los hemisferios cerebrales por encima del cuerpo calloso, proyectándose sobre la corteza sensitivomotora de la extremidad inferior y los centros de control miccional.\n\nAmbas arterias cerebrales anteriores se comunican en la línea media mediante la arteria comunicante anterior (AComA). Los aneurismas de la arteria comunicante anterior representan entre el 30% y el 35% de todos los aneurismas intracraneales saculares. Su ruptura suele manifestarse con hemorragia subaracnoidea espontánea, cefalea en trueno súbita y signos meníngeos agudos."
+    },
+    {
+      "pageNumber": 3,
+      "textContent": "SISTEMA VÉRTEBRO-BASILAR Y CEREBRAL POSTERIOR\n\nLas arterias vertebrales ascienden a través de los forámenes transversos de las vértebras cervicales C6 a C1, ingresan por el foramen magno y se unen a nivel del surco bulbopontino anterior para formar el tronco o arteria basilar.\n\nLa arteria basilar recorre el surco pontino emitiendo ramas pontinas circunferenciales, las arterias laberínticas y las arterias cerebelosas anteroinferiores (AICA) y superiores (SCA). En su bifurcación rostral termina en las dos arterias cerebrales posteriores (ACP), las cuales irrigan los lóbulos occipitales, la corteza visual primaria (área 17 de Brodmann) y el aspecto inferomedial del lóbulo temporal. La oclusión embólica de la ACP típicamente genera hemianopsia homónima contralateral con preservación macular."
+    }
+  ]
+}
