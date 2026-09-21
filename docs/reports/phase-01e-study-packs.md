@@ -17,7 +17,7 @@
 ## 1. Work Completed
 
 1. **Canonical Page-Bounded Chunking Engine (`src/modules/study-packs/chunking.ts`)**:
-   - Chunks strictly respect physical PDF page boundaries (`page_start === page_end`). Chunks **never** span multiple pages in v1, eliminating cross-page provenance ambiguity.
+   - Chunks strictly respect physical PDF page boundaries (single `document_page_id`, `page_number`, `start_char`, `end_char`). Chunks **never** span multiple pages, eliminating cross-page provenance ambiguity.
    - Text is partitioned into 1800 character targets (max 2800 characters) with 200 character sliding overlap, respecting paragraph and sentence breaks.
    - Deterministic indexing (`chunk_index` 0..N per document) and character/token estimation.
    - Database UUID refetching: `createOrGetDocumentChunks` persists chunks via `create_document_chunks_privileged` and immediately refetches their database primary keys (`id UUID`), ensuring downstream citation records have valid target UUID foreign keys.
@@ -31,9 +31,9 @@
    - `public.ai_usages`: Logs fine-grained AI consumption telemetry (`input_tokens`, `output_tokens`, `cached_tokens`, `estimated_cost_usd` to 6 decimal places, `latency_ms`, `status`) with PostgreSQL 17 column-specific composite FKs: `ON DELETE SET NULL (document_id)` and `ON DELETE SET NULL (study_pack_id)`, preserving user telemetry records and `user_id` when documents or packs are deleted.
    - Strict Row Level Security: Direct mutations (`INSERT`, `UPDATE`, `DELETE`) on all Phase 1E tables are REVOKED from `authenticated` and `anon`. Read access (`SELECT`) is strictly bounded by `auth.uid() = user_id`.
    - Privileged RPCs (callable only by `service_role`): `create_document_chunks_privileged`, `enqueue_study_pack_privileged` (with `pg_advisory_xact_lock` and `ON CONFLICT DO NOTHING` convergence), `claim_next_study_pack`, `persist_study_pack_results_privileged`, `fail_study_pack_privileged` (refunding attempts on operational failures `AI_DISABLED` and `AI_NOT_CONFIGURED`), `record_ai_usage_privileged`. Updated `archive_document_privileged` to cascade clean study packs.
-   - 81 pgTAP tests authored in `supabase/tests/database/05_chunks_and_study_packs_rls.sql` (326 total passing DB tests across 5 test suites).
+   - 81 pgTAP assertions in `supabase/tests/database/05_chunks_and_study_packs_rls.sql` (326 total passing DB tests across 5 test suites).
 
-3. **Thin `AIProvider` Abstraction & Cost Engine (`src/modules/ai/`)**:
+3. **Thin `AIProvider` Abstraction, Bound Retries & Cost Engine (`src/modules/ai/`)**:
    - Thin internal TypeScript abstraction (`AIProvider`) defining a single domain method: `generateStructured<T>(request: AIStructuredRequest<T>, context?: AIRequestContext): Promise<AIStructuredResult<T>>`.
    - `MockAIProvider` (`src/modules/ai/mock-provider.ts`): Deterministic test provider returning structured study pack objects grounded in document text with simulated token telemetry and $0.00 spend. Powers 100% of automated unit tests, integration tests, E2E tests, and benchmark runs.
    - `OpenAICompatibleProvider` (`src/modules/ai/openai-compatible-provider.ts`): Production-ready adapter supporting OpenAI and OpenAI-compatible gateways (LiteLLM, Ollama, vLLM) with JSON Schema structured outputs.
@@ -41,13 +41,18 @@
      - Unconditional production mock denial: `MockAIProvider` is strictly and unconditionally prohibited in production under any configuration or bypass flag (`NODE_ENV === "production"`).
      - Fail-closed endpoint validation: requires non-empty model, non-empty API key, explicit `baseURL` for all non-OpenAI providers, and enforces HTTPS in production (permitting HTTP only for localhost in development).
      - Preflight assertion `assertAIGenerationAvailable()`: zero-network check prevents queueing or row creation when AI is disabled.
+   - Bound Provider Retries: Explicitly configured `maxProviderRetries: 0` in `STUDY_PACK_WORKER_LIMITS` for both CALL 1 and CALL 2, preventing AI SDK internal retries. Each worker attempt makes at most 2 external provider calls (max 6 across 3 worker attempts).
    - Pricing Engine (`src/modules/ai/pricing.ts`): Models input, output, and cached token pricing snapshots. Accurately calculates cached token discounts: `uncachedInput = Math.max(0, inputTokens - cachedTokens)`. Pinned pricing for `gpt-4o`, `gpt-4o-mini`, and embedding models.
    - Telemetry Recorder (`src/modules/ai/telemetry.ts`): Safely records AI usage; automatically skips database writes when `context.feature === 'BENCHMARK'` or when `userId` is absent, preventing foreign key violations during synthetic benchmark runs.
 
-4. **Study Pack Generation Service & Evidence Layer (`src/modules/study-packs/`)**:
+4. **Study Pack Generation Service, Deduplicated Evidence Verifier & Safe Error Mapping (`src/modules/study-packs/`)**:
    - Two-call LLM generation architecture:
-     - **Call 1 (Candidate Generation)**: LLM receives untrusted document chunks serialized as structured JSON data blocks and outputs candidate sections (Summary, Objectives, Concepts, High-Yield Points, Key Terms) with candidate chunk IDs. Enforces `maxTokens` (4096) and timeout via `AbortSignal`.
-     - **Call 2 (Evidence-Support Verification)**: An independent verification prompt evaluates candidate claims against cited chunk text, classifying each claim as `SUPPORTED` or `UNSUPPORTED`. Enforces `maxTokens` (2048) and timeout via `AbortSignal`.
+     - **Call 1 (Candidate Generation)**: LLM receives untrusted document chunks serialized as structured JSON data blocks and outputs candidate sections (Summary, Objectives, Concepts, High-Yield Points, Key Terms) with candidate chunk IDs. Enforces `maxTokens` (4096), `maxRetries: 0`, and timeout via `AbortSignal`.
+     - **Call 2 (Evidence-Support Verification)**: Evaluates candidate claims against cited chunk text, classifying each claim as `SUPPORTED` or `UNSUPPORTED`.
+   - Evidence Deduplication & Verifier Input Bound:
+     - Candidate items in Call 2 reference only `citedChunkIds`.
+     - An `evidence` array provides the unique union of cited chunks serialized once, eliminating $O(\text{items} \times \text{chunks})$ repetition.
+     - Strict preflight input bound: `maxVerifierInputChars = 180_000` (`STUDY_PACK_BUDGET_LIMITS.maxVerifierInputChars`). If serialized prompt exceeds this bound, the verifier immediately throws `STUDY_PACK_INPUT_LIMIT` before invoking the provider ($0.00 spend).
    - Citation Validator (`src/modules/study-packs/citation-validator.ts`):
      - The AI model is **never** trusted to provide page numbers. The model outputs only candidate `chunk_id` values; the server maps valid IDs to their authoritative database `page_number` from `document_chunks`.
      - Cross-document citations and hallucinated chunk IDs (chunks not belonging to the document, run, user, or chunking version) are strictly rejected.
@@ -59,15 +64,17 @@
        - $\ge 1$ Key Concept
        - $\ge 50\%$ of candidate claims verified as `SUPPORTED`.
      - If these thresholds are not met, the pack transitions to `FAILED_FINAL` (`STUDY_PACK_EVIDENCE_QA_FAILED`), ensuring no ungrounded medical study pack reaches the student.
-   - Server Actions (`src/modules/study-packs/actions.ts`):
-     - `requestStudyPackGenerationAction`: Authenticated server action to queue manual Study Pack generation.
-     - `getStudyPackAction`: Retrieves cached Study Pack data with zero AI calls.
+   - Safe Server Actions & Error Sanitization (`src/modules/study-packs/actions.ts`, `errors.ts`):
+     - Complete 19-code error taxonomy mapped through `toPublicStudyPackError()`.
+     - Zero internal leakage: database error messages, connection strings, URLs, and stack traces are never exposed to the client; sanitized Spanish error messages returned.
+     - `requestStudyPackGenerationAction` and `getStudyPackAction` return typed `ActionResult` with `code` and safe `error`.
 
 5. **Dedicated Background Worker Orchestrator (`src/workers/study-packs-worker.ts`)**:
    - Queue coordination via PostgreSQL `claim_next_study_pack` (`FOR UPDATE SKIP LOCKED`) with fencing token `claim_token UUID` and lease expiration `lease_expires_at` (default: 300s).
    - Lease fencing: `persist_study_pack_results_privileged` and `fail_study_pack_privileged` require an active non-null lease (`lease_expires_at > NOW()`). Expired or missing leases immediately revoke write authority (PostgreSQL raises SQLSTATE 55000).
    - Archive race closure: checks if the source document was archived during execution and terminally aborts with `DOCUMENT_ARCHIVED` (`FAILED_FINAL`), deleting derived study items and citations.
    - Bounded retries: enforces max 3 attempts before transitioning to `FAILED_FINAL` (`STUDY_PACK_RETRY_LIMIT`).
+   - Non-retryable Worker Internal Errors: Unknown non-`AIProviderError` exceptions map to `WORKER_INTERNAL_ERROR` with `retryable: false`, failing fast to prevent infinite retry loops.
    - Version contract verification: worker verifies job versions match `CHUNKING_VERSION`, `STUDY_PACK_GENERATION_VERSION`, and `STUDY_PACK_PROMPT_VERSION` or fails terminally with `STUDY_PACK_VERSION_UNSUPPORTED`.
 
 6. **Scientific Presentation UI Layer (`src/components/study-packs/study-pack-view.tsx`, `src/app/app/documents/[id]/study-pack/page.tsx`)**:
@@ -92,8 +99,8 @@
    - Verifies structural pipeline mechanics across all 5 fixtures with 0 errors, 0 warnings, and $0.00 automated spend (`pnpm ai:benchmark:study-pack`).
 
 8. **Automated Test Suite (100% Pass)**:
-   - 260 Vitest tests passing across 18 test files (205 unit, 55 integration via `pnpm test`).
-   - 326 pgTAP database tests passing across 5 test files (`pnpm db:test`).
+   - 283 Vitest tests passing across 19 test files (228 unit, 55 integration via `pnpm test`).
+   - 326 pgTAP database tests passing across 5 test files (`pnpm db:test`, 81 assertions in `05_chunks_and_study_packs_rls.sql`).
    - 19 Playwright E2E tests passing across 7 suites (`pnpm test:e2e`), including `tests/e2e/study-packs.spec.ts` validating full upload -> document processing -> manual study pack trigger -> worker execution -> verified study pack UI render -> library badge verification, with screenshot captured at `docs/screenshots/phase-01e-study-pack-view.png`.
 
 ---
@@ -101,7 +108,7 @@
 ## 2. File Changes
 
 ### Important Files Created
-- `src/config/study-pack-limits.ts` — Centralized resource limits for study pack generation (tokens, timeouts, thresholds).
+- `src/config/study-pack-limits.ts` — Centralized resource limits for study pack generation (tokens, timeouts, thresholds, max provider retries = 0, max verifier input chars = 180,000).
 - `src/modules/ai/types.ts` — Thin `AIProvider` interface, completion options, and telemetry types.
 - `src/modules/ai/pricing.ts` — Model pricing snapshot and cost calculation with cached token discounting.
 - `src/modules/ai/telemetry.ts` — AI telemetry database recorder with benchmark exclusion.
@@ -109,27 +116,29 @@
 - `src/modules/ai/openai-compatible-provider.ts` — Production-ready OpenAI-compatible LLM client with JSON Schema structured outputs.
 - `src/modules/ai/provider-factory.ts` — Safe provider factory selecting `MockAIProvider` in test environments.
 - `src/modules/ai/index.ts` — Public export barrel for AI module.
-- `src/modules/study-packs/types.ts` — Domain types, Zod schemas, section types, and 18 error codes.
+- `src/modules/study-packs/types.ts` — Domain types, Zod schemas, section types, and 19 error codes.
+- `src/modules/study-packs/errors.ts` — Safe public error mapper `toPublicStudyPackError(err)` for all 19 error codes with localized Spanish user messages, preventing leakage of internal DB messages, connection URLs, or stack traces.
 - `src/modules/study-packs/chunking.ts` — Canonical page-bounded chunking engine with DB UUID refetching.
 - `src/modules/study-packs/citation-validator.ts` — Citation validator enforcing server-derived page provenance.
-- `src/modules/study-packs/evidence-verifier.ts` — Two-call verification pipeline and strict QA quality gate.
+- `src/modules/study-packs/evidence-verifier.ts` — Two-call verification pipeline with candidate-evidence deduplication, input length bounding (`maxVerifierInputChars = 180_000`), and strict QA quality gate.
 - `src/modules/study-packs/service.ts` — Domain service for chunk creation, enqueueing, and retrieval.
-- `src/modules/study-packs/actions.ts` — Authenticated Server Actions for manual generation CTA and retrieval.
+- `src/modules/study-packs/actions.ts` — Authenticated Server Actions for manual generation CTA and retrieval with sanitized error mapping.
 - `src/modules/study-packs/index.ts` — Public export barrel for study packs module.
 - `src/workers/study-packs-worker.ts` — Background worker orchestrator with lease fencing and retry management.
-- `src/components/study-packs/study-pack-view.tsx` — Scientific presentation UI with interactive citations and coverage disclosure.
+- `src/components/study-packs/study-pack-view.tsx` — Scientific presentation UI with display citation badges (`Pág. X`) and coverage disclosure.
 - `src/app/app/documents/[id]/study-pack/page.tsx` — Protected Server Component page for Study Pack viewing.
 - `src/benchmarks/study-pack-benchmark.ts` — Developer benchmark CLI harness (`pnpm ai:benchmark:study-pack`).
 - `supabase/migrations/20260920200000_chunks_and_study_packs.sql` — Database migration for chunks, study packs, items, citations, and AI usages.
-- `supabase/tests/database/05_chunks_and_study_packs_rls.sql` — 54 pgTAP assertions for chunk and study pack security.
+- `supabase/tests/database/05_chunks_and_study_packs_rls.sql` — 81 pgTAP assertions for chunk and study pack security.
 - `tests/fixtures/benchmark/*.json` — 5 synthetic medical lecture fixtures.
 - `tests/unit/chunking.test.ts` — Unit test suite for canonical chunking engine (16 tests).
-- `tests/unit/ai-provider.test.ts` — Unit test suite for AI provider, pricing, and telemetry (14 tests).
+- `tests/unit/ai-provider.test.ts` — Unit test suite for AI provider, pricing, retries, and telemetry (19 tests).
 - `tests/unit/citation-validator.test.ts` — Unit test suite for citation validation (5 tests).
-- `tests/unit/evidence-verifier.test.ts` — Unit test suite for evidence verification and QA gate (5 tests).
+- `tests/unit/evidence-verifier.test.ts` — Unit test suite for evidence verification, deduplication, and QA gate (7 tests).
+- `tests/unit/study-packs-actions.test.ts` — Unit test suite for Server Action error sanitization across all 19 error codes (9 tests).
 - `tests/integration/study-packs-worker.test.ts` — Integration test suite for worker claim fencing, write revocation, archive race closure, and cached reads (5 tests).
 - `tests/e2e/study-packs.spec.ts` — Playwright E2E test suite for full study pack generation and UI rendering (1 test).
-- `docs/reports/phase-01e-failure-matrix.md` — Complete failure matrix covering 18 error codes and 25 failure scenarios.
+- `docs/reports/phase-01e-failure-matrix.md` — Complete failure matrix covering 19 error codes and 30 failure scenarios.
 - `docs/screenshots/phase-01e-study-pack-view.png` — E2E screenshot evidence of rendered Study Pack view.
 
 ### Important Files Modified
@@ -210,17 +219,17 @@
   - `pnpm format:check` -> PASS (All matched files use Prettier code style)
   - `pnpm lint` -> PASS (0 warnings, 0 errors)
   - `pnpm typecheck` -> PASS (0 TypeScript errors)
-  - `pnpm test` -> PASS (268 tests passing across 18 test files: 213 unit, 55 integration)
+  - `pnpm test` -> PASS (283 tests passing across 19 test files: 228 unit, 55 integration)
   - `pnpm db:reset` -> PASS (5 migrations applied cleanly)
   - `pnpm db:types` -> PASS (Types generated into `src/types/database.ts`)
-  - `pnpm db:test` -> PASS (326 pgTAP tests passing across 5 test files)
+  - `pnpm db:test` -> PASS (326 pgTAP tests passing across 5 test files, 81 assertions in `05_chunks_and_study_packs_rls.sql`)
   - `pnpm build` -> PASS (Production build successful with Next.js Turbopack)
   - `pnpm ai:benchmark:study-pack` -> PASS (Mode A Mock Smoke: 5/5 synthetic fixtures passed, 0 errors, automated evidence-support ratio reported as N/A, $0.00 cost)
   - `pnpm test:e2e` -> PASS (19 Playwright tests passing across 7 suites)
 - **Browser Verification**:
   - Full E2E browser test executed via Playwright (`tests/e2e/study-packs.spec.ts`).
   - Document uploaded, processed, manual Study Pack triggered, worker executed, and verified Study Pack UI rendered cleanly.
-  - Interactive citation badges clicked, coverage panel verified, and library status badge confirmed.
+  - Display citation badges verified, coverage panel verified, and library status badge confirmed.
   - Screenshot captured at `docs/screenshots/phase-01e-study-pack-view.png`.
 - **Performance Impact**:
   - Chunking engine execution: $\le 5$ms for typical lecture slides.

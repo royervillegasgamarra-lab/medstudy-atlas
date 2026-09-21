@@ -188,129 +188,153 @@ CREATE TABLE document_pages (
     UNIQUE(document_id, page_number)
 );
 
-CREATE TABLE document_chunks (
+```sql
+-- Phase 1E Implemented: Canonical Document Chunks, Study Packs, Citations & AI Usages
+CREATE TABLE public.document_chunks (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
     document_id UUID NOT NULL,
-    user_id UUID NOT NULL,
-    page_number INT NOT NULL,
-    chunk_index INT NOT NULL,
+    processing_run_id UUID NOT NULL,
+    document_page_id UUID NOT NULL,
+    page_number INT NOT NULL CHECK (page_number > 0),
+    chunk_index INT NOT NULL CHECK (chunk_index >= 0),
+    start_char INT NOT NULL CHECK (start_char >= 0),
+    end_char INT NOT NULL CHECK (end_char > start_char),
     content TEXT NOT NULL,
-    char_count INT NOT NULL,
-    token_estimate INT NOT NULL,
-    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    char_count INT NOT NULL CHECK (char_count > 0),
+    content_sha256 TEXT NOT NULL,
+    chunking_version TEXT NOT NULL DEFAULT 'chunk-v1',
+    tsv_content TSVECTOR GENERATED ALWAYS AS (to_tsvector('simple', content)) STORED,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT fk_document_chunks_document FOREIGN KEY (document_id, user_id)
-        REFERENCES documents(id, user_id) ON DELETE CASCADE,
-    CONSTRAINT uq_document_chunks_index UNIQUE (document_id, chunk_index),
-    CONSTRAINT chk_document_chunks_char_count CHECK (char_count > 0 AND char_count <= 25000),
-    CONSTRAINT chk_document_chunks_token_estimate CHECK (token_estimate > 0 AND token_estimate <= 10000),
-    CONSTRAINT chk_document_chunks_page_number CHECK (page_number >= 1)
+    CONSTRAINT uq_document_chunks_run_ver_page_idx UNIQUE (processing_run_id, chunking_version, page_number, chunk_index),
+    CONSTRAINT uq_document_chunks_id_doc_user UNIQUE (id, document_id, user_id),
+    CONSTRAINT uq_document_chunks_id_user UNIQUE (id, user_id),
+    CONSTRAINT fk_document_chunks_run_owner FOREIGN KEY (processing_run_id, document_id, user_id)
+        REFERENCES public.document_processing_runs(id, document_id, user_id)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_document_chunks_page_owner FOREIGN KEY (document_page_id, document_id, user_id)
+        REFERENCES public.document_pages(id, document_id, user_id)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_document_chunks_doc_owner FOREIGN KEY (document_id, user_id)
+        REFERENCES public.documents(id, user_id)
+        ON DELETE CASCADE
 );
 
-CREATE INDEX idx_document_chunks_doc_user ON document_chunks(document_id, user_id);
-CREATE INDEX idx_document_chunks_page ON document_chunks(document_id, page_number);
-```
+CREATE INDEX idx_chunks_tsv ON public.document_chunks USING GIN(tsv_content);
+CREATE INDEX idx_chunks_doc_page ON public.document_chunks(document_id, page_number);
+CREATE INDEX idx_chunks_run ON public.document_chunks(processing_run_id);
+CREATE INDEX idx_chunks_user ON public.document_chunks(user_id);
 
-### Knowledge Graph (PostgreSQL-Native)
-```sql
-CREATE TABLE concepts (
+CREATE TABLE public.study_packs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    canonical_name TEXT NOT NULL UNIQUE,
-    category TEXT NOT NULL CHECK (category IN ('DISEASE', 'SYMPTOM', 'DRUG', 'ANATOMY', 'PHYSIOLOGY', 'PATHOLOGY', 'LAB_FINDING')),
-    description TEXT,
-    icd10_code TEXT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE concept_relations (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    source_concept_id UUID NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
-    target_concept_id UUID NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
-    relation_type TEXT NOT NULL CHECK (relation_type IN (
-        'IS_A', 'PART_OF', 'RELATED_TO', 'CAUSES', 
-        'HAS_FUNCTION', 'TREATED_BY', 'LOCATED_IN', 'ASSOCIATED_WITH'
-    )),
-    weight NUMERIC(3, 2) DEFAULT 1.0,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE(source_concept_id, target_concept_id, relation_type)
-);
-
-CREATE INDEX idx_concept_rel_source ON concept_relations(source_concept_id);
-CREATE INDEX idx_concept_rel_target ON concept_relations(target_concept_id);
-```
-
-### Learning, Spaced Repetition (FSRS) & Study Packs
-```sql
-CREATE TABLE study_packs (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
     document_id UUID NOT NULL,
-    user_id UUID NOT NULL,
-    status TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'RUNNING', 'READY', 'FAILED_RETRYABLE', 'FAILED_FINAL')),
-    qa_status TEXT NOT NULL DEFAULT 'PENDING' CHECK (qa_status IN ('PENDING', 'PASSED', 'FAILED')),
-    claim_token UUID,
-    claimed_by TEXT,
-    lease_expires_at TIMESTAMPTZ,
+    processing_run_id UUID NOT NULL,
+    chunking_version TEXT NOT NULL DEFAULT 'chunk-v1',
+    generation_version TEXT NOT NULL DEFAULT 'sp-gen-v1',
+    prompt_version TEXT NOT NULL DEFAULT 'sp-prompt-v1',
+    status TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'GENERATING', 'READY', 'FAILED_RETRYABLE', 'FAILED_FINAL')),
     attempt_count INT NOT NULL DEFAULT 0,
-    max_attempts INT NOT NULL DEFAULT 3,
+    claimed_by TEXT,
+    claim_token UUID,
+    lease_expires_at TIMESTAMPTZ,
     error_code TEXT,
-    error_message TEXT,
-    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    provider TEXT,
+    model TEXT,
+    input_tokens INT NOT NULL DEFAULT 0,
+    output_tokens INT NOT NULL DEFAULT 0,
+    cached_tokens INT NOT NULL DEFAULT 0,
+    estimated_cost_usd NUMERIC(10, 6),
+    source_page_count INT,
+    evidence_page_count INT,
+    source_chunk_count INT,
+    evidence_chunk_count INT,
+    evidence_char_count INT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    started_at TIMESTAMPTZ,
+    finished_at TIMESTAMPTZ,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT fk_study_packs_document FOREIGN KEY (document_id, user_id)
-        REFERENCES documents(id, user_id) ON DELETE CASCADE,
-    CONSTRAINT uq_study_packs_document UNIQUE (document_id),
-    CONSTRAINT uq_study_packs_ownership UNIQUE (id, document_id, user_id),
-    CONSTRAINT chk_study_packs_attempts CHECK (attempt_count >= 0 AND attempt_count <= max_attempts)
+    CONSTRAINT uq_study_packs_gen UNIQUE (document_id, processing_run_id, generation_version),
+    CONSTRAINT uq_study_packs_id_doc_user UNIQUE (id, document_id, user_id),
+    CONSTRAINT uq_study_packs_id_user UNIQUE (id, user_id),
+    CONSTRAINT fk_study_packs_run_owner FOREIGN KEY (processing_run_id, document_id, user_id)
+        REFERENCES public.document_processing_runs(id, document_id, user_id)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_study_packs_doc_owner FOREIGN KEY (document_id, user_id)
+        REFERENCES public.documents(id, user_id)
+        ON DELETE CASCADE
 );
 
-CREATE INDEX idx_study_packs_user_doc ON study_packs(user_id, document_id);
-CREATE INDEX idx_study_packs_queue ON study_packs(status, created_at) WHERE status IN ('PENDING', 'RUNNING');
+CREATE INDEX idx_study_packs_user ON public.study_packs(user_id);
+CREATE INDEX idx_study_packs_doc ON public.study_packs(document_id);
+CREATE INDEX idx_study_packs_status ON public.study_packs(status);
+CREATE INDEX idx_study_packs_lease ON public.study_packs(lease_expires_at);
 
-CREATE TABLE study_pack_items (
+CREATE TABLE public.study_pack_items (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     study_pack_id UUID NOT NULL,
-    document_id UUID NOT NULL,
-    user_id UUID NOT NULL,
-    section_type TEXT NOT NULL CHECK (section_type IN (
-        'GENERAL_SUMMARY',
-        'LEARNING_OBJECTIVE',
-        'KEY_CONCEPT',
-        'HIGH_YIELD_POINT',
-        'KEY_TERM'
-    )),
-    item_order INT NOT NULL,
-    title TEXT,
-    content TEXT NOT NULL,
-    evidence_state TEXT NOT NULL DEFAULT 'SUPPORTED' CHECK (evidence_state IN ('SUPPORTED', 'PARTIALLY_SUPPORTED', 'UNSUPPORTED')),
+    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    item_type TEXT NOT NULL CHECK (item_type IN ('SUMMARY', 'LEARNING_OBJECTIVE', 'KEY_CONCEPT', 'HIGH_YIELD_POINT', 'KEY_TERM')),
+    ordinal INT NOT NULL CHECK (ordinal >= 0),
+    payload JSONB NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT fk_study_pack_items_pack FOREIGN KEY (study_pack_id, document_id, user_id)
-        REFERENCES study_packs(id, document_id, user_id) ON DELETE CASCADE,
-    CONSTRAINT uq_study_pack_items_order UNIQUE (study_pack_id, section_type, item_order)
+    CONSTRAINT uq_study_pack_items_id_pack_user UNIQUE (id, study_pack_id, user_id),
+    CONSTRAINT uq_study_pack_items_pack_type_ord UNIQUE (study_pack_id, item_type, ordinal),
+    CONSTRAINT fk_study_pack_items_pack_owner FOREIGN KEY (study_pack_id, user_id)
+        REFERENCES public.study_packs(id, user_id)
+        ON DELETE CASCADE
 );
 
-CREATE INDEX idx_study_pack_items_pack ON study_pack_items(study_pack_id, item_order);
+CREATE INDEX idx_study_pack_items_pack ON public.study_pack_items(study_pack_id);
+CREATE INDEX idx_study_pack_items_user ON public.study_pack_items(user_id);
 
-CREATE TABLE study_pack_item_citations (
+CREATE TABLE public.study_pack_item_citations (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     study_pack_item_id UUID NOT NULL,
-    document_id UUID NOT NULL,
-    user_id UUID NOT NULL,
-    chunk_id UUID NOT NULL,
-    page_number INT NOT NULL,
-    quote_snippet TEXT,
-    relevance_score NUMERIC(4, 3) DEFAULT 1.000,
+    study_pack_id UUID NOT NULL,
+    document_chunk_id UUID NOT NULL,
+    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    ordinal INT NOT NULL DEFAULT 0,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT fk_study_pack_item_citations_item FOREIGN KEY (study_pack_item_id)
-        REFERENCES study_pack_items(id) ON DELETE CASCADE,
-    CONSTRAINT fk_study_pack_item_citations_chunk FOREIGN KEY (chunk_id)
-        REFERENCES document_chunks(id) ON DELETE CASCADE,
-    CONSTRAINT chk_citations_page_positive CHECK (page_number >= 1)
+    CONSTRAINT uq_study_pack_citations_item_chunk UNIQUE (study_pack_item_id, document_chunk_id),
+    CONSTRAINT fk_study_pack_item_citations_item FOREIGN KEY (study_pack_item_id, study_pack_id, user_id)
+        REFERENCES public.study_pack_items(id, study_pack_id, user_id)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_study_pack_item_citations_chunk FOREIGN KEY (document_chunk_id, user_id)
+        REFERENCES public.document_chunks(id, user_id)
+        ON DELETE CASCADE
 );
 
-CREATE INDEX idx_study_pack_item_citations_item ON study_pack_item_citations(study_pack_item_id);
-CREATE INDEX idx_study_pack_item_citations_chunk ON study_pack_item_citations(chunk_id);
+CREATE INDEX idx_study_pack_citations_item ON public.study_pack_item_citations(study_pack_item_id);
+CREATE INDEX idx_study_pack_citations_chunk ON public.study_pack_item_citations(document_chunk_id);
+CREATE INDEX idx_study_pack_citations_user ON public.study_pack_item_citations(user_id);
 
+CREATE TABLE public.ai_usages (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    document_id UUID,
+    study_pack_id UUID,
+    feature TEXT NOT NULL CHECK (feature IN ('STUDY_PACK_GEN', 'STUDY_PACK_VERIFY', 'BENCHMARK')),
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    input_tokens INT NOT NULL DEFAULT 0,
+    output_tokens INT NOT NULL DEFAULT 0,
+    cached_tokens INT NOT NULL DEFAULT 0,
+    estimated_cost_usd NUMERIC(10, 6) NOT NULL DEFAULT 0,
+    latency_ms INT,
+    status TEXT NOT NULL CHECK (status IN ('SUCCESS', 'FAILED', 'RATE_LIMITED')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT fk_ai_usages_doc_owner FOREIGN KEY (document_id, user_id)
+        REFERENCES public.documents(id, user_id) ON DELETE SET NULL (document_id),
+    CONSTRAINT fk_ai_usages_pack_owner FOREIGN KEY (study_pack_id, user_id)
+        REFERENCES public.study_packs(id, user_id) ON DELETE SET NULL (study_pack_id)
+);
+
+CREATE INDEX idx_ai_usages_user_created ON public.ai_usages(user_id, created_at);
+```
+
+### Future Scope / Post-Phase 1E Target Schemas (Deferred to Subsequent Slices)
+```sql
 
 CREATE TABLE flashcards (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

@@ -95,7 +95,13 @@ LIMIT 8; -- INITIAL CONFIGURABLE ASSUMPTION: top chunks retrieved
 
 ## 4. Response Evidence States
 
-To reduce and detect unsupported-answer risk in clinical study, the AI Tutor must classify its response into one of three explicit **Evidence States**:
+> **Scope Clarification**:
+> - **Phase 1E (Current Implementation)**: The Study Pack evidence verifier (`evidence-verifier.ts`) operates strictly on binary classification: `SUPPORTED` vs `UNSUPPORTED`. Items evaluated as `UNSUPPORTED` are dropped; packs failing minimum QA criteria fail definitively.
+> - **Phase 1F (Future AI Tutor Architecture)**: The interactive AI Tutor will classify conversational responses into three evidence states (`SUPPORTED`, `PARTIALLY_SUPPORTED`, `INSUFFICIENT_EVIDENCE`).
+
+### 4.1 Future Phase 1F AI Tutor Evidence States
+
+To reduce and detect unsupported-answer risk in clinical study, the future AI Tutor will classify its conversational responses into one of three explicit **Evidence States**:
 
 | Evidence State | Criteria & Invariants | UI Presentation |
 | :--- | :--- | :--- |
@@ -107,13 +113,11 @@ To reduce and detect unsupported-answer risk in clinical study, the AI Tutor mus
 
 ## 5. Provenance & Citation Model (Phase 1E Evidence Layer)
 
-A citation is NOT just an opaque chunk ID or an unverified model output. It is a verifiable spatial and textual anchor backed by database integrity:
-- **`document_id`**: Foreign key to `documents`.
-- **`document_title`**: Human-readable title of the syllabus/deck.
-- **`page_number`**: Exact page number in the original PDF, derived strictly by the server.
-- **`chunk_id`**: Specific text chunk primary key in `document_chunks`.
-- **`quote_snippet`**: Exact 1-2 sentence excerpt confirming the answer.
-- **Interactive Action**: Clicking `[Pág. 14]` highlights the referenced page provenance and links directly to the PDF viewer.
+A citation is NOT an opaque or unverified model output. It is a verifiable spatial anchor backed by database integrity:
+- **`chunk_id`**: Foreign key referencing `document_chunks(id, user_id)` via composite key integrity.
+- **`page_number`**: Exact page number in the original PDF, derived strictly by server-side query from `document_chunks.page_number` (the AI model is never trusted with page numbers).
+- **`document_id`**: Foreign key ensuring chunk belongs to the active document.
+- **Phase 1E Presentation**: Rendered as display-only page-level badges (`Pág. X`). (Interactive navigation, deep-linking into PDF viewer coordinates, and quote snippet extraction are reserved for future phases).
 
 ### 5.1 Deterministic Citation Validation (`citation-validator.ts`)
 1. **Server-Derived Page Numbers**: The AI model is **never** trusted to provide page numbers. The model outputs only candidate `chunk_id` values. The server looks up each valid chunk ID against authoritative database records (`document_chunks`) and populates `page_number` directly from the database row.

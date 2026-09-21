@@ -5,6 +5,9 @@ import {
 } from "@/modules/study-packs/evidence-verifier";
 import { MockAIProvider } from "@/modules/ai/mock-provider";
 import type { SuppliedChunkInfo } from "@/modules/study-packs/citation-validator";
+import { StudyPackServiceError } from "@/modules/study-packs/service";
+import { STUDY_PACK_BUDGET_LIMITS } from "@/config/study-pack-limits";
+import type { AIProvider, AIStructuredRequest } from "@/modules/ai/types";
 
 describe("Deterministic Evidence Verifier (CALL 2 & QA Gate)", () => {
   let mockProvider: MockAIProvider;
@@ -239,5 +242,202 @@ describe("Deterministic Evidence Verifier (CALL 2 & QA Gate)", () => {
     expect(conceptCitations[0].ordinal).toBe(0);
     expect(conceptCitations[1].documentChunkId).toBe(chunk2Id);
     expect(conceptCitations[1].ordinal).toBe(1);
+  });
+});
+
+describe("Verifier Evidence Deduplication & Bound (Items 2 & 3)", () => {
+  const chunk1Id = "11111111-1111-1111-1111-111111111111";
+  const chunk2Id = "22222222-2222-2222-2222-222222222222";
+  const chunkUnrelatedId = "33333333-3333-3333-3333-333333333333";
+
+  const extendedChunksMap = new Map<string, SuppliedChunkInfo>([
+    [
+      chunk1Id,
+      {
+        id: chunk1Id,
+        document_id: "doc-1",
+        user_id: "user-1",
+        page_number: 1,
+        content: "Contenido del chunk 1 sobre anatomía ventricular.",
+      },
+    ],
+    [
+      chunk2Id,
+      {
+        id: chunk2Id,
+        document_id: "doc-1",
+        user_id: "user-1",
+        page_number: 2,
+        content: "Contenido del chunk 2 sobre sístole y diástole.",
+      },
+    ],
+    [
+      chunkUnrelatedId,
+      {
+        id: chunkUnrelatedId,
+        document_id: "doc-1",
+        user_id: "user-1",
+        page_number: 3,
+        content: "Contenido no citado de otra sección del documento.",
+      },
+    ],
+  ]);
+
+  it("serializes only the unique union of cited chunks once in evidence array and omits unrelated chunks", async () => {
+    let capturedUserPrompt = "";
+
+    const instrumentedProvider: AIProvider = {
+      name: "test-verifier-provider",
+      model: "test-model",
+      generateStructured: async <T>(req: AIStructuredRequest<T>) => {
+        capturedUserPrompt = req.userPrompt;
+        return {
+          data: {
+            evaluations: [
+              { itemKey: "item-1", verdict: "SUPPORTED", rationale: "ok" },
+              { itemKey: "item-2", verdict: "SUPPORTED", rationale: "ok" },
+              { itemKey: "item-3", verdict: "SUPPORTED", rationale: "ok" },
+            ],
+          } as unknown as T,
+          telemetry: {
+            provider: "test-verifier-provider",
+            model: "test-model",
+            inputTokens: 100,
+            outputTokens: 50,
+            cachedTokens: 0,
+            estimatedCostUsd: 0,
+            latencyMs: 10,
+            status: "SUCCESS" as const,
+          },
+        };
+      },
+    };
+
+    // 3 items all cite chunk1Id, 2 items also cite chunk2Id
+    const items: NormalizedCandidateItem[] = [
+      {
+        tempKey: "item-1",
+        itemType: "SUMMARY",
+        ordinal: 0,
+        textForVerification: "Summary claim citing chunk 1",
+        payload: {},
+        citedChunkIds: [chunk1Id],
+        derivedPageNumbers: [1],
+      },
+      {
+        tempKey: "item-2",
+        itemType: "LEARNING_OBJECTIVE",
+        ordinal: 0,
+        textForVerification: "Objective claim citing chunk 1 and 2",
+        payload: {},
+        citedChunkIds: [chunk1Id, chunk2Id],
+        derivedPageNumbers: [1, 2],
+      },
+      {
+        tempKey: "item-3",
+        itemType: "KEY_CONCEPT",
+        ordinal: 0,
+        textForVerification: "Concept claim citing chunk 1 and 2",
+        payload: {},
+        citedChunkIds: [chunk1Id, chunk2Id],
+        derivedPageNumbers: [1, 2],
+      },
+    ];
+
+    await executeEvidenceVerification(
+      items,
+      extendedChunksMap,
+      instrumentedProvider
+    );
+
+    const parsed = JSON.parse(capturedUserPrompt) as {
+      candidates: Array<{ itemKey: string; citedChunkIds: string[] }>;
+      evidence: Array<{ chunkId: string; pageNumber: number; content: string }>;
+      instructions: string;
+    };
+
+    // 1. Evidence contains EXACTLY 2 unique cited chunks, despite 5 total citations
+    expect(parsed.evidence.length).toBe(2);
+    const chunkIdsInEvidence = parsed.evidence.map((e) => e.chunkId);
+    expect(chunkIdsInEvidence).toContain(chunk1Id);
+    expect(chunkIdsInEvidence).toContain(chunk2Id);
+    // Unrelated chunk is omitted
+    expect(chunkIdsInEvidence).not.toContain(chunkUnrelatedId);
+
+    // 2. Candidates reference only citedChunkIds without chunk content duplication
+    expect(parsed.candidates.length).toBe(3);
+    expect(parsed.candidates[0].citedChunkIds).toEqual([chunk1Id]);
+    expect(parsed.candidates[1].citedChunkIds).toEqual([chunk1Id, chunk2Id]);
+    expect(
+      (parsed.candidates[0] as Record<string, unknown>).citedEvidence
+    ).toBeUndefined();
+
+    // 3. Verifier instructions explicitly restrict evaluation to citedChunkIds
+    expect(parsed.instructions).toContain(
+      "Evaluate each candidate item ONLY against evidence chunks whose chunkId is listed in candidate.citedChunkIds"
+    );
+  });
+
+  it("throws STUDY_PACK_INPUT_LIMIT with 0 provider calls when verifier prompt exceeds maxVerifierInputChars", async () => {
+    let providerCalls = 0;
+
+    const instrumentedProvider: AIProvider = {
+      name: "test-verifier-provider",
+      model: "test-model",
+      generateStructured: async <T>() => {
+        providerCalls++;
+        return {} as unknown as T;
+      },
+    };
+
+    // Create a massive chunk that will blow past maxVerifierInputChars (180,000)
+    const giantContent = "A".repeat(
+      STUDY_PACK_BUDGET_LIMITS.maxVerifierInputChars + 1000
+    );
+    const giantChunkMap = new Map<string, SuppliedChunkInfo>([
+      [
+        chunk1Id,
+        {
+          id: chunk1Id,
+          document_id: "doc-1",
+          user_id: "user-1",
+          page_number: 1,
+          content: giantContent,
+        },
+      ],
+    ]);
+
+    const items: NormalizedCandidateItem[] = [
+      {
+        tempKey: "sum-0",
+        itemType: "SUMMARY",
+        ordinal: 0,
+        textForVerification: "Summary claim",
+        payload: {},
+        citedChunkIds: [chunk1Id],
+        derivedPageNumbers: [1],
+      },
+    ];
+
+    await expect(
+      executeEvidenceVerification(items, giantChunkMap, instrumentedProvider)
+    ).rejects.toThrowError(StudyPackServiceError);
+
+    try {
+      await executeEvidenceVerification(
+        items,
+        giantChunkMap,
+        instrumentedProvider
+      );
+    } catch (e: unknown) {
+      expect((e as StudyPackServiceError).code).toBe("STUDY_PACK_INPUT_LIMIT");
+      expect((e as StudyPackServiceError).retryable).toBe(false);
+      expect((e as StudyPackServiceError).message).toContain(
+        "exceeds maximum allowed verifier input limit"
+      );
+    }
+
+    // Crucial invariant: ZERO external provider calls made for oversized payload
+    expect(providerCalls).toBe(0);
   });
 });

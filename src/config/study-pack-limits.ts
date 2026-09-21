@@ -37,10 +37,12 @@ export interface StudyPackBudgetLimits {
   maxKeyTermChars: number;
   maxKeyTermDefinitionChars: number;
   maxVerificationExplanationChars: number;
+  maxVerifierInputChars: number;
 }
 
 export interface StudyPackWorkerLimits {
   maxRetries: number;
+  maxProviderRetries: number;
   defaultLeaseSeconds: number;
   workerLeaseSeconds: number;
   minLeaseSeconds: number;
@@ -80,10 +82,12 @@ export const STUDY_PACK_BUDGET_LIMITS: StudyPackBudgetLimits = {
   maxKeyTermChars: 100,
   maxKeyTermDefinitionChars: 500,
   maxVerificationExplanationChars: 500,
+  maxVerifierInputChars: 180_000,
 };
 
 export const STUDY_PACK_WORKER_LIMITS: StudyPackWorkerLimits = {
   maxRetries: 3,
+  maxProviderRetries: 0,
   defaultLeaseSeconds: 300,
   workerLeaseSeconds: 300,
   minLeaseSeconds: 30,
@@ -92,6 +96,16 @@ export const STUDY_PACK_WORKER_LIMITS: StudyPackWorkerLimits = {
   maxCandidateTokens: 4096,
   maxVerifierTokens: 2048,
 };
+
+// Invariant assertions: maxProviderRetries must be >= 0 and tightly bounded
+if (
+  STUDY_PACK_WORKER_LIMITS.maxProviderRetries < 0 ||
+  STUDY_PACK_WORKER_LIMITS.maxProviderRetries > 2
+) {
+  throw new Error(
+    `Invalid maxProviderRetries: ${STUDY_PACK_WORKER_LIMITS.maxProviderRetries}. Must be between 0 and 2.`
+  );
+}
 
 /**
  * Versioned pricing snapshot (USD per 1,000,000 tokens).

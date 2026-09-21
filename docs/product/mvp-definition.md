@@ -101,7 +101,7 @@ flowchart LR
 - **Definition of Done**: Structural preflight (`qpdf`), native extraction (`pypdfium2`), selective OCR (`tesseract`), bounded orchestrator verification, and composite FKs persisted with 100% test pass.
 
 #### Slice 1E: Deterministic Chunking, Evidence Layer & Study Pack Generation (COMPLETE)
-- **User Value**: Student triggers bounded Study Pack generation from their document library and navigates structured summaries, objectives, key concepts, high-yield clinical points, and key terms with interactive page-level citations (`Pág. X`) and coverage disclosures.
+- **User Value**: Student triggers bounded Study Pack generation from their document library and navigates structured summaries, objectives, key concepts, high-yield clinical points, and key terms with display-only page-level citation badges (`Pág. X`) and coverage disclosures.
 - **Data Changes**: `document_chunks`, `study_packs`, `study_pack_items`, `study_pack_item_citations`, `ai_usages`.
 - **AI Impact**: Thin `AIProvider` abstraction (`MockAIProvider` with $0.00 spend; OpenAI-compatible provider). Two-call LLM pipeline (candidate generation + evidence verification). Cached Study Pack with zero AI calls on reload.
 - **Definition of Done**: Page-bounded canonical chunking; two-call verification pipeline; deterministic citation validator enforcing server-derived page numbers; QA gate requiring $\ge 1$ summary, $\ge 1$ objective, $\ge 1$ concept, and $\ge 50\%$ supported claims; library status badges; synthetic medical lecture benchmark suite (5/5 pass, 0 errors, $0.00 spend).

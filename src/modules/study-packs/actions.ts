@@ -6,12 +6,14 @@ import {
   requestStudyPackGeneration as requestGenerationService,
   getStudyPack as getStudyPackService,
 } from "./service";
-import type { StudyPackView } from "./types";
+import type { StudyPackView, StudyPackErrorCode } from "./types";
+import { toPublicStudyPackError } from "./errors";
 
 export interface ActionResult<T = unknown> {
   success: boolean;
   data?: T;
   error?: string;
+  code?: StudyPackErrorCode;
 }
 
 /**
@@ -40,12 +42,11 @@ export async function requestStudyPackGenerationAction(
     return { success: true, data: result };
   } catch (err: unknown) {
     console.error("requestStudyPackGenerationAction error:", err);
+    const publicErr = toPublicStudyPackError(err);
     return {
       success: false,
-      error:
-        err instanceof Error
-          ? err.message
-          : "Error al solicitar generación de Study Pack.",
+      error: publicErr.error,
+      code: publicErr.code,
     };
   }
 }
@@ -71,10 +72,11 @@ export async function getStudyPackAction(
     return { success: true, data: result };
   } catch (err: unknown) {
     console.error("getStudyPackAction error:", err);
+    const publicErr = toPublicStudyPackError(err);
     return {
       success: false,
-      error:
-        err instanceof Error ? err.message : "Error al obtener Study Pack.",
+      error: publicErr.error,
+      code: publicErr.code,
     };
   }
 }

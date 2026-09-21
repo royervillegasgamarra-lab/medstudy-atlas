@@ -19,6 +19,8 @@ import { classifyAIError } from "@/modules/ai/error-classifier";
 import { OpenAICompatibleProvider } from "@/modules/ai/openai-compatible-provider";
 import { resolveBenchmarkExecutionPlan } from "@/benchmarks/study-pack-benchmark";
 import { serverEnv } from "@/config/server-env";
+import { STUDY_PACK_WORKER_LIMITS } from "@/config/study-pack-limits";
+import { mapAIProviderErrorToStudyPackError } from "@/modules/study-packs/service";
 
 describe("MockAIProvider", () => {
   let mock: MockAIProvider;
@@ -839,6 +841,7 @@ describe("CALL 1 / CALL 2 Request Bounds in generateStudyPackContent (Item 5)", 
     const call1 = recordedRequests[0];
     expect(call1.schemaName).toBe("StudyPackCandidate");
     expect(call1.maxTokens).toBe(4096);
+    expect(call1.maxRetries).toBe(0);
     expect(call1.abortSignal).toBeDefined();
     expect(call1.abortSignal).toBeInstanceOf(AbortSignal);
     expect(call1.abortSignal?.aborted).toBe(false);
@@ -847,8 +850,78 @@ describe("CALL 1 / CALL 2 Request Bounds in generateStudyPackContent (Item 5)", 
     const call2 = recordedRequests[1];
     expect(call2.schemaName).toBe("StudyPackVerification");
     expect(call2.maxTokens).toBe(2048);
+    expect(call2.maxRetries).toBe(0);
     expect(call2.abortSignal).toBeDefined();
     expect(call2.abortSignal).toBeInstanceOf(AbortSignal);
     expect(call2.abortSignal?.aborted).toBe(false);
+  });
+});
+
+describe("Explicit Provider Retry Bounds & External Call Budget (Item 1)", () => {
+  it("enforces config invariant: maxProviderRetries is exactly 0 and tightly bounded", () => {
+    expect(STUDY_PACK_WORKER_LIMITS.maxProviderRetries).toBe(0);
+    expect(STUDY_PACK_WORKER_LIMITS.maxProviderRetries).toBeGreaterThanOrEqual(
+      0
+    );
+    expect(STUDY_PACK_WORKER_LIMITS.maxProviderRetries).toBeLessThanOrEqual(2);
+  });
+
+  it("calculates exact maximum external requests per Study Pack attempt as 2 (1 per logical call)", () => {
+    // 2 logical calls (Candidate + Verifier) * (1 + maxProviderRetries) = 2 external requests
+    const logicalCalls = 2;
+    const maxExternalRequestsPerAttempt =
+      logicalCalls * (1 + STUDY_PACK_WORKER_LIMITS.maxProviderRetries);
+    expect(maxExternalRequestsPerAttempt).toBe(2);
+
+    // If worker exhausts its retry budget (3 attempts), total external calls is bounded to 6
+    const maxTotalRequests =
+      STUDY_PACK_WORKER_LIMITS.maxRetries * maxExternalRequestsPerAttempt;
+    expect(maxTotalRequests).toBe(6);
+  });
+});
+
+describe("WORKER_INTERNAL_ERROR Retry Contract (Item 5)", () => {
+  it("maps unknown non-AIProviderError to WORKER_INTERNAL_ERROR with retryable: false (non-retryable)", () => {
+    const unknownError = new TypeError(
+      "Cannot read properties of undefined (reading 'foo')"
+    );
+    const serviceError = mapAIProviderErrorToStudyPackError(
+      unknownError,
+      "Unexpected crash during generation"
+    );
+
+    expect(serviceError.code).toBe("WORKER_INTERNAL_ERROR");
+    expect(serviceError.retryable).toBe(false);
+    expect(serviceError.message).toContain(
+      "Unexpected crash during generation"
+    );
+    expect(serviceError.message).toContain(
+      "Cannot read properties of undefined"
+    );
+  });
+
+  it("retains retryable: true strictly for known transient errors (AI_TIMEOUT, AI_RATE_LIMITED, AI_PROVIDER_UNAVAILABLE)", () => {
+    const timeoutErr = new AIProviderError("AI_TIMEOUT", "Timed out", true);
+    expect(
+      mapAIProviderErrorToStudyPackError(timeoutErr, "Fail").retryable
+    ).toBe(true);
+
+    const rateLimitErr = new AIProviderError(
+      "AI_RATE_LIMITED",
+      "429 Rate Limit",
+      true
+    );
+    expect(
+      mapAIProviderErrorToStudyPackError(rateLimitErr, "Fail").retryable
+    ).toBe(true);
+
+    const unavailErr = new AIProviderError(
+      "AI_PROVIDER_UNAVAILABLE",
+      "503 Unavailable",
+      true
+    );
+    expect(
+      mapAIProviderErrorToStudyPackError(unavailErr, "Fail").retryable
+    ).toBe(true);
   });
 });

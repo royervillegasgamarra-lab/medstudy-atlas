@@ -8,54 +8,72 @@ MedStudy Atlas avoids complicated multi-agent swarms, dynamic multi-provider rou
 
 ---
 
-## 2. The `AIProvider` Interface
+## 2. The `AIProvider` Interface (Implemented in Phase 1E)
+
+In Phase 1E, the `AIProvider` abstraction implements strictly a single domain method: `generateStructured()`. Streaming and embeddings are explicitly deferred to subsequent phases.
 
 ```typescript
-export interface AICompletionOptions {
-  model?: string;
+export interface AIStructuredRequest<T> {
+  schema: z.ZodType<T>;
+  schemaName: string;
+  systemPrompt: string;
+  userPrompt: string;
   temperature?: number;
   maxTokens?: number;
-  responseFormat?: 'text' | 'json_object';
-  jsonSchema?: Record<string, unknown>;
-  userId: string;
-  feature: 'STUDY_PACK_GEN' | 'STUDY_PACK_VERIFY' | 'TUTOR_CHAT' | 'QUESTION_GEN' | 'SUMMARY' | 'EMBEDDING' | 'BENCHMARK';
-  documentId?: string;
+  maxRetries?: number;
+  abortSignal?: AbortSignal;
 }
 
-export interface AITelemetry {
+export interface AICompletionTelemetry {
   provider: string;
   model: string;
-  feature: string;
   inputTokens: number;
   outputTokens: number;
   cachedTokens: number;
   estimatedCostUsd: number;
   latencyMs: number;
-  status: 'SUCCESS' | 'FAILED' | 'RATE_LIMITED';
+  status: "SUCCESS" | "FAILED" | "RATE_LIMITED";
+}
+
+export interface AIStructuredResult<T> {
+  data: T;
+  telemetry: AICompletionTelemetry;
+}
+
+export interface AIRequestContext {
   userId?: string;
   documentId?: string;
+  studyPackId?: string;
+  feature?: "STUDY_PACK_GEN" | "STUDY_PACK_VERIFY" | "BENCHMARK";
 }
 
 export interface AIProvider {
-  readonly providerId: string;
-  generateStructured<T>(prompt: string, schema: Record<string, unknown>, options: AICompletionOptions): Promise<{ data: T; telemetry: AITelemetry }>;
-  generateStream(messages: Array<{ role: string; content: string }>, options: AICompletionOptions): AsyncIterable<{ chunk: string; telemetry?: AITelemetry }>;
-  generateEmbedding(text: string, options: { userId: string }): Promise<{ embedding: number[]; telemetry: AITelemetry }>;
+  readonly name: string;
+  readonly model: string;
+  generateStructured<T>(
+    request: AIStructuredRequest<T>,
+    context?: AIRequestContext
+  ): Promise<AIStructuredResult<T>>;
 }
 ```
 
+> **Future Interface Methods (Deferred to Phase 1F+)**:
+> - `generateStream()`: Context-grounded AI Tutor streaming (Phase 1F).
+> - `generateEmbedding()`: Vector embeddings for hybrid semantic retrieval (Phase 1F).
+
 ### 2.1 Provider Implementations (Implemented in Phase 1E)
 1. **`MockAIProvider` (`src/modules/ai/mock-provider.ts`)**:
-   - Deterministic test provider returning valid structured study pack objects grounded in document text.
-   - Computes realistic token estimates ($0.00 cost) with zero external network requests.
-   - Powers 100% of automated unit tests, integration tests, E2E tests, and benchmark runs during development.
+   - Deterministic structural test provider returning JSON schema-compliant objects with simulated token counts and $0.00 spend.
+   - Verifies mechanical pipeline invariants and schema compliance during tests and synthetic benchmark smoke.
+   - **Quality Disclaimer**: Makes zero claim of factual accuracy or medical correctness; default output is not grounded in document text unless explicitly scripted for a test.
+   - **Production Denial**: Unconditionally prohibited in production (`NODE_ENV === "production"`).
 2. **`OpenAICompatibleProvider` (`src/modules/ai/openai-compatible-provider.ts`)**:
-   - Production-ready client targeting OpenAI or any OpenAI-compatible gateway (e.g. LiteLLM, Ollama, vLLM).
-   - Configurable via `AI_PROVIDER`, `AI_API_KEY`, `AI_BASE_URL`, and `AI_MODEL`.
-   - Respects structured outputs via JSON schema mode (`response_format: { type: 'json_object' }`).
-3. **Provider Factory (`src/modules/ai/provider-factory.ts`)**:
-   - Safely instantiates `MockAIProvider` when `AI_PROVIDER === 'mock'` or in `NODE_ENV === 'test'`.
-   - Prevents accidental remote calls or unexpected cloud spend during test execution.
+   - Production-ready adapter targeting OpenAI or OpenAI-compatible gateways (LiteLLM, Ollama, vLLM) with JSON Schema structured outputs.
+   - Integrates `classifyAIError`: classifies transport failures (`ECONNRESET`, `ECONNREFUSED`, `ENOTFOUND`, `EAI_AGAIN`) and 5xx as retryable `AI_PROVIDER_UNAVAILABLE`.
+3. **Provider Factory & Security Boundary (`src/modules/ai/provider-factory.ts`)**:
+   - **Preflight Kill Switch**: `assertAIGenerationAvailable()` runs before enqueueing or processing, failing fast without database mutations when `AI_GENERATION_ENABLED=false`.
+   - **Kill Switch on Injected Providers**: Product runtime enforces the kill switch even if an AI provider is injected when `NODE_ENV !== "test"`.
+   - **Fail-Closed Endpoint Validation**: Enforces non-empty model, non-empty API key, explicit `baseURL` for all non-OpenAI providers, and requires HTTPS in production.
 
 ---
 
@@ -75,9 +93,9 @@ To maintain profitability at ~S/ 10/month (~$2.70 USD), the system enforces an e
 | **Quota & Entitlement Check** | **DETERMINISTIC** | PostgreSQL query | Absolute transactional guarantee. |
 | **Analytics & Mastery Aggregation** | **DETERMINISTIC** | SQL aggregate functions / formulas | Mathematically verified. |
 | **Billing State Reconciliation** | **DETERMINISTIC** | Gateway webhook verification | Exact financial accounting. |
-| **Study Pack Generation** | **AI-ASSISTED** | LLM with JSON Schema (2-call verification) | Generates structured summaries, MCQs, cards. |
-| **Context-Grounded Tutor** | **AI-ASSISTED** | LLM with retrieved context chunks | Synthesizes answers with citations. |
-| **Vector Embeddings** | **AI-ASSISTED** | Embedding model (Phase 1F) | Generates dense semantic vectors. |
+| **Study Pack Generation** | **AI-ASSISTED** | LLM with JSON Schema (2-call verification) | Generates structured summaries, objectives, concepts, high-yield points, glossary. (MCQs and flashcards deferred to later slices). |
+| **Context-Grounded Tutor** | **AI-ASSISTED (FUTURE 1F)** | LLM with retrieved context chunks | Synthesizes answers with citations. |
+| **Vector Embeddings** | **AI-ASSISTED (FUTURE 1F)** | Embedding model (Phase 1F) | Generates dense semantic vectors. |
 
 ---
 

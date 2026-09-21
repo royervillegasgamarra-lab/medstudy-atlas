@@ -110,7 +110,7 @@ export function mapAIProviderErrorToStudyPackError(
   return new StudyPackServiceError(
     "WORKER_INTERNAL_ERROR",
     `${defaultMessage}: ${err instanceof Error ? err.message : String(err)}`,
-    true
+    false
   );
 }
 
@@ -314,6 +314,7 @@ CRITICAL INVARIANTS:
         userPrompt,
         temperature: 0.1,
         maxTokens: STUDY_PACK_WORKER_LIMITS.maxCandidateTokens,
+        maxRetries: STUDY_PACK_WORKER_LIMITS.maxProviderRetries,
         abortSignal: AbortSignal.timeout(
           STUDY_PACK_WORKER_LIMITS.providerTimeoutSeconds * 1000
         ),
@@ -350,6 +351,9 @@ CRITICAL INVARIANTS:
       context
     );
   } catch (err) {
+    if (err instanceof StudyPackServiceError) {
+      throw err;
+    }
     throw mapAIProviderErrorToStudyPackError(err, "Verification call failed");
   }
 
